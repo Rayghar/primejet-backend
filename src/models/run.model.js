@@ -1,0 +1,134 @@
+// src/models/run.model.js
+const mongoose = require('mongoose');
+const { v4: uuidv4 } = require('uuid');
+
+const stopSchema = new mongoose.Schema(
+  {
+    stopId: {
+      type: String,
+      default: () => uuidv4(),
+    },
+    orderId: {
+      type: String,
+      required: [true, 'Order ID for stop is required.'],
+      // REMOVED: ref: 'Order' -> This was causing the CastError.
+    },
+    sequence: {
+      type: Number,
+      required: [true, 'Stop sequence number is required.'],
+      min: 1,
+    },
+    status: {
+      type: String,
+      required: [true, 'Stop status is required.'],
+      enum: [
+            'Pending',
+            'Skipped',
+            'Reached',
+            'Completed',
+            'FailedAttempt',
+            'Driver enroute to pickup',
+            'Driver enroute to gas station',
+            'Cylinder Refilling',
+            'Out for delivery',
+            'Delivered',
+            'Customer not available',
+            'Issue Reported'
+      ],
+      default: 'Pending',
+    },
+    estimatedArrivalTime: { type: Date },
+    actualArrivalTime: { type: Date },
+    departureTime: { type: Date },
+    notes: { type: String, trim: true },
+    latitude: { type: Number, min: -90, max: 90 },
+    longitude: { type: Number, min: -180, max: 180 },
+  },
+  { 
+    _id: true,
+    // ========================== FIX IS HERE ==========================
+    // Enable virtuals for toJSON and toObject transformations.
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true }
+    // ===============================================================
+  }
+);
+
+// ========================== FIX IS HERE ==========================
+// Added a virtual field 'order' to the stopSchema to handle the population
+// of an Order document based on the string 'orderId'. This is the correct
+// way to handle relationships with non-ObjectId keys.
+stopSchema.virtual('order', {
+  ref: 'Order',
+  localField: 'orderId',
+  foreignField: 'id',
+  justOne: true
+});
+// ===============================================================
+
+const runSchema = new mongoose.Schema(
+  {
+    id: {
+      type: String,
+      required: true,
+      unique: true,
+      default: () => uuidv4(),
+      index: true,
+    },
+    runCode: {
+      type: String,
+      unique: true,
+      sparse: true,
+    },
+    driverId: {
+      type: String,
+      ref: 'User',
+      index: true,
+      sparse: true,
+    },
+    overallStatus: {
+      type: String,
+      required: [true, 'Overall run status is required.'],
+      enum: ['Pending', 'Assigned', 'In Progress', 'Completed', 'Partially Completed', 'Canceled'],
+      default: 'Pending',
+      index: true,
+    },
+    totalStops: {
+      type: Number,
+      required: [true, 'Total number of stops is required.'],
+      min: [0, 'Total stops cannot be negative.'],
+    },
+    completedStops: { type: Number, default: 0, min: 0 },
+    stops: [stopSchema],
+    estimatedStartDate: { type: Date },
+    actualStartDate: { type: Date },
+    estimatedCompletionDate: { type: Date },
+    actualCompletionDate: { type: Date },
+    notes: { type: String, trim: true },
+  },
+  {
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true }
+  }
+);
+
+runSchema.virtual('driver', {
+  ref: 'User',
+  localField: 'driverId',
+  foreignField: 'id',
+  justOne: true
+});
+
+runSchema.index({ driverId: 1, overallStatus: 1 });
+
+runSchema.pre('save', function (next) {
+  if (this.isModified('stops') || this.isNew) {
+    this.totalStops = this.stops ? this.stops.length : 0;
+  }
+  next();
+});
+
+const Run = mongoose.model('Run', runSchema);
+
+module.exports = Run;

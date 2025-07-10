@@ -48,9 +48,9 @@ app.use('/api/v1/voice', voiceRoutes); // Ensure this is before express.json if 
 
 // --- Step 3: Handle Special Routes (like Paystack Webhook) BEFORE general JSON parser ---
 app.post(
-  '/api/v1/payments/paystack/webhook',
+  '/api/v1/payments/monnify/webhook',
   express.raw({ type: 'application/json' }),
-  paymentController.handlePaystackWebhook
+  paymentController.handleMonnifyWebhook
 );
 
 // --- Step 4: Setup General Middleware ---

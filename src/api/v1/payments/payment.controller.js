@@ -1,39 +1,52 @@
 // File: src/api/v1/payments/payment.controller.js
 const paymentService = require('./payment.service');
+const { logger } = require('../../../config/logger.config'); // Ensure logger is imported
 
-const initializePaymentForOrder = async (req, res, next) => {
+// Middleware to save the raw body for hash verification
+const rawBodySaver = (req, res, buf, encoding) => {
+  if (buf && buf.length) {
+    req.rawBody = buf.toString(encoding || 'utf8');
+  }
+};
+
+const handleFlutterwaveWebhook = async (req, res, next) => {
   try {
-    const { orderId } = req.body;
-    const result = await paymentService.initializePayment({ orderId, userId: req.user.id });
-    res.status(200).json(result);
+    const signature = req.headers['verif-hash'];
+    await paymentService.processFlutterwaveWebhook({ signature, body: req.body });
+
+    res.sendStatus(200);
   } catch (error) {
     next(error);
   }
 };
 
-const verifyPayment = async (req, res, next) => {
+// --- NEW: Controller for Monnify Webhook ---
+const handleMonnifyWebhook = async (req, res, next) => {
   try {
-    const { reference, orderId } = req.body;
-    const result = await paymentService.verifyPaystackTransaction({ reference, orderId });
-    res.status(200).json(result);
-  } catch (error) {
-    next(error);
-  }
-};
+    // Monnify sends the signature in the 'monnify-signature' header.
+    const signature = req.headers['monnify-signature']; // [cite: 548, 724]
+    const rawBody = req.rawBody; // Get the raw body saved by the middleware
 
-const handlePaystackWebhook = async (req, res, next) => {
-  try {
-    const signature = req.headers['x-paystack-signature'];
-    // CORRECTED: Convert the raw body buffer to a string before processing
-    await paymentService.processPaystackWebhook(req.body.toString(), signature);
-    res.sendStatus(200); // Acknowledge receipt to Paystack
+    if (!rawBody) {
+      logger.error('Monnify Webhook: Raw body not available for signature verification.');
+      return res.status(400).json({ status: 'error', message: 'Raw body required for signature verification.' });
+    }
+
+    // Process the webhook using the new Monnify-specific service function
+    await paymentService.processMonnifyWebhook({ signature, rawBody, body: req.body });
+
+    // Always send a 200 OK to acknowledge receipt to Monnify. [cite: 522, 697, 829]
+    res.sendStatus(200);
   } catch (error) {
+    // Log the specific error for debugging
+    logger.error(`Monnify Webhook Error: ${error.message}`, { errorStack: error.stack, payload: req.body });
+    // Let the central error handler manage the response for the internal server error case.
     next(error);
   }
 };
 
 module.exports = {
-  initializePaymentForOrder,
-  handlePaystackWebhook,
-  verifyPayment,
+  handleFlutterwaveWebhook,
+  handleMonnifyWebhook, // Export the new controller
+  rawBodySaver // Export the raw body saver middleware
 };

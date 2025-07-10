@@ -1,32 +1,21 @@
 // File: src/api/v1/payments/payment.routes.js
 const express = require('express');
 const paymentController = require('./payment.controller');
-const authMiddleware = require('../../../middleware/auth.middleware');
-const validate = require('../../../middleware/validate.middleware');
-const { initializePaymentSchema } = require('./payment.validation');
 
 const router = express.Router();
 
-// Route for initializing a payment for an order
+// Existing Flutterwave webhook endpoint
 router.post(
-  '/initialize',
-  authMiddleware('customer'),
-  validate(initializePaymentSchema),
-  paymentController.initializePaymentForOrder
-);
-// ADDED: New route for the client to ask the server to verify a transaction
-router.post(
-  '/verify',
-  authMiddleware('customer'),
-  // You should create a Joi schema to validate that 'reference' and 'orderId' are provided
-  paymentController.verifyPayment
+  '/flutterwave/webhook',
+  paymentController.handleFlutterwaveWebhook
 );
 
+// --- NEW: Monnify Webhook Endpoint ---
+// This is the endpoint for receiving webhook events from Monnify's servers.
 router.post(
-  '/paystack/webhook',
-  express.raw({ type: 'application/json' }),
-  paymentController.handlePaystackWebhook
+  '/monnify/webhook', // Define the specific path for Monnify webhooks
+  express.json({ verify: paymentController.rawBodySaver }), // Use a custom body parser to get raw body for hash validation
+  paymentController.handleMonnifyWebhook // New controller function for Monnify
 );
-
 
 module.exports = router;

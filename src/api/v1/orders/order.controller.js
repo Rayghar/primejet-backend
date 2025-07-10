@@ -33,6 +33,23 @@ const placeOrder = async (req, res, next) => {
   }
 };
 
+const processOrderPayment = async (req, res, next) => {
+  try {
+    // It takes the payment data (amount, transactionId) from the app's request body
+    const result = await orderService.processPayment(
+        req.params.orderId, 
+        req.body, 
+        req.user.id, 
+        req.user.role
+    );
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+
 // ... (rest of your order.controller.js methods: getOrders, getOrder, etc.)
 const getOrders = async (req, res, next) => { /* ... */   try {
     const { status, customerId, driverId, page = 1, limit = 10, sortBy } = req.query;
@@ -42,10 +59,6 @@ const getOrders = async (req, res, next) => { /* ... */   try {
 const getOrder = async (req, res, next) => { /* ... */   try {
     const order = await orderService.getOrder(req.params.orderId, req.user.id, req.user.role);
     res.status(200).json(order);
-  } catch (error) { next(error); }};
-const processOrderPayment = async (req, res, next) => { /* ... */   try {
-    const result = await orderService.processPayment(req.params.orderId, req.body, req.user.id, req.user.role);
-    res.status(200).json(result);
   } catch (error) { next(error); }};
 const submitFeedback = async (req, res, next) => { /* ... */   try {
     const result = await orderService.submitFeedback(req.params.orderId, req.body, req.user.id, req.user.role);

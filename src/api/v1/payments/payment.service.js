@@ -1,155 +1,72 @@
 // File: src/api/v1/payments/payment.service.js
-const crypto = require('crypto');
-const axios = require('axios');
+
 const Order = require('../../../models/order.model');
-const User = require('../../../models/user.model');
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
 
 /**
- * Creates a Paystack Transaction and returns an access_code.
+ * Processes an incoming webhook from Flutterwave.
+ * This is now the single source of truth for confirming a payment.
+ * @param {object} { signature, body }
+ * @returns {Promise<void>}
  */
-// UPDATED: The function now accepts a session object
-const initializePayment = async ({ orderId, userId, session }) => {
-  if (!process.env.PAYSTACK_SECRET_KEY) {
-    throw new HttpError(500, 'Paystack payment gateway is not configured.');
+const processFlutterwaveWebhook = async ({ signature, body }) => {
+  // Step 1: Verify the webhook's integrity using the secret hash.
+  // This ensures the request is genuinely from Flutterwave.
+  const secretHash = process.env.FLUTTERWAVE_SECRET_HASH;
+  if (!signature || signature !== secretHash) {
+    logger.warn('Webhook received with invalid signature.');
+    throw new HttpError(401, 'Invalid signature.'); // Discard unauthorized requests
   }
 
-  const order = await Order.findOne({ id: orderId, customerId: userId }).session(session);
+  // Step 2: Check the event type to ensure it's a successful charge.
+  // We only care about successfully completed charges.
+  if (body.event !== 'charge.completed' || body.data.status !== 'successful') {
+    logger.info(`Ignoring non-successful webhook event: ${body.event} with status ${body.data.status}`);
+    return; // Acknowledge and ignore other events (like 'charge.started')
+  }
+
+  const { tx_ref, id, amount, currency } = body.data;
+
+  // Step 3: Find the corresponding order in your database using the transaction reference (tx_ref).
+  const order = await Order.findOne({ id: tx_ref });
+
   if (!order) {
-    throw new HttpError(404, 'Order not found or does not belong to user.');
+    // This can happen if the webhook arrives before the database has committed the order.
+    // Throwing an error will cause Flutterwave to retry, giving the DB time to catch up.
+    logger.error(`Webhook Error: Order with tx_ref ${tx_ref} not found.`);
+    throw new HttpError(404, 'Order not found for webhook processing.');
   }
+
+  // Step 4: Idempotency Check. Prevents processing the same event twice.
+  // If the order is already marked 'Completed', we've already handled this event.
   if (order.paymentStatus === 'Completed') {
-    throw new HttpError(400, 'This order has already been paid.');
+    logger.info(`Webhook: Order ${tx_ref} is already marked as completed. Ignoring duplicate event.`);
+    return;
   }
 
-  // UPDATED: Changed User.findById(userId) to User.findOne({ id: userId })
-  const user = await User.findOne({ id: userId }).select('email').session(session);
-  if (!user) {
-    throw new HttpError(404, 'Customer not found.');
+  // Step 5: Perform final security checks on amount and currency.
+  const amountPaidInMajorUnit = amount;
+  if ((order.grandTotal / 100) !== amountPaidMajorUnit) {
+    logger.warn(`SECURITY ALERT: Webhook amount mismatch for order ${order.id}. Order: ${order.grandTotal / 100}, Paid: ${amountPaidMajorUnit}.`);
+    throw new HttpError(400, 'Payment amount mismatch.');
+  }
+  if ((order.currency || 'NGN').toUpperCase() !== currency.toUpperCase()) {
+      logger.warn(`SECURITY ALERT: Webhook currency mismatch for order ${order.id}. Order: ${order.currency}, Paid: ${currency}.`);
+      throw new HttpError(400, 'Payment currency mismatch.');
   }
 
-  const amountToCharge = Math.round(order.grandTotal);
-  if (amountToCharge <= 0) {
-    return { message: "No payment required.", accessCode: null, paymentNeeded: false };
-  }
+  // Step 6: All checks passed. Update the order in the database.
+  order.paymentStatus = 'Completed';
+  order.finalAmountPaid = order.grandTotal;
+  order.paymentTransactionId = id.toString();
+  order.status = 'Order Placed'; // Move from 'Pending Payment' to the next active state.
+  order.statusHistory.push({ status: 'Payment Completed', timestamp: new Date(), notes: `Verified by Flutterwave Webhook. Transaction ID: ${id}` });
   
-  const paystackUrl = 'https://api.paystack.co/transaction/initialize';
-  const headers = { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` };
-  const body = {
-    email: user.email,
-    amount: amountToCharge,
-    reference: order.id,
-    metadata: { order_id: order.id, customer_id: userId }
-  };
-
-  try {
-    const { data } = await axios.post(paystackUrl, body, { headers });
-    if (data && data.status === true) {
-      order.paymentTransactionId = data.data.reference;
-      order.paymentGateway = 'paystack';
-      order.paymentStatus = 'Processing (Gateway)';
-      await order.save({ session });
-      
-      logger.info(`Paystack transaction initialized for order ${orderId}`);
-      return { accessCode: data.data.access_code, paymentNeeded: true };
-    } else {
-      throw new Error(data.message || 'Paystack initialization failed.');
-    }
-  } catch (error) {
-    logger.error(`Error initializing Paystack transaction for order ${orderId}:`, error.response ? error.response.data : error.message);
-    throw new HttpError(500, 'Failed to initialize Paystack payment.');
-  }
-};
-
-const verifyPaystackTransaction = async ({ reference, orderId }) => {
-  if (!reference) throw new HttpError(400, 'Payment reference is required.');
-  if (!process.env.PAYSTACK_SECRET_KEY) throw new HttpError(500, 'Paystack service is not configured.');
-
-  const verifyUrl = `https://api.paystack.co/transaction/verify/${reference}`;
-  const headers = { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` };
-
-  try {
-    const { data: response } = await axios.get(verifyUrl, { headers });
-
-    if (response.data.status !== 'success') {
-      throw new HttpError(400, `Payment not successful. Status: ${response.data.status}`);
-    }
-
-    const order = await Order.findOne({ id: orderId });
-    if (!order) {
-      throw new HttpError(404, `Order with ID ${orderId} not found for verification.`);
-    }
-
-    // Security Check: Verify that the amount paid matches the order total
-    if (order.grandTotal !== response.data.amount) {
-      logger.warn(`SECURITY ALERT: Amount mismatch for order ${order.id}. Order Total: ${order.grandTotal}, Paystack Paid: ${response.data.amount}.`);
-      throw new HttpError(400, 'Payment amount mismatch.');
-    }
-
-    // Update order status if verification is successful
-    order.paymentStatus = 'Completed';
-    order.finalAmountPaid = response.data.amount;
-    order.statusHistory.push({ status: 'Payment Completed', timestamp: new Date(), notes: `Verified Paystack ref: ${reference}` });
-     if (order.status === 'Pending Payment') {
-        order.status = 'Order Placed'; 
-        order.statusHistory.push({ status: order.status, timestamp: new Date(), notes: 'Payment verified via Paystack API.' });
-    }
-    await order.save();
-
-    logger.info(`Successfully verified and updated order ${order.id}`);
-    return { message: 'Payment verified successfully.', order };
-
-  } catch (error) {
-    logger.error(`Failed to verify Paystack transaction ${reference}:`, error.response ? error.response.data : error.message);
-    throw new HttpError(500, 'Failed to verify payment with Paystack.');
-  }
-};
-
-/**
- * Verifies and processes a Paystack webhook event.
- */
-const processPaystackWebhook = async (rawBody, signature) => {
-  const secret = process.env.PAYSTACK_SECRET_KEY;
-  const hash = crypto.createHmac('sha512', secret).update(rawBody).digest('hex');
-  if (hash !== signature) {
-    throw new HttpError(400, 'Invalid Paystack signature.');
-  }
-
-  const event = JSON.parse(rawBody);
-  logger.info(`Received Paystack webhook event: ${event.event}`);
-
-  if (event.event === 'charge.success') {
-    const { reference, amount, status } = event.data;
-    if (status !== 'success') return;
-
-    const order = await Order.findOne({ id: reference });
-    if (!order) {
-      logger.error(`Webhook: Order with reference ${reference} not found.`);
-      return;
-    }
-    if (order.paymentStatus === 'Completed') {
-      logger.info(`Webhook: Order ${reference} already marked as completed.`);
-      return;
-    }
-    if (order.grandTotal !== amount) {
-      logger.warn(`Webhook: Amount mismatch for order ${order.id}. Expected ${order.grandTotal}, Paystack paid ${amount}.`);
-    }
-
-    order.paymentStatus = 'Completed';
-    order.finalAmountPaid = amount;
-    order.statusHistory.push({ status: 'Payment Completed', timestamp: new Date(), notes: `Paystack reference: ${reference}` });
-    if (order.status === 'Pending Payment') {
-        order.status = 'Order Placed'; 
-        order.statusHistory.push({ status: order.status, timestamp: new Date(), notes: 'Payment confirmed via Paystack.' });
-    }
-    await order.save();
-    logger.info(`Webhook: Order ${reference} payment status updated to Completed.`);
-  }
+  await order.save();
+  logger.info(`Webhook: Successfully processed and updated order ${tx_ref}.`);
 };
 
 module.exports = {
-  initializePayment,
-  processPaystackWebhook,
-  verifyPaystackTransaction,
+  processFlutterwaveWebhook,
 };

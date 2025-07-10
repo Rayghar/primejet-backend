@@ -11,7 +11,6 @@ const HttpError = require('../../../utils/HttpError');
 const { firestore, admin, isFirebaseInitialized } = require('../../../config/firebase.config.js');
 const { logger } = require('../../../config/logger.config.js'); // Assuming logger is set up
 const referralService = require('../referrals/referral.service'); // For referral logic // MODIFIED: Changed import path to match the service
-const paymentService = require('../payments/payment.service'); // Used for Paystack
 
 
 const getOrders = async (options) => {
@@ -146,7 +145,7 @@ const placeOrder = async (customerId, orderData) => {
 
     // Validate required fields from orderData (Joi handles schema, this is for service logic)
     if (!deliveryAddressId || !items || items.length === 0 ) {
-      throw new HttpError(400, 'Missing delivery address or items for the order.');
+      throw new new HttpError(400, 'Missing delivery address or items for the order.');
     }
     if (items.some(item => !item.cylinderId || !item.quantity || item.unitPrice == null || !item.productName)) {
       throw new HttpError(400, 'Invalid item structure: cylinderId, quantity, unitPrice, and productName are required.');
@@ -283,42 +282,21 @@ const placeOrder = async (customerId, orderData) => {
 
     const savedOrder = await newOrder.save({ session });
 
-    // ================== PAYSTACK LOGIC UPDATE START ==================
-    let accessCode = null;
-
-    if (grandTotalToPayByGateway > 0) {
-        logger.info(`[ORDER_SERVICE] Order ${savedOrder.id} requires payment. Initializing transaction...`);
-        try {
-            // UPDATED: Pass the active session to the payment service
-            const paymentResult = await paymentService.initializePayment({
-                orderId: savedOrder.id,
-                userId: customerId,
-                session: session 
-            });
-            accessCode = paymentResult.accessCode;
-        } catch (error) {
-            logger.error(`Failed to initialize payment for new order ${savedOrder.id}:`, error);
-            throw new HttpError(500, 'Order was created, but payment could not be initialized. Please contact support.');
-        }
-    }
-
+    
     await session.commitTransaction();
     logger.info(`[ORDER_SERVICE] Order ${savedOrder.id} placed successfully. PaymentNeeded: ${grandTotalToPayByGateway > 0}`);
 
     return {
       order: savedOrder.toObject(),
-      accessCode: accessCode,
       paymentNeeded: grandTotalToPayByGateway > 0,
       grandTotalToPay: grandTotalToPayByGateway,
       message: 'Order placed successfully.'
     };
   } catch (error) {
     await session.abortTransaction();
-    logger.error(`[ORDER_SERVICE] Place order error for customer ${customerId}:`, {error: error.message, stack: error.stack, inputOrderData: orderData});
+    logger.error(`[ORDER_SERVICE] Place order error for customer ${customerId}:`, {error: error.message, stack: error.stack});
     if (error instanceof HttpError) throw error;
-    // Log the full error for Mongoose validation details
-    console.error('Full error object in placeOrder service:', error);
-    throw new HttpError(500, `Failed to place order due to an unexpected error: ${error.message}`);
+    throw new HttpError(500, `Failed to place order: ${error.message}`);
   } finally {
     session.endSession();
   }
@@ -337,14 +315,15 @@ const processPayment = async (orderId, paymentData, customerId, customerRole) =>
     const order = await Order.findOne({ id: orderId, customerId }).session(session);
     if (!order) throw new HttpError(404, 'Order not found or does not belong to this user.');
     if (order.paymentStatus === 'Completed') {
-      throw new HttpError(400, 'Payment for this order has already been completed.');
+      return { message: 'Payment for this order has already been completed.' };
     }
 
     order.status = 'Order Placed';
     order.paymentStatus = 'Completed';
-    order.finalAmountPaid = (order.finalAmountPaid || 0) + paymentData.amount;
+    order.finalAmountPaid = paymentData.amount;
     order.paymentTransactionId = paymentData.transactionId;
-    order.statusHistory.push({ status: 'Order Placed', timestamp: new Date(), notes: `Payment confirmed with transaction ID: ${paymentData.transactionId}` });
+    order.paymentGateway = 'flutterwave';
+    order.statusHistory.push({ status: 'Payment Completed', timestamp: new Date(), notes: `Flutterwave ref: ${paymentData.transactionId}` });
     if(!order.statusHistory.find(h => h.status === 'Payment Completed')) {
         order.statusHistory.push({ status: 'Payment Completed', timestamp: new Date(), notes: `Ref: ${paymentData.transactionId}` });
     }

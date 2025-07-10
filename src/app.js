@@ -25,7 +25,6 @@ const faqRoutes = require('./api/v1/faqs/faq.routes');
 const configRoutes = require('./api/v1/config/config.routes');
 const reportRoutes = require('./api/v1/reports/report.routes');
 const chatRoutes = require('./api/v1/chat/chat.routes');
-const paymentRoutes = require('./api/v1/payments/payment.routes');
 const walletRoutes = require('./api/v1/wallet/wallet.routes');
 const referralRoutes = require('./api/v1/referrals/referral.routes');
 const runOrchestrationRoutes = require('./api/v1/run_orchestration/run_orchestration.routes');
@@ -46,12 +45,6 @@ app.use('/api', rateLimiter);
 app.use('/api/v1/orchestration', runOrchestrationRoutes);
 app.use('/api/v1/voice', voiceRoutes); // Ensure this is before express.json if voice needs raw body
 
-// --- Step 3: Handle Special Routes (like Paystack Webhook) BEFORE general JSON parser ---
-app.post(
-  '/api/v1/payments/paystack/webhook',
-  express.raw({ type: 'application/json' }),
-  paymentController.handlePaystackWebhook
-);
 
 // --- Step 4: Setup General Middleware ---
 app.use(express.json());
@@ -71,7 +64,6 @@ app.use('/api/v1/faqs', faqRoutes);
 app.use('/api/v1/config', configRoutes);
 app.use('/api/v1/reports', reportRoutes);
 app.use('/api/v1/chat', chatRoutes);
-app.use('/api/v1/payments', paymentRoutes);
 app.use('/api/v1/wallet', walletRoutes);
 app.use('/api/v1/referrals', referralRoutes);
 app.use('/api/v1/notifications', notificationRoutes);

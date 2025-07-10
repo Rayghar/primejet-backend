@@ -30,8 +30,11 @@ const referralRoutes = require('./api/v1/referrals/referral.routes');
 const runOrchestrationRoutes = require('./api/v1/run_orchestration/run_orchestration.routes');
 const notificationRoutes = require('./api/v1/notifications/notification.routes');
 const voiceRoutes = require('./api/v1/voice/voice.routes');
-const agentRoutes = require('./api/v1/agents/agent.routes'); // <<< ADDED: Import agent routes [cite: user_prompt]
-const paymentController = require('./api/v1/payments/payment.controller'); // Import controller for webhook
+const agentRoutes = require('./api/v1/agents/agent.routes');
+
+// === ADDED: Import payment routes ===
+const paymentRoutes = require('./api/v1/payments/payment.routes'); // <<< ADD THIS LINE
+// ===================================
 
 const app = express();
 
@@ -39,7 +42,7 @@ logger.info('[APP] Initializing Express application...');
 
 // --- Step 2: Setup Global Middleware ---
 app.use(helmet());
-app.use(cors({ origin: '*' })); // Loosened for dev, can be tightened
+app.use(cors({ origin: '*' }));
 app.use(morgan('combined', { stream: logger.stream }));
 app.use('/api', rateLimiter);
 app.use('/api/v1/orchestration', runOrchestrationRoutes);
@@ -68,7 +71,12 @@ app.use('/api/v1/wallet', walletRoutes);
 app.use('/api/v1/referrals', referralRoutes);
 app.use('/api/v1/notifications', notificationRoutes);
 
-app.use('/api/v1/agents', agentRoutes); // <<< ADDED: Mount agent routes [cite: user_prompt]
+app.use('/api/v1/agents', agentRoutes);
+
+// === ADDED: Mount payment routes ===
+app.use('/api/v1/payments', paymentRoutes); // <<< ADD THIS LINE
+// ===================================
+
 logger.info('[APP] API v1 routes setup complete.');
 
 

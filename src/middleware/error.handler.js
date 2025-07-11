@@ -1,63 +1,57 @@
-// src/middleware/error.handler.js
-const { Sentry, isSentryInitialized } = require('../config/sentry.config.js'); // Path to Sentry config
-const { logger } = require('../config/logger.config.js'); // Path to Logger config
-const globalConfig = require('../config'); // For NODE_ENV
+// File: src/middleware/error.handler.js
+const HttpError = require('../utils/HttpError');
+const { logger } = require('../config/logger.config'); // Your existing logger
 
 /**
  * Centralized error handling middleware.
+ * Catches errors passed via next(error) and sends appropriate responses.
  */
-const errorHandler = (error, req, res, next) => {
-  const errorStatus = error.status || error.statusCode || 500;
-  const errorMessage = error.message || 'An unexpected internal server error occurred.';
+const errorHandler = (err, req, res, next) => {
+  // Determine status code
+  const statusCode = err.statusCode || 500;
 
-  // Detailed server-side logging
-  logger.error(
-    `${errorStatus} - ${errorMessage} - ${req.originalUrl} - ${req.method} - ${req.ip}`,
-    {
-      error: {
-        message: error.message, // Already captured in main log message
-        status: errorStatus,
-        name: error.name,
-        // Stack trace should only be logged in development for brevity in production logs,
-        // Sentry will capture the full stack trace.
-        stack: globalConfig.env === 'development' ? error.stack : undefined,
-      },
-      request: { // Basic request info for context
-        method: req.method,
-        url: req.originalUrl,
-        ip: req.ip,
-        // Avoid logging full req.headers or req.body in general logs unless redacted or in dev.
-      },
-    }
-  );
+  // Determine error message
+  let message = err.message || 'An unexpected error occurred.';
+  let errorDetails = {};
 
-  // Send to Sentry if initialized and not in a local/test environment that you want to exclude
-  if (isSentryInitialized && globalConfig.env !== 'test' && globalConfig.env !== 'development') { // Example: only send to Sentry in prod/staging
-    Sentry.withScope((scope) => {
-      scope.setTag("path", req.path);
-      scope.setTag("method", req.method);
-      if (req.user && req.user.id) {
-        scope.setUser({ id: req.user.id, role: req.user.role });
-      }
-      scope.setLevel(errorStatus >= 500 ? "error" : "warning"); // Categorize Sentry error level
-      Sentry.captureException(error);
-    });
+  // For HttpError instances, use their specific message and details
+  if (err instanceof HttpError) {
+    message = err.message;
+    errorDetails = err.details || {}; // HttpError can carry extra details
+  } else if (err.name === 'ValidationError') { // Example for Joi validation errors
+    statusCode = 400;
+    message = err.details[0].message || 'Validation error.';
+    errorDetails = err.details;
+  } else if (err.name === 'MongoServerError' && err.code === 11000) { // Example for MongoDB duplicate key error
+    statusCode = 409; // Conflict
+    message = 'Duplicate key error: A record with this unique value already exists.';
+    errorDetails = { field: err.keyValue };
   }
+  // Add more specific error types (e.g., database connection errors, external API errors)
 
-  const clientResponse = {
-    error: errorMessage,
-  };
+  // Log the error with full stack trace and request context
+  // Use logger.error for actual errors
+  logger.error(`[ERROR] ${statusCode} - ${message}`, {
+    path: req.originalUrl,
+    method: req.method,
+    ip: req.ip,
+    body: req.body, // Log request body (be careful with sensitive data)
+    query: req.query,
+    params: req.params,
+    user: req.user ? { id: req.user.id, role: req.user.role } : 'N/A', // Log authenticated user info
+    stack: err.stack, // Full stack trace
+    details: errorDetails, // Any specific details from the error object
+    rawError: err // Log the raw error object for full inspection
+  });
 
-  // Optionally, provide more error details in development
-  if (globalConfig.env === 'development' && errorStatus >= 500 && error.stack) {
-    clientResponse.stack = error.stack;
-  }
-  if (error.details && (globalConfig.env === 'development' || errorStatus < 500)) { // For Joi validation errors specifically
-      clientResponse.details = error.details;
-  }
-
-
-  res.status(errorStatus).json(clientResponse);
+  // Send error response to client
+  res.status(statusCode).json({
+    status: 'error',
+    message: message,
+    // In development, you might send stack trace or more details. In production, keep it concise.
+    // error: process.env.NODE_ENV === 'development' ? err.stack : undefined,
+    details: process.env.NODE_ENV === 'development' ? errorDetails : undefined,
+  });
 };
 
 module.exports = { errorHandler };

@@ -1,63 +1,110 @@
 // File: src/config/logger.config.js
-const winston = require('winston');
-const globalConfig = require('./index'); // For log level
+const { createLogger, format, transports } = require('winston');
+const path = require('path');
 
-const { combine, timestamp, json, printf, colorize } = winston.format;
+const { combine, timestamp, printf, colorize, errors } = format;
 
-// This format will now correctly show stack if available
-const consoleFormat = printf(({ level, message, timestamp, stack }) => {
-  return `${timestamp} ${level}: ${stack || message}`;
+// Custom log format for console
+const consoleLogFormat = printf(({ level, message, timestamp, stack, context, ...metadata }) => {
+  let logMessage = `${timestamp} [${level}]`;
+  if (context) {
+    logMessage += ` [${context}]`; // Add context if provided
+  }
+  logMessage += `: ${message}`;
+
+  if (stack) {
+    logMessage += `\n${stack}`; // Add stack trace if available
+  }
+
+  // Add any other metadata, but filter out common Express/logger properties that are already handled
+  const filteredMetadata = { ...metadata };
+  delete filteredMetadata.level;
+  delete filteredMetadata.message;
+  delete filteredMetadata.timestamp;
+  delete filteredMetadata.stack;
+  delete filteredMetadata.context; // Already handled
+
+  if (Object.keys(filteredMetadata).length > 0) {
+    logMessage += `\nMetadata: ${JSON.stringify(filteredMetadata, null, 2)}`; // Pretty print metadata
+  }
+  return logMessage;
 });
 
-const logger = winston.createLogger({
-  level: globalConfig.logLevel || 'info', // Overall logger level
-  format: combine( // Format for file transports (if any) and default exception handlers
-    timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-    json() // Use JSON format for file logs for easier parsing by log management tools
-  ),
+// Custom log format for files (without colors for cleaner file output)
+const fileLogFormat = printf(({ level, message, timestamp, stack, context, ...metadata }) => {
+  let logMessage = `${timestamp} [${level}]`;
+  if (context) {
+    logMessage += ` [${context}]`;
+  }
+  logMessage += `: ${message}`;
+
+  if (stack) {
+    logMessage += `\n${stack}`;
+  }
+
+  const filteredMetadata = { ...metadata };
+  delete filteredMetadata.level;
+  delete filteredMetadata.message;
+  delete filteredMetadata.timestamp;
+  delete filteredMetadata.stack;
+  delete filteredMetadata.context;
+
+  if (Object.keys(filteredMetadata).length > 0) {
+    logMessage += `\nMetadata: ${JSON.stringify(filteredMetadata)}`; // JSON stringify for file
+  }
+  return logMessage;
+});
+
+
+const logger = createLogger({
+  level: process.env.NODE_ENV === 'production' ? 'info' : 'debug', // Log 'debug' and above in dev, 'info' and above in prod
+  format: errors({ stack: true }), // Capture stack traces
   transports: [
-    new winston.transports.File({ filename: 'logs/app-error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'logs/app-combined.log' }),
+    // Console Transport: Outputs logs to the console
+    new transports.Console({
+      format: combine(
+        colorize({ all: true }), // Add colors for console output
+        timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+        consoleLogFormat
+      ),
+      handleExceptions: true, // Catch and log uncaught exceptions
+    }),
+
+    // File Transport for all logs (optional, but good for production)
+    new transports.File({
+      filename: path.join(__dirname, '../../logs/combined.log'), // All logs
+      level: 'info', // Only info and above go to this file
+      format: combine(
+        timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+        fileLogFormat
+      ),
+      maxsize: 5242880, // 5MB
+      maxFiles: 5,
+      tailable: true, // Start logging from the end of the file
+      handleExceptions: true,
+    }),
+
+    // File Transport for errors only (optional, but highly recommended)
+    new transports.File({
+      filename: path.join(__dirname, '../../logs/error.log'), // Only errors
+      level: 'error', // Only errors and above go to this file
+      format: combine(
+        timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+        fileLogFormat
+      ),
+      maxsize: 5242880, // 5MB
+      maxFiles: 5,
+      handleExceptions: true,
+    }),
   ],
-  exceptionHandlers: [ // For uncaught exceptions
-    new winston.transports.File({ filename: 'logs/exceptions.log' }),
-    new winston.transports.Console({ // Also log to console during dev
-      format: combine(colorize(), timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }), consoleFormat),
-      level: globalConfig.logLevel || 'info' // Inherit or explicitly set for this handler
-    })
-  ],
-  rejectionHandlers: [ // For unhandled promise rejections
-    new winston.transports.File({ filename: 'logs/rejections.log' })
-  ],
-  exitOnError: true, // Can keep true if handlers are defined
+  // Exit on unhandled exceptions (true by default with handleExceptions)
+  exitOnError: false,
 });
 
-// If not in production, add/configure console transport with colorized simple format
-// This block ensures the console transport actually logs at the desired level.
-if (globalConfig.env !== 'production') {
-  // Remove existing console transport from `exceptionHandlers` if it exists, to avoid duplicates
-  // This might be tricky; easier to ensure `add` sets correct level.
-  logger.add(new winston.transports.Console({
-    format: combine(
-      colorize(), // Add colors for console output
-      timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }), // Timestamp for console
-      consoleFormat // Custom format for console
-    ),
-    level: globalConfig.logLevel || 'debug', // <<< MODIFIED: Explicitly set console transport level to 'debug'
-  }));
-} else {
-  // Production logging (e.g., to a file, structured JSON for log management systems)
-  // Ensure file transports are defined correctly for production here
-  logger.add(new winston.transports.File({ filename: 'logs/app-combined.log' }));
-  logger.add(new winston.transports.File({ filename: 'logs/app-error.log', level: 'error' }));
-}
-
-
-// Create a stream object with a 'write' function that will be used by `morgan`
+// Create a stream object to allow morgan to use winston for HTTP logging
 logger.stream = {
-  write: (message) => {
-    // Morgan messages typically have a newline character, remove it
-    logger.info(message.trim());
+  write: function(message, encoding) {
+    logger.info(message.trim(), { context: 'HTTP' }); // Log HTTP requests with 'HTTP' context
   },
 };
 

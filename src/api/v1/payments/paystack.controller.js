@@ -1,8 +1,8 @@
 // File: src/api/v1/payments/paystack.controller.js
-const paystackService = require('./paystack.service'); // Import the new Paystack service
-const { logger } = require('../../../config/logger.config');
+const paystackService = require('./paystack.service');
+const { logger } = require('../../../config/logger.config'); // Assuming you have a logger
 
-// Middleware to save the raw body for hash verification (needed by Paystack too)
+// Middleware to save the raw body for hash verification (needed by Paystack)
 const rawBodySaver = (req, res, buf, encoding) => {
   if (buf && buf.length) {
     req.rawBody = buf.toString(encoding || 'utf8');
@@ -13,12 +13,11 @@ const rawBodySaver = (req, res, buf, encoding) => {
 const initializeTransaction = async (req, res, next) => {
   try {
     const { orderId } = req.body;
-    // Assuming your order model has user and amount details
     const paystackInitData = await paystackService.initiatePaystackTransaction(orderId);
     res.status(200).json(paystackInitData);
   } catch (error) {
     logger.error(`Paystack Init Error: ${error.message}`, { errorStack: error.stack, payload: req.body });
-    next(error);
+    next(error); // Pass to central error handler
   }
 };
 
@@ -39,12 +38,12 @@ const handlePaystackWebhook = async (req, res, next) => {
     res.sendStatus(200);
   } catch (error) {
     logger.error(`Paystack Webhook Error: ${error.message}`, { errorStack: error.stack, payload: req.body });
-    next(error); // Let central error handler deal with the response
+    next(error); // Pass to central error handler
   }
 };
 
 module.exports = {
   initializeTransaction,
   handlePaystackWebhook,
-  rawBodySaver, // Export the raw body saver middleware
+  rawBodySaver,
 };

@@ -30,7 +30,7 @@ const orderSchema = new mongoose.Schema(
     customerId: { type: String, required: true, ref: 'User', index: true },
     driverId: { type: String, ref: 'User', index: true, sparse: true },
     items: [itemSchema], // Ensure this schema is defined
-    deliveryAddressSnapshot: { /* ... your existing address snapshot schema ... */ 
+    deliveryAddressSnapshot: { /* ... your existing address snapshot schema ... */
          fullAddress: { type: String, required: true }, // Full address as a string
          street: { type: String }, // Add other fields as needed
          city: { type: String },
@@ -43,7 +43,7 @@ const orderSchema = new mongoose.Schema(
     },
     recipientName: { type: String, required: true },
     recipientPhone: { type: String, required: true },
-    
+
     itemsSubtotal: { type: Number, required: true, default: 0 }, // Smallest currency unit
     discountAmount: { type: Number, default: 0 },
     promoCodeApplied: { type: String, trim: true },
@@ -56,12 +56,12 @@ const orderSchema = new mongoose.Schema(
     grandTotal: { type: Number, required: true, default: 0 }, // Smallest currency unit, total before any external payment
     finalAmountPaid: { type: Number, default: 0 }, // Actual amount paid via gateway
 
-    status: { 
-        type: String, 
-        required: true, 
+    status: {
+        type: String,
+        required: true,
         enum: ['Pending Payment', 'Order Placed', 'Processing', 'Driver Assigned', 'Out for Delivery', 'Reached Pickup', 'Gas Picked Up', 'Reached Dropoff', 'Delivered', 'Canceled by Customer', 'Canceled by Admin', 'Failed'],
         default: 'Pending Payment',
-        index: true 
+        index: true
     },
     paymentStatus: {
       type: String,

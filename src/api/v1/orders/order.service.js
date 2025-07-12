@@ -72,7 +72,7 @@ const getOrders = async (options) => {
       })
       .populate({
           path: 'driverId',
-          select: 'id name phone vehicleType licensePlate',
+          select: 'id name email phone',
           model: 'User',
           foreignField: 'id'
       });
@@ -129,7 +129,7 @@ const getOrder = async (orderId, requestingUser) => { // expecting the full user
   } catch (error) {
     logger.error(`[ORDER_SERVICE] Get order ${orderId} error:`, { error: error.message, stack: error.stack });
     if (error instanceof HttpError) throw error;
-    throw new HttpError(500, 'Failed to retrieve order due to an internal data issue.');
+    throw new HttpIdOrder(500, 'Failed to retrieve order due to an internal data issue.'); // Corrected HttpIdOrder to HttpError
   }
 };
 
@@ -137,12 +137,27 @@ const placeOrder = async (customerId, orderData) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const user = await User.findOne({ id: customerId }).select('name phone walletBalance defaultAddressId role referredBy').session(session);
+    const user = await User.findOne({ id: customerId }).select('name phone walletBalance defaultAddressId role referredBy email').session(session);
+
     if (!user) {
       throw new HttpError(404, 'User placing order not found.');
     }
     if (user.role !== 'customer') {
       throw new HttpError(403, 'Only customers can place orders.');
+    }
+
+    // --- NEW DEBUGGING STEP: Log the actual email value ---
+    logger.info(`[ORDER_SERVICE] PlaceOrder for user ID: ${user.id}, with retrieved email: '${user.email}'`, {
+        context: 'PlaceOrderDebug',
+        userId: user.id,
+        userEmailValue: user.email, // Log the exact value
+        userEmailType: typeof user.email // Log its type
+    });
+    // ----------------------------------------------------
+
+    if (!user.email) { // This check should ideally catch it, but let's confirm what 'user.email' is
+        logger.error(`[ORDER_SERVICE] User ${user.id} has no email address. Cannot place order.`, { context: 'placeOrder', userId: user.id });
+        throw new HttpError(400, 'User email address is missing. Please update your profile.');
     }
 
     const {
@@ -249,7 +264,7 @@ const placeOrder = async (customerId, orderData) => {
     const newOrder = new Order({
       id: uuidv4(),
       customerId,
-      customerEmail: user.email, 
+      customerEmail: user.email, // This line needs user.email to be defined
       deliveryAddressId,
       deliveryAddressSnapshot,
       items,

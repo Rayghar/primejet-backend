@@ -22,7 +22,7 @@ const initiatePaystackTransaction = async (orderId) => {
     throw new HttpError(500, 'Paystack secret key not configured on server.');
   }
 
-  const order = await Order.findById(orderId);
+  const order = await Order.findOne({ id: orderId }); // CORRECTED LINE
   if (!order) {
     logger.warn(`Paystack Init: Order not found for ID: ${orderId}.`, {
       context: 'PaystackInit',

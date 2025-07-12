@@ -289,7 +289,8 @@ const placeOrder = async (customerId, orderData) => {
         logger.info(`[ORDER_SERVICE] Order ${savedOrder.id} requires payment. Initializing transaction...`);
         try {
             // --- FIX APPLIED HERE: Call the correct Paystack initialization function ---
-            const paymentResult = await paystackService.initiatePaystackTransaction(savedOrder.id); // CORRECTED LINE
+            // Pass the entire saved order object to the Paystack service
+            const paymentResult = await paystackService.initiatePaystackTransaction(savedOrder);
             accessCode = paymentResult.accessCode;
         } catch (error) {
             logger.error(`[ORDER_SERVICE] Failed to initialize payment for new order ${savedOrder.id}: ${error.message}`, {

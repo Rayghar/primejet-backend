@@ -1,9 +1,9 @@
 // File: src/api/v1/payments/paystack.service.js
 const axios = require('axios');
 const crypto = require('crypto');
-const Order = require('../../../models/order.model'); // Assuming your Order model path
+// const Order = require('../../../models/order.model'); // No longer needed to import Order model here as it's passed directly
 const HttpError = require('../../../utils/HttpError');
-const { logger } = require('../../../config/logger.config'); // Assuming you have a logger
+const { logger } = require('../../../config/logger.config');
 
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
 const PAYSTACK_INIT_URL = 'https://api.paystack.co/transaction/initialize';
@@ -11,32 +11,32 @@ const PAYSTACK_VERIFY_URL = 'https://api.paystack.co/transaction/verify';
 
 /**
  * Initiates a transaction with Paystack.
+ * This is called by your backend endpoint in response to a Flutter app request.
+ * @param {object} order - The Mongoose order document/object directly.
+ * @returns {Promise<object>} Paystack initialization response (containing access_code)
  */
-const initiatePaystackTransaction = async (orderId) => {
+const initiatePaystackTransaction = async (order) => { // CHANGED PARAMETER FROM orderId to order
   if (!PAYSTACK_SECRET_KEY) {
     logger.error('Paystack Secret Key not set in environment variables. Cannot proceed with payment initialization.', {
       context: 'PaystackInit',
-      orderId: orderId,
+      orderId: order.id, // Use order.id for logging
       severity: 'CRITICAL_CONFIG'
     });
     throw new HttpError(500, 'Paystack secret key not configured on server.');
   }
 
-  const order = await Order.findOne({ id: orderId }); // CORRECTED LINE
-  if (!order) {
-    logger.warn(`Paystack Init: Order not found for ID: ${orderId}.`, {
-      context: 'PaystackInit',
-      orderId: orderId,
-      severity: 'CLIENT_ERROR'
-    });
-    throw new HttpError(404, 'Order not found for Paystack initialization.');
-  }
+  // NO LONGER NEED TO FIND ORDER HERE, IT'S PASSED DIRECTLY FROM ORDER.SERVICE.JS
+  // const order = await Order.findOne({ id: orderId });
+  // if (!order) {
+  //   throw new HttpError(404, 'Order not found for Paystack initialization.');
+  // }
 
-  const amountInKobo = order.grandTotal;
+  const amountInKobo = order.grandTotal; // order.grandTotal is assumed to be in minor units (e.g., Kobo)
+
   if (amountInKobo <= 0) {
-    logger.warn(`Paystack Init: Invalid amount (${amountInKobo}) for order ${orderId}. Amount must be positive.`, {
+    logger.warn(`Paystack Init: Invalid amount (${amountInKobo}) for order ${order.id}. Amount must be positive.`, {
       context: 'PaystackInit',
-      orderId: orderId,
+      orderId: order.id,
       amount: amountInKobo,
       severity: 'CLIENT_ERROR'
     });
@@ -44,17 +44,17 @@ const initiatePaystackTransaction = async (orderId) => {
   }
 
   const payload = {
-    email: order.customerEmail,
+    email: order.customerEmail, // Assuming order model has customer email
     amount: amountInKobo,
-    reference: order.id,
-    currency: order.currency || 'NGN',
-    metadata: { orderId: order.id, customerId: order.customerId },
+    reference: order.id, // Use your order's unique ID as the transaction reference for Paystack
+    currency: order.currency || 'NGN', // Ensure currency is set
+    metadata: { orderId: order.id, customerId: order.customerId }, // Pass order details in metadata
   };
 
   try {
-    logger.info(`Paystack Init: Calling Paystack API to initialize transaction for order ${orderId}.`, {
+    logger.info(`Paystack Init: Calling Paystack API to initialize transaction for order ${order.id}.`, {
       context: 'PaystackInit',
-      orderId: orderId,
+      orderId: order.id,
       payload: payload, // Log the payload sent to Paystack (be careful with sensitive data)
       url: PAYSTACK_INIT_URL
     });
@@ -67,17 +67,17 @@ const initiatePaystackTransaction = async (orderId) => {
     });
 
     if (response.data && response.data.status) {
-      logger.info(`Paystack Init: Transaction initialization successful for order ${orderId}.`, {
+      logger.info(`Paystack Init: Transaction initialization successful for order ${order.id}.`, {
         context: 'PaystackInit',
-        orderId: orderId,
+        orderId: order.id,
         paystackResponseStatus: response.data.status,
         paystackResponseData: response.data.data // Log Paystack's response data
       });
       return { accessCode: response.data.data.access_code };
     } else {
-      logger.error(`Paystack Init failed for order ${orderId}. Unexpected response from Paystack.`, {
+      logger.error(`Paystack Init failed for order ${order.id}. Unexpected response from Paystack.`, {
         context: 'PaystackInit',
-        orderId: orderId,
+        orderId: order.id,
         paystackResponse: response.data, // Log the full unexpected response
         statusCode: response.status,
         severity: 'EXTERNAL_API_ERROR'
@@ -87,9 +87,9 @@ const initiatePaystackTransaction = async (orderId) => {
   } catch (error) {
     // Check if it's an Axios error (network, timeout, 4xx/5xx from Paystack)
     if (error.isAxiosError) {
-      logger.error(`Paystack Init: Axios error calling Paystack API for order ${orderId}.`, {
+      logger.error(`Paystack Init: Axios error calling Paystack API for order ${order.id}.`, {
         context: 'PaystackInit',
-        orderId: orderId,
+        orderId: order.id,
         axiosErrorCode: error.code, // e.g., 'ECONNREFUSED', 'ETIMEDOUT'
         responseStatus: error.response?.status,
         responseData: error.response?.data, // Paystack's error response
@@ -99,9 +99,9 @@ const initiatePaystackTransaction = async (orderId) => {
       });
       throw new HttpError(error.response?.status || 500, error.response?.data?.message || 'Failed to connect to Paystack or Paystack returned an error.');
     } else {
-      logger.error(`Paystack Init: Unexpected error during transaction initialization for order ${orderId}.`, {
+      logger.error(`Paystack Init: Unexpected error during transaction initialization for order ${order.id}.`, {
         context: 'PaystackInit',
-        orderId: orderId,
+        orderId: order.id,
         errorName: error.name,
         errorMessage: error.message,
         stack: error.stack,
@@ -157,6 +157,7 @@ const processPaystackWebhook = async ({ signature, rawBody, body }) => {
   const { reference, amount, currency, status } = eventData;
 
   // Step 3: Find the corresponding order
+  const Order = require('../../../models/order.model'); // Re-import Order model here to use it
   const order = await Order.findOne({ id: reference });
   if (!order) {
     logger.error(`Paystack Webhook Error: Order with reference ${reference} not found.`, {
@@ -212,6 +213,8 @@ const processPaystackWebhook = async ({ signature, rawBody, body }) => {
   order.paymentTransactionId = eventData.id.toString();
   order.status = 'Order Placed';
   order.statusHistory.push({ status: 'Payment Completed', timestamp: new Date(), notes: `Verified by Paystack Webhook. Transaction Ref: ${reference}` });
+  order.paymentGateway = 'paystack'; // Ensure payment gateway is recorded
+  order.paymentGatewayReference = reference; // Ensure Paystack reference is recorded
 
   await order.save();
   logger.info(`Paystack Webhook: Successfully processed and updated order ${reference}.`, {

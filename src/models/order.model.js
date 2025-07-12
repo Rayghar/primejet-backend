@@ -28,6 +28,7 @@ const orderSchema = new mongoose.Schema(
   {
     id: { type: String, required: true, unique: true, default: () => uuidv4(), index: true },
     customerId: { type: String, required: true, ref: 'User', index: true },
+    customerEmail: { type: String, required: [true, 'Customer email is required for the order.'] },
     driverId: { type: String, ref: 'User', index: true, sparse: true },
     items: [itemSchema], // Ensure this schema is defined
     deliveryAddressSnapshot: { /* ... your existing address snapshot schema ... */

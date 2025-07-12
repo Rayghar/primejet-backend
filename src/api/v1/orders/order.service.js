@@ -249,6 +249,7 @@ const placeOrder = async (customerId, orderData) => {
     const newOrder = new Order({
       id: uuidv4(),
       customerId,
+      customerEmail: user.email, 
       deliveryAddressId,
       deliveryAddressSnapshot,
       items,

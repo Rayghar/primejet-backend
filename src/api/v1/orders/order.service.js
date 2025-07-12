@@ -11,7 +11,7 @@ const HttpError = require('../../../utils/HttpError');
 const { firestore, admin, isFirebaseInitialized } = require('../../../config/firebase.config.js');
 const { logger } = require('../../../config/logger.config.js'); // Assuming logger is set up
 const referralService = require('../referrals/referral.service'); // For referral logic // MODIFIED: Changed import path to match the service
-const paymentService = require('../payments/payment.service'); // Used for Paystack
+const paymentService = require('../payments/opay.service.js'); // Used for Paystack
 
 
 const getOrders = async (options) => {

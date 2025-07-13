@@ -24,28 +24,33 @@ const orderItemSchema = Joi.object({
 const placeOrderSchema = Joi.object({
   deliveryAddressId: Joi.string().required().messages({
     'any.required': 'Delivery address ID is required.',
+    'string.empty': 'Delivery address ID cannot be empty.',
   }),
-  items: Joi.array().items(orderItemSchema).min(1).required().messages({
+  items: Joi.array().items(itemSchema).min(1).required().messages({
     'array.base': 'Items must be an array.',
     'array.min': 'At least one item is required in the order.',
     'any.required': 'Order items are required.',
   }),
-  recipientName: Joi.string().min(2).max(100).required().messages({
+  // MODIFIED: Made optional to align with frontend logic where recipientName/Phone can be derived
+  recipientName: Joi.string().trim().min(2).max(100).optional().messages({
     'string.min': 'Recipient name must be at least 2 characters.',
     'string.max': 'Recipient name cannot exceed 100 characters.',
-    'any.required': 'Recipient name is required.',
   }),
-  recipientPhone: Joi.string().pattern(/^\+?\d{10,15}$/).required().messages({
+  // MODIFIED: Made optional to align with frontend logic
+  recipientPhone: Joi.string().trim().pattern(/^\+?[0-9]{10,15}$/).optional().messages({
     'string.pattern.base': 'Recipient phone number must be a valid format (e.g., +2348012345678).',
-    'any.required': 'Recipient phone number is required.',
   }),
   isExpress: Joi.boolean().optional().default(false),
   useWalletBalance: Joi.boolean().optional().default(false),
-  promoCodeApplied: Joi.string().trim().allow('', null).optional(), // Allow empty string or null
-  referralCode: Joi.string().trim().allow('', null).optional(), // <<< SURGICAL FIX
+  promoCodeApplied: Joi.string().trim().allow('', null).optional(),
+  referralCode: Joi.string().trim().allow('', null).optional(),
   deliveryLatitude: Joi.number().min(-90).max(90).optional(), // Assuming these might be optional at placement
   deliveryLongitude: Joi.number().min(-180).max(180).optional(),
   deliveryAddressSnapshot: Joi.object().optional(), // Can be complex, or just a placeholder if always generated server-side
+  // NEW: Added userClientIP validation
+  userClientIP: Joi.string().ip({ version: ['ipv4', 'ipv6'] }).optional().messages({
+    'string.ip': 'User client IP must be a valid IPv4 or IPv6 address.',
+  }),
 });
 
 const processOrderPaymentSchema = Joi.object({
@@ -69,24 +74,28 @@ const submitFeedbackSchema = Joi.object({
     'number.max': 'Rating cannot exceed 5.',
     'any.required': 'Rating is required.',
   }),
-  comment: Joi.string().min(5).max(1000).required().messages({
-    'string.min': 'Feedback comment must be at least 5 characters.',
+  comment: Joi.string().trim().max(1000).optional().messages({ // Changed to optional, added trim and max
     'string.max': 'Feedback comment cannot exceed 1000 characters.',
-    'any.required': 'Feedback comment is required.',
   }),
 });
 
 const orderStatusUpdateSchema = Joi.object({
-  status: Joi.string().valid('pending', 'accepted', 'in-progress', 'delivered', 'canceled', 'Order Placed', 'Pending Pickup', 'Driver Assigned', 'Pending Payment').required().messages({ // Expanded with statuses from your service/model
-    'any.only': 'Invalid status value.',
+  // UPDATED: Expanded valid statuses to match the Order model's enum
+  status: Joi.string().valid(
+    'Pending Payment', 'Order Placed', 'Processing', 'Driver Assigned', 'Out for Delivery',
+    'Reached Pickup', 'Gas Picked Up', 'Reached Dropoff', 'Delivered', 'Canceled by Customer',
+    'Canceled by Admin', 'Failed'
+  ).required().messages({
+    'any.only': 'Invalid status provided.',
     'any.required': 'Status is required.',
   }),
-  notes: Joi.string().max(500).allow('', null).optional(),
+  notes: Joi.string().trim().max(255).allow('', null).optional(), // Added trim and max
 });
 
 const adminAssignDriverSchema = Joi.object({
   driverId: Joi.string().required().messages({
     'any.required': 'Driver ID is required for assignment.',
+    'string.empty': 'Driver ID cannot be empty.',
   }),
 });
 

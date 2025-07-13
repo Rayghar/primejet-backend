@@ -59,7 +59,7 @@ const orderSchema = new mongoose.Schema(
     status: { 
         type: String, 
         required: true, 
-        enum: ['Pending Payment', 'Order Placed', 'Processing', 'Driver Assigned', 'Out for Delivery', 'Reached Pickup', 'Gas Picked Up', 'Reached Dropoff', 'Delivered', 'Canceled by Customer', 'Canceled by Admin', 'Failed'],
+        enum: ['Pending Payment', 'Order Placed', 'Processing', 'Driver Assigned', 'Out for Delivery', 'Reached Pickup', 'Gas Picked Up', 'Delivered', 'Canceled by Customer', 'Canceled by Admin', 'Failed'],
         default: 'Pending Payment',
         index: true 
     },
@@ -70,10 +70,10 @@ const orderSchema = new mongoose.Schema(
       default: 'Pending',
       index: true,
     },
-    paymentMethod: { type: String }, // e.g., 'card', 'wallet', 'stripe', 'paystack'
-    paymentGateway: { type: String, enum: ['stripe', 'paystack', 'wallet', null], sparse:true }, // To know which gateway processed
+    paymentMethod: { type: String }, // e.g., 'card', 'wallet', 'opay'
+    paymentGateway: { type: String, enum: ['stripe', 'opay', 'wallet', null], sparse:true }, // UPDATED: Changed 'paystack' to 'opay'
     paymentIntentId: { type: String, trim: true, index: true, sparse:true }, // For Stripe PaymentIntent ID
-    paymentGatewayReference: { type: String, trim: true, index: true, sparse:true }, // For other references like Paystack
+    paymentGatewayReference: { type: String, trim: true, index: true, sparse:true }, // For OPay's orderNo
     paymentTransactionId: { type: String, trim: true }, // Actual charge/transaction ID from gateway
 
     isExpressDelivery: { type: Boolean, default: false },

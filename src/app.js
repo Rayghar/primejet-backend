@@ -25,14 +25,16 @@ const faqRoutes = require('./api/v1/faqs/faq.routes');
 const configRoutes = require('./api/v1/config/config.routes');
 const reportRoutes = require('./api/v1/reports/report.routes');
 const chatRoutes = require('./api/v1/chat/chat.routes');
-const paymentRoutes = require('./api/v1/payments/payment.routes');
+// REMOVED: const paymentRoutes = require('./api/v1/payments/payment.routes'); // Old generic/Paystack routes
+const opayRoutes = require('./api/v1/payments/opay.routes'); // NEW: OPay specific routes
 const walletRoutes = require('./api/v1/wallet/wallet.routes');
 const referralRoutes = require('./api/v1/referrals/referral.routes');
 const runOrchestrationRoutes = require('./api/v1/run_orchestration/run_orchestration.routes');
 const notificationRoutes = require('./api/v1/notifications/notification.routes');
 const voiceRoutes = require('./api/v1/voice/voice.routes');
-const agentRoutes = require('./api/v1/agents/agent.routes'); // <<< ADDED: Import agent routes [cite: user_prompt]
-const paymentController = require('./api/v1/payments/payment.controller'); // Import controller for webhook
+const agentRoutes = require('./api/v1/agents/agent.routes');
+
+const opayController = require('./api/v1/payments/opay.controller'); // Import OPay controller for webhook
 
 const app = express();
 
@@ -46,11 +48,20 @@ app.use('/api', rateLimiter);
 app.use('/api/v1/orchestration', runOrchestrationRoutes);
 app.use('/api/v1/voice', voiceRoutes); // Ensure this is before express.json if voice needs raw body
 
-// --- Step 3: Handle Special Routes (like Paystack Webhook) BEFORE general JSON parser ---
+// --- Step 3: Handle Special Routes (like OPay Webhook) BEFORE general JSON parser ---
+// REMOVED: Paystack webhook handler
+// app.post(
+//   '/api/v1/payments/paystack/webhook',
+//   express.raw({ type: 'application/json' }),
+//   paymentController.handlePaystackWebhook
+// );
+
+// NEW: OPay webhook handler (requires raw body for signature verification)
 app.post(
-  '/api/v1/payments/paystack/webhook',
+  '/api/v1/payments/opay/webhook', // Ensure this matches the URL configured in OPay dashboard
+  opayController.rawBodySaver,
   express.raw({ type: 'application/json' }),
-  paymentController.handlePaystackWebhook
+  opayController.handleOpayWebhook
 );
 
 // --- Step 4: Setup General Middleware ---
@@ -71,12 +82,13 @@ app.use('/api/v1/faqs', faqRoutes);
 app.use('/api/v1/config', configRoutes);
 app.use('/api/v1/reports', reportRoutes);
 app.use('/api/v1/chat', chatRoutes);
-app.use('/api/v1/payments', paymentRoutes);
+// REMOVED: app.use('/api/v1/payments', paymentRoutes); // Old generic/Paystack routes
+app.use('/api/v1/payments', opayRoutes); // NEW: Mount OPay specific routes
 app.use('/api/v1/wallet', walletRoutes);
 app.use('/api/v1/referrals', referralRoutes);
 app.use('/api/v1/notifications', notificationRoutes);
 
-app.use('/api/v1/agents', agentRoutes); // <<< ADDED: Mount agent routes [cite: user_prompt]
+app.use('/api/v1/agents', agentRoutes);
 logger.info('[APP] API v1 routes setup complete.');
 
 

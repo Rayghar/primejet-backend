@@ -3,15 +3,16 @@ const { v4: uuidv4 } = require('uuid');
 const mongoose = require('mongoose'); // Required for database sessions (transactions)
 const Order = require('../../../models/order.model');
 const User = require('../../../models/user.model');
-const Run = require('../../../models/run.model'); // <<< THIS LINE IS THE FIX
+const Run = require('../../../models/run.model');
 const Config = require('../../../models/config.model');
 const Promotion = require('../../../models/promotion.model');
 const Address = require('../../../models/address.model'); // Ensure Address model is imported
 const HttpError = require('../../../utils/HttpError');
 const { firestore, admin, isFirebaseInitialized } = require('../../../config/firebase.config.js');
 const { logger } = require('../../../config/logger.config.js'); // Assuming logger is set up
-const referralService = require('../referrals/referral.service'); // For referral logic // MODIFIED: Changed import path to match the service
-const paymentService = require('../payments/opay.service.js'); // Used for Paystack
+const referralService = require('../referrals/referral.service'); // For referral logic
+// REMOVED: const paymentService = require('../payments/opay.service.js'); // Old Paystack service
+const opayService = require('../payments/opay.service.js'); // NEW: OPay payment service
 
 
 const getOrders = async (options) => {
@@ -131,7 +132,7 @@ const placeOrder = async (customerId, orderData) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const user = await User.findOne({ id: customerId }).select('name phone walletBalance defaultAddressId role referredBy').session(session); // MODIFIED: Added 'referredBy' to select
+    const user = await User.findOne({ id: customerId }).select('name phone email walletBalance defaultAddressId role referredBy').session(session); // MODIFIED: Added 'referredBy' to select
     if (!user) {
       throw new HttpError(404, 'User placing order not found.');
     }
@@ -283,22 +284,29 @@ const placeOrder = async (customerId, orderData) => {
 
     const savedOrder = await newOrder.save({ session });
 
-    // ================== PAYSTACK LOGIC UPDATE START ==================
-    let accessCode = null;
+    // ================== OPay LOGIC UPDATE START ==================
+    let opayPaymentInitializationResult = null;
 
     if (grandTotalToPayByGateway > 0) {
-        logger.info(`[ORDER_SERVICE] Order ${savedOrder.id} requires payment. Initializing transaction...`);
+        logger.info(`[ORDER_SERVICE] Order ${savedOrder.id} requires payment. Initializing OPay transaction...`);
         try {
-            // UPDATED: Pass the active session to the payment service
-            const paymentResult = await paymentService.initializePayment({
+            // NEW: Call OPay service to initialize payment
+            opayPaymentInitializationResult = await opayService.initializeOpayPayment({
                 orderId: savedOrder.id,
                 userId: customerId,
-                session: session 
+                amount: grandTotalToPayByGateway,
+                customerEmail: user.email,
+                customerName: user.name,
+                customerPhone: user.phone,
+                productName: items.map(item => item.productName).join(', '), // Combine product names
+                productDescription: `Order for ${items.length} gas cylinder(s)`,
+                callbackUrl: `${process.env.BACKEND_URL}/api/v1/payments/opay/callback`, // Your backend's public callback URL
+                userClientIP: orderData.userClientIP || '127.0.0.1', // Pass user IP from frontend if available
+                session: session
             });
-            accessCode = paymentResult.accessCode;
         } catch (error) {
-            logger.error(`Failed to initialize payment for new order ${savedOrder.id}:`, error);
-            throw new HttpError(500, 'Order was created, but payment could not be initialized. Please contact support.');
+            logger.error(`Failed to initialize OPay payment for new order ${savedOrder.id}:`, error);
+            throw new HttpError(500, 'Order was created, but OPay payment could not be initialized. Please contact support.');
         }
     }
 
@@ -307,7 +315,7 @@ const placeOrder = async (customerId, orderData) => {
 
     return {
       order: savedOrder.toObject(),
-      accessCode: accessCode,
+      opayAccessCode: opayPaymentInitializationResult ? opayPaymentInitializationResult.accessCode : null, // OPay specific
       paymentNeeded: grandTotalToPayByGateway > 0,
       grandTotalToPay: grandTotalToPayByGateway,
       message: 'Order placed successfully.'

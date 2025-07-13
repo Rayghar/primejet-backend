@@ -9,7 +9,6 @@ const {
   submitFeedbackSchema,
   orderStatusUpdateSchema,
   adminAssignDriverSchema,
-  // orderIdParamSchema, // Optional for param validation at route level
 } = require('./order.validation'); // Path to co-located validation schemas
 
 const router = express.Router();
@@ -25,11 +24,14 @@ router.post(
 );
 
 router.delete(
-  '/:orderId', // This was authMiddleware('customer') in your original, ensure it's for customers only to cancel
-  authMiddleware('customer'), // Kept as customer, assuming only customers cancel their own orders this way
+  '/:orderId',
+  authMiddleware('customer'),
   orderController.cancelOrder
 );
 
+// This route for /:orderId/payment might need to be adjusted or removed
+// if all payment processing is now handled directly by the OPay SDK on the frontend
+// and webhooks on the backend.
 router.post(
   '/:orderId/payment',
   authMiddleware('customer'),
@@ -98,9 +100,6 @@ router.get(
   authMiddleware(), // Any authenticated user, service layer filters
   orderController.getLocationHistory
 );
-
-
-
 
 console.log('[ORDER_ROUTES] Order routes registered.');
 

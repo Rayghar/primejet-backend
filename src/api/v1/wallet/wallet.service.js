@@ -2,7 +2,7 @@
 const User = require('../../../models/user.model');
 const WalletTransaction = require('../../../models/walletTransaction.model'); // New model
 // Assuming paymentService for creating payment intents for top-ups
-const paymentService = require('../payments/payment.service');
+const opayService = require('../payments/opay.service');
 const HttpError = require('../../../utils/HttpError');
 const { v4: uuidv4 } = require('uuid'); // For internal transaction IDs if needed before saving model
 const mongoose = require('mongoose'); // Required for database sessions (transactions)

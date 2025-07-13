@@ -1,6 +1,7 @@
 // src/api/v1/orders/order.validation.js
 const Joi = require('joi');
 
+// Corrected: Renamed from itemSchema to orderItemSchema for consistency
 const orderItemSchema = Joi.object({
   cylinderId: Joi.string().required().messages({
     'any.required': 'Cylinder ID is required for each item.',
@@ -11,12 +12,12 @@ const orderItemSchema = Joi.object({
     'number.min': 'Item quantity must be at least 1.',
     'any.required': 'Item quantity is required.',
   }),
-  unitPrice: Joi.number().positive().required().messages({ // Price might be fetched server-side but good to have if client sends it
+  unitPrice: Joi.number().positive().required().messages({
     'number.base': 'Unit price must be a number.',
     'number.positive': 'Unit price must be a positive number.',
     'any.required': 'Unit price is required.',
   }),
-  productName: Joi.string().required().messages({ // Similar to unitPrice, could be server-derived
+  productName: Joi.string().required().messages({
     'any.required': 'Product name is required for each item.',
   }),
 });
@@ -26,17 +27,16 @@ const placeOrderSchema = Joi.object({
     'any.required': 'Delivery address ID is required.',
     'string.empty': 'Delivery address ID cannot be empty.',
   }),
-  items: Joi.array().items(itemSchema).min(1).required().messages({
+  // FIX: Changed 'itemSchema' to 'orderItemSchema' to match the constant name
+  items: Joi.array().items(orderItemSchema).min(1).required().messages({
     'array.base': 'Items must be an array.',
     'array.min': 'At least one item is required in the order.',
     'any.required': 'Order items are required.',
   }),
-  // MODIFIED: Made optional to align with frontend logic where recipientName/Phone can be derived
   recipientName: Joi.string().trim().min(2).max(100).optional().messages({
     'string.min': 'Recipient name must be at least 2 characters.',
     'string.max': 'Recipient name cannot exceed 100 characters.',
   }),
-  // MODIFIED: Made optional to align with frontend logic
   recipientPhone: Joi.string().trim().pattern(/^\+?[0-9]{10,15}$/).optional().messages({
     'string.pattern.base': 'Recipient phone number must be a valid format (e.g., +2348012345678).',
   }),
@@ -44,17 +44,15 @@ const placeOrderSchema = Joi.object({
   useWalletBalance: Joi.boolean().optional().default(false),
   promoCodeApplied: Joi.string().trim().allow('', null).optional(),
   referralCode: Joi.string().trim().allow('', null).optional(),
-  deliveryLatitude: Joi.number().min(-90).max(90).optional(), // Assuming these might be optional at placement
+  deliveryLatitude: Joi.number().min(-90).max(90).optional(),
   deliveryLongitude: Joi.number().min(-180).max(180).optional(),
-  deliveryAddressSnapshot: Joi.object().optional(), // Can be complex, or just a placeholder if always generated server-side
-  // NEW: Added userClientIP validation
+  deliveryAddressSnapshot: Joi.object().optional(),
   userClientIP: Joi.string().ip({ version: ['ipv4', 'ipv6'] }).optional().messages({
     'string.ip': 'User client IP must be a valid IPv4 or IPv6 address.',
   }),
 });
 
 const processOrderPaymentSchema = Joi.object({
-  // Fields required by your order.service.processPayment
   amount: Joi.number().positive().required().messages({
       'number.base': 'Payment amount must be a number.',
       'number.positive': 'Payment amount must be positive.',
@@ -63,7 +61,6 @@ const processOrderPaymentSchema = Joi.object({
   transactionId: Joi.string().required().messages({
       'any.required': 'Payment transaction ID is required.',
   }),
-  // Add any other payment-related fields you expect, e.g., paymentMethodId, gatewayReference
 });
 
 const submitFeedbackSchema = Joi.object({
@@ -74,13 +71,12 @@ const submitFeedbackSchema = Joi.object({
     'number.max': 'Rating cannot exceed 5.',
     'any.required': 'Rating is required.',
   }),
-  comment: Joi.string().trim().max(1000).optional().messages({ // Changed to optional, added trim and max
+  comment: Joi.string().trim().max(1000).optional().messages({
     'string.max': 'Feedback comment cannot exceed 1000 characters.',
   }),
 });
 
 const orderStatusUpdateSchema = Joi.object({
-  // UPDATED: Expanded valid statuses to match the Order model's enum
   status: Joi.string().valid(
     'Pending Payment', 'Order Placed', 'Processing', 'Driver Assigned', 'Out for Delivery',
     'Reached Pickup', 'Gas Picked Up', 'Reached Dropoff', 'Delivered', 'Canceled by Customer',
@@ -89,7 +85,7 @@ const orderStatusUpdateSchema = Joi.object({
     'any.only': 'Invalid status provided.',
     'any.required': 'Status is required.',
   }),
-  notes: Joi.string().trim().max(255).allow('', null).optional(), // Added trim and max
+  notes: Joi.string().trim().max(255).allow('', null).optional(),
 });
 
 const adminAssignDriverSchema = Joi.object({
@@ -99,9 +95,8 @@ const adminAssignDriverSchema = Joi.object({
   }),
 });
 
-// Schema for route parameters like orderId (optional, for consistency)
 const orderIdParamSchema = Joi.object({
-  orderId: Joi.string().required().messages({ // Consider adding UUID validation if your IDs are UUIDs
+  orderId: Joi.string().required().messages({
     'any.required': 'Order ID parameter is required.',
   }),
 });
@@ -112,5 +107,5 @@ module.exports = {
   submitFeedbackSchema,
   orderStatusUpdateSchema,
   adminAssignDriverSchema,
-  orderIdParamSchema, // Export if you want to validate params separately in routes
+  orderIdParamSchema,
 };

@@ -283,6 +283,23 @@ const placeOrder = async (customerId, orderData) => {
 
     const savedOrder = await newOrder.save({ session });
 
+    await session.commitTransaction();
+    session.endSession(); // End the session after committing
+
+    logger.info(`[ORDER_SERVICE] Order ${savedOrder.id} placed successfully. PaymentNeeded: ${grandTotalToPayByGateway > 0}`);
+
+    // Simply return the necessary information to the client.
+    // The client-side SDK will handle the payment initialization.
+    return {
+      order: savedOrder.toObject(),
+      paymentNeeded: grandTotalToPayByGateway > 0,
+      grandTotalToPay: grandTotalToPayByGateway,
+      message: 'Order placed successfully.'
+    };
+
+
+    /*
+
     // ================== PAYSTACK LOGIC UPDATE START ==================
     let accessCode = null;
 
@@ -367,7 +384,7 @@ const processPayment = async (orderId, paymentData, customerId, customerRole) =>
         await referralService.creditReferrerForSuccessfulReferral(order, session); // Pass session for transaction
       }
     }
-    // <<< END MODIFICATION >>>
+    // <<< END MODIFICATION >>>*/
 
     await session.commitTransaction();
     return { transactionId: paymentData.transactionId, message: 'Payment processed successfully.' };

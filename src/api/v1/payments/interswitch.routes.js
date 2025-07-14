@@ -1,32 +1,26 @@
-// File: src/api/v1/payments/payment.routes.js
+// File: src/api/v1/payments/interswitch.routes.js
 const express = require('express');
-const paymentController = require('./payment.controller');
-const authMiddleware = require('../../../middleware/auth.middleware');
-const validate = require('../../../middleware/validate.middleware');
-const { initializePaymentSchema } = require('./payment.validation');
+const interswitchController = require('./interswitch.controller'); // New Interswitch controller
+const authMiddleware = require('../../../middleware/auth.middleware'); // Assuming authMiddleware is needed for APIs
 
 const router = express.Router();
 
-// Route for initializing a payment for an order
+// Endpoint for the Flutter app to request Interswitch transaction verification (after client-side payment completion)
+// This endpoint makes the server-to-server call to Interswitch to confirm payment.
+// URL will be /api/v1/interswitch/verify-transaction
 router.post(
-  '/initialize',
-  authMiddleware('customer'),
-  validate(initializePaymentSchema),
-  paymentController.initializePaymentForOrder
-);
-// ADDED: New route for the client to ask the server to verify a transaction
-router.post(
-  '/verify',
-  authMiddleware('customer'),
-  // You should create a Joi schema to validate that 'reference' and 'orderId' are provided
-  paymentController.verifyPayment
+  '/verify-transaction',
+  authMiddleware(), // Authenticate the user making the request
+  interswitchController.verifyTransaction
 );
 
+// Webhook endpoint for Interswitch to send notifications (IPN Service)
+// URL will be /api/v1/interswitch/webhook
 router.post(
-  '/paystack/webhook',
-  express.raw({ type: 'application/json' }),
-  paymentController.handlePaystackWebhook
+  '/webhook',
+  // Middleware to capture raw body for signature verification (if Interswitch provides it)
+  // For Interswitch, we explicitly manage rawBody in controller if needed, as signature details are sparse.
+  interswitchController.handleInterswitchWebhook
 );
-
 
 module.exports = router;

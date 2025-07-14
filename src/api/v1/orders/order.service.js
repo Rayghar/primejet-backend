@@ -657,7 +657,6 @@ module.exports = {
   getOrders,
   getOrder,
   placeOrder,
-  processPayment,
   submitFeedback,
   getLocationHistory,
   driverUpdateOrderStatus,

@@ -3,16 +3,17 @@ const { v4: uuidv4 } = require('uuid');
 const mongoose = require('mongoose'); // Required for database sessions (transactions)
 const Order = require('../../../models/order.model');
 const User = require('../../../models/user.model');
-const Run = require('../../../models/run.model'); // <<< THIS LINE IS THE FIX
+const Run = require('../../../models/run.model');
 const Config = require('../../../models/config.model');
 const Promotion = require('../../../models/promotion.model');
 const Address = require('../../../models/address.model'); // Ensure Address model is imported
 const HttpError = require('../../../utils/HttpError');
 const { firestore, admin, isFirebaseInitialized } = require('../../../config/firebase.config.js');
 const { logger } = require('../../../config/logger.config.js'); // Assuming logger is set up
-const referralService = require('../referrals/referral.service'); // For referral logic // MODIFIED: Changed import path to match the service
-//const paymentService = require('../payments/payment.service'); // Used for Paystack
+const referralService = require('../referrals/referral.service'); // For referral logic
 
+// REMOVED: No longer importing paymentService for order placement
+// const paymentService = require('../payments/payment.service');
 
 const getOrders = async (options) => {
   const { status, customerId, driverId, page, limit, userId, role, sortBy } = options;
@@ -42,7 +43,7 @@ const getOrders = async (options) => {
       if (driverId) query.driverId = driverId;
     } else {
         // This case should ideally be prevented by authMiddleware if role is always present
-        throw new HttpError(403, 'Unauthorized role for accessing orders.');
+        throw new new HttpError(403, 'Unauthorized role for accessing orders.');
     }
 
     const pageNum = parseInt(page, 10) || 1;
@@ -83,7 +84,7 @@ const getOrders = async (options) => {
   }
 };
 
-const getOrder = async (orderId, requestingUser) => { // expecting the full user object from middleware
+const getOrder = async (orderId, requestingUser) => {
   try {
     const order = await Order.findOne({ id: orderId })
         .populate('customer')
@@ -93,31 +94,24 @@ const getOrder = async (orderId, requestingUser) => { // expecting the full user
       throw new HttpError(404, 'Order not found.');
     }
 
-    // --- AUTHORIZATION LOGIC ---
-    // The `requestingUser` object is attached to `req` by the authMiddleware
     if (!requestingUser) {
         throw new HttpError(401, 'Authentication details are missing.');
     }
 
-    // Admins can access any order.
     if (requestingUser.role === 'admin') {
         return order.toObject();
     }
 
-    // Customers can only access their own orders.
-    // FIX: Compare the requesting user's ID directly with the order's customerId field.
     if (requestingUser.role === 'customer' && order.customerId !== requestingUser.id) {
       logger.warn(`[ORDER_SERVICE] Unauthorized customer access: User ${requestingUser.id} attempted to access order ${orderId} belonging to ${order.customerId}`);
       throw new HttpError(403, 'You are not authorized to view this order.');
     }
 
-    // Drivers can only access orders they are assigned to.
     if (requestingUser.role === 'driver' && order.driverId !== requestingUser.id) {
       logger.warn(`[ORDER_SERVICE] Unauthorized driver access: Driver ${requestingUser.id} attempted to access order ${orderId} assigned to ${order.driverId}`);
       throw new HttpError(403, 'You are not authorized to view this order.');
     }
 
-    // If none of the above checks failed, the user is authorized.
     return order.toObject();
 
   } catch (error) {
@@ -131,7 +125,7 @@ const placeOrder = async (customerId, orderData) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const user = await User.findOne({ id: customerId }).select('name phone walletBalance defaultAddressId role referredBy').session(session); // MODIFIED: Added 'referredBy' to select
+    const user = await User.findOne({ id: customerId }).select('name phone walletBalance defaultAddressId role referredBy').session(session);
     if (!user) {
       throw new HttpError(404, 'User placing order not found.');
     }
@@ -141,10 +135,9 @@ const placeOrder = async (customerId, orderData) => {
 
     const {
       deliveryAddressId, items, recipientName, recipientPhone, isExpress,
-      useWalletBalance, promoCodeApplied, // MODIFIED: Removed referralCode from here
+      useWalletBalance, promoCodeApplied,
     } = orderData;
 
-    // Validate required fields from orderData (Joi handles schema, this is for service logic)
     if (!deliveryAddressId || !items || items.length === 0 ) {
       throw new HttpError(400, 'Missing delivery address or items for the order.');
     }
@@ -159,13 +152,11 @@ const placeOrder = async (customerId, orderData) => {
         throw new HttpError(400, 'Recipient name and phone are required.');
     }
 
-
     const deliveryAddress = await Address.findOne({ id: deliveryAddressId, userId: customerId }).session(session);
     if (!deliveryAddress) {
       throw new HttpError(404, `Delivery address with ID ${deliveryAddressId} not found or does not belong to user.`);
     }
 
-    // *** CRITICAL CHECK FOR deliveryAddressSnapshot fields ***
     if (!deliveryAddress.fullAddress || !deliveryAddress.street || !deliveryAddress.city || !deliveryAddress.state || !deliveryAddress.country) {
         logger.error(`[ORDER_SERVICE] Delivery address ID ${deliveryAddressId} is critically incomplete (missing fullAddress, street, city, state, or country). Cannot create snapshot.`);
         throw new HttpError(400, 'Selected delivery address details are incomplete. Please update your address.');
@@ -177,10 +168,10 @@ const placeOrder = async (customerId, orderData) => {
       city: deliveryAddress.city,
       state: deliveryAddress.state,
       country: deliveryAddress.country,
-      postalCode: deliveryAddress.postalCode, // Optional
-      latitude: deliveryAddress.latitude,     // Optional
-      longitude: deliveryAddress.longitude,   // Optional
-      deliveryInstructions: deliveryAddress.deliveryInstructions, // Optional
+      postalCode: deliveryAddress.postalCode,
+      latitude: deliveryAddress.latitude,
+      longitude: deliveryAddress.longitude,
+      deliveryInstructions: deliveryAddress.deliveryInstructions,
     };
 
     const config = await Config.findOne().session(session);
@@ -188,12 +179,9 @@ const placeOrder = async (customerId, orderData) => {
       throw new HttpError(500, 'System configuration for fees not found or incomplete.');
     }
 
-    // Calculate amounts based on items and config (all in smallest currency unit)
     const itemsSubtotal = items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
     let discountAmount = 0.0;
-    let referrerId = null; // MODIFIED: Initialize referrerId here
-
-    // Removed referralCode logic block from here. It is handled at registration.
+    let referrerId = null;
 
     if (promoCodeApplied) {
       const promotion = await Promotion.findOne({
@@ -210,14 +198,13 @@ const placeOrder = async (customerId, orderData) => {
             if (promotion.type === 'Percentage Discount') {
               discountAmount = itemsSubtotal * (promotion.value / 100);
             } else if (promotion.type === 'Fixed Amount') {
-              discountAmount = promotion.value; // Assume value is in smallest unit
+              discountAmount = promotion.value;
             }
             discountAmount = Math.min(discountAmount, itemsSubtotal);
             logger.info(`[ORDER_SERVICE] Promo ${promoCodeApplied} applied, discount: ${discountAmount}`);
           }
       } else {
         logger.info(`[ORDER_SERVICE] Promo code ${promoCodeApplied} is invalid, expired, or not active.`);
-        // IMPORTANT: As per logs, a 400 is thrown here if promo is invalid
         throw new HttpError(400, 'Invalid or expired promo code.');
       }
     }
@@ -232,16 +219,15 @@ const placeOrder = async (customerId, orderData) => {
 
     if (useWalletBalance && user.walletBalance > 0) {
       walletAmountUsed = Math.min(user.walletBalance, totalBeforeWallet);
-      totalBeforeWallet -= walletAmountUsed; // This is now grandTotalToPayByGateway
+      totalBeforeWallet -= walletAmountUsed;
     }
 
     const grandTotalToPayByGateway = Math.max(0, totalBeforeWallet);
-    const overallGrandTotal = subtotalAfterDiscount + vatAmount + serviceFeeAmount + deliveryFee; // Total of the order after discount, before wallet
+    const overallGrandTotal = subtotalAfterDiscount + vatAmount + serviceFeeAmount + deliveryFee;
 
     const orderStatus = grandTotalToPayByGateway > 0 ? 'Pending Payment' : 'Order Placed';
     const paymentStatusCurrent = grandTotalToPayByGateway > 0 ? 'Pending' : 'Completed';
 
-    // MODIFIED: Ensure referrerId is set from the user's referredBy field if available
     if (user.referredBy) {
         referrerId = user.referredBy;
     }
@@ -250,16 +236,15 @@ const placeOrder = async (customerId, orderData) => {
       id: uuidv4(),
       customerId,
       deliveryAddressId,
-      deliveryAddressSnapshot, // Populated and validated
+      deliveryAddressSnapshot,
       items,
       recipientName: effectiveRecipientName,
       recipientPhone: effectiveRecipientPhone,
       isExpressDelivery: isExpress || false,
       itemsSubtotal,
       discountAmount,
-      // Removed referralCodeUsed: referralCode, // MODIFIED: Removed this line
-      referrerId: referrerId, // MODIFIED: Use the now-defined referrerId
-      promoCodeApplied: discountAmount > 0 ? (promoCodeApplied ? promoCodeApplied.toUpperCase() : null) : null, // Ensure promoCodeApplied exists before .toUpperCase()
+      referrerId: referrerId,
+      promoCodeApplied: discountAmount > 0 ? (promoCodeApplied ? promoCodeApplied.toUpperCase() : null) : null,
       vatAmount,
       serviceFeeAmount,
       deliveryFee,
@@ -277,46 +262,25 @@ const placeOrder = async (customerId, orderData) => {
     if (walletAmountUsed > 0) {
       user.walletBalance -= walletAmountUsed;
       await user.save({ session });
-      // TODO: Create wallet transaction log for this deduction
       logger.info(`[ORDER_SERVICE] Wallet balance ${walletAmountUsed} deducted for user ${customerId}, order ${newOrder.id}. New balance: ${user.walletBalance}`);
     }
 
     const savedOrder = await newOrder.save({ session });
 
-    // ================== PAYSTACK LOGIC UPDATE START ==================
-    let accessCode = null;
-
-    if (grandTotalToPayByGateway > 0) {
-        logger.info(`[ORDER_SERVICE] Order ${savedOrder.id} requires payment. Initializing transaction...`);
-        try {
-            // UPDATED: Pass the active session to the payment service
-            const paymentResult = await paymentService.initializePayment({
-                orderId: savedOrder.id,
-                userId: customerId,
-                session: session 
-            });
-            accessCode = paymentResult.accessCode;
-        } catch (error) {
-            logger.error(`Failed to initialize payment for new order ${savedOrder.id}:`, error);
-            throw new HttpError(500, 'Order was created, but payment could not be initialized. Please contact support.');
-        }
-    }
-
     await session.commitTransaction();
     logger.info(`[ORDER_SERVICE] Order ${savedOrder.id} placed successfully. PaymentNeeded: ${grandTotalToPayByGateway > 0}`);
 
+    // The function now simply returns the created order details to the client.
     return {
       order: savedOrder.toObject(),
-      accessCode: accessCode,
       paymentNeeded: grandTotalToPayByGateway > 0,
       grandTotalToPay: grandTotalToPayByGateway,
-      message: 'Order placed successfully.'
+      message: 'Order created successfully.'
     };
   } catch (error) {
     await session.abortTransaction();
     logger.error(`[ORDER_SERVICE] Place order error for customer ${customerId}:`, {error: error.message, stack: error.stack, inputOrderData: orderData});
     if (error instanceof HttpError) throw error;
-    // Log the full error for Mongoose validation details
     console.error('Full error object in placeOrder service:', error);
     throw new HttpError(500, `Failed to place order due to an unexpected error: ${error.message}`);
   } finally {
@@ -337,37 +301,33 @@ const processPayment = async (orderId, paymentData, customerId, customerRole) =>
     const order = await Order.findOne({ id: orderId, customerId }).session(session);
     if (!order) throw new HttpError(404, 'Order not found or does not belong to this user.');
     if (order.paymentStatus === 'Completed') {
-      throw new HttpError(400, 'Payment for this order has already been completed.');
+      return { message: 'Payment for this order has already been completed.' };
     }
 
     order.status = 'Order Placed';
     order.paymentStatus = 'Completed';
-    order.finalAmountPaid = (order.finalAmountPaid || 0) + paymentData.amount;
+    // Ensure finalAmountPaid updates correctly without adding if it's the first time being set
+    order.finalAmountPaid = paymentData.amount; // Direct assignment as per update
+
     order.paymentTransactionId = paymentData.transactionId;
-    order.statusHistory.push({ status: 'Order Placed', timestamp: new Date(), notes: `Payment confirmed with transaction ID: ${paymentData.transactionId}` });
-    if(!order.statusHistory.find(h => h.status === 'Payment Completed')) {
-        order.statusHistory.push({ status: 'Payment Completed', timestamp: new Date(), notes: `Ref: ${paymentData.transactionId}` });
-    }
+    order.paymentGateway = 'flutterwave'; // Set the gateway as specified in the update
+    order.statusHistory.push({ status: 'Payment Completed', timestamp: new Date(), notes: `Confirmed by client app. Ref: ${paymentData.transactionId}` });
 
     await order.save({ session });
 
-    // <<< START MODIFICATION: First Purchase Check and Referrer Credit >>>
-    if (user.referredBy) { // Check if this customer was referred
+    // Your referral logic can remain here
+    if (user.referredBy) {
       const completedOrdersCount = await Order.countDocuments({
         customerId: user.id,
         status: { $in: ['Delivered', 'Completed'] },
       }).session(session);
 
-      // We check for count === 0 BEFORE saving the new status. 
-      // After this order is marked completed, the count will be 1.
-      // So, if the count is currently 0, this is their first one.
       if (completedOrdersCount === 0) {
         console.log(`[ORDER_SERVICE] Referee ${user.id}'s first purchase (${order.id}). Triggering credit for referrer ${user.referredBy}.`);
-        order.referrerId = user.referredBy; // Pass referrer info to the service
-        await referralService.creditReferrerForSuccessfulReferral(order, session); // Pass session for transaction
+        order.referrerId = user.referredBy;
+        await referralService.creditReferrerForSuccessfulReferral(order, session);
       }
     }
-    // <<< END MODIFICATION >>>
 
     await session.commitTransaction();
     return { transactionId: paymentData.transactionId, message: 'Payment processed successfully.' };
@@ -380,7 +340,9 @@ const processPayment = async (orderId, paymentData, customerId, customerRole) =>
     session.endSession();
   }
 };
-const submitFeedback = async (orderId, feedbackData, customerId, customerRole) => { /* ... as previously provided ... */   try {
+
+const submitFeedback = async (orderId, feedbackData, customerId, customerRole) => {
+  try {
     const user = await User.findOne({ id: customerId });
     if (!user) throw new HttpError(404, 'User not found for submitting feedback.');
     if (customerRole !== 'customer' || user.role !== 'customer') {
@@ -405,13 +367,15 @@ const submitFeedback = async (orderId, feedbackData, customerId, customerRole) =
     throw new HttpError(500, `Failed to submit feedback: ${error.message || 'An unexpected error occurred.'}`);
   }
 };
-const getLocationHistory = async (orderId, requestingUserId, requestingUserRole) => { /* ... as previously provided ... */   try {
+
+const getLocationHistory = async (orderId, requestingUserId, requestingUserRole) => {
+  try {
     const order = await Order.findOne({ id: orderId });
     if (!order) throw new HttpError(404, 'Order not found for location history.');
-    if (requestingUserRole === 'customer' && order.customerId !== requestingUserId) { // Assuming customerId on order is a string ID
+    if (requestingUserRole === 'customer' && order.customerId !== requestingUserId) {
       throw new HttpError(403, 'You are not authorized to view location history for this order.');
     }
-    if (requestingUserRole === 'driver' && order.driverId !== requestingUserId) { // Assuming driverId on order is a string ID
+    if (requestingUserRole === 'driver' && order.driverId !== requestingUserId) {
       throw new HttpError(403, 'You are not authorized to view location history for this order as a driver.');
     }
     const historySnapshot = await firestore.collection('driver_locations').where('orderId', '==', orderId).orderBy('timestamp', 'desc').get();
@@ -424,18 +388,21 @@ const getLocationHistory = async (orderId, requestingUserId, requestingUserRole)
     throw new HttpError(500, `Failed to retrieve location history: ${error.message || 'An unexpected error occurred.'}`);
   }
 };
-const driverUpdateOrderStatus = async (orderId, newStatus, notes, driverId, driverRole) => { /* ... as previously provided ... */   const session = await mongoose.startSession();
+
+const driverUpdateOrderStatus = async (orderId, newStatus, notes, driverId, driverRole) => {
+  const session = await mongoose.startSession();
   session.startTransaction();
   try {
     if (driverRole !== 'driver') throw new HttpError(403, 'Only drivers can update order status via this method.');
     const order = await Order.findOne({ id: orderId, driverId }).session(session);
     if (!order) throw new HttpError(404, 'Order not found or not assigned to this driver.');
+    const oldStatus = order.status;
     order.status = newStatus;
-    order.statusHistory.push({ status: newStatus, timestamp: new Date(), notes: notes || `Status updated by driver ${driverId}`, updatedBy: driverId, updaterRole: 'driver' });
+    const statusNote = notes || `Status changed from ${oldStatus} to ${newStatus} by driver ${driverId}.`;
+    order.statusHistory.push({ status: newStatus, timestamp: new Date(), notes: statusNote, updatedBy: driverId, updaterRole: 'driver' });
     if (newStatus === 'Delivered') order.actualDeliveryTime = new Date();
     await order.save({ session });
     await session.commitTransaction();
-    // TODO: Notify customer
     return { message: `Order status updated to ${newStatus}.`, order: order.toObject() };
   } catch (error) {
     await session.abortTransaction();
@@ -446,7 +413,9 @@ const driverUpdateOrderStatus = async (orderId, newStatus, notes, driverId, driv
     session.endSession();
   }
 };
-const adminGetOrders = async (options) => { /* ... as previously provided ... */   const { status, search, dateRangeStart, dateRangeEnd, page = 1, limit = 10, sortBy } = options; // Added sortBy
+
+const adminGetOrders = async (options) => {
+  const { status, search, dateRangeStart, dateRangeEnd, page = 1, limit = 10, sortBy } = options;
   try {
     const query = {};
     if (status) {
@@ -496,7 +465,9 @@ const adminGetOrders = async (options) => { /* ... as previously provided ... */
     throw new HttpError(500, 'Failed to retrieve orders for admin.');
   }
 };
-const adminUpdateOrderStatus = async (orderId, newStatus, notes, adminId, adminRole) => { /* ... as previously provided ... */   const session = await mongoose.startSession();
+
+const adminUpdateOrderStatus = async (orderId, newStatus, notes, adminId, adminRole) => {
+  const session = await mongoose.startSession();
   session.startTransaction();
   try {
     if (adminRole !== 'admin') throw new HttpError(403, 'Only admins can update order status via this method.');
@@ -510,7 +481,6 @@ const adminUpdateOrderStatus = async (orderId, newStatus, notes, adminId, adminR
     if (newStatus === 'Delivered' && !order.actualDeliveryTime) order.actualDeliveryTime = new Date();
     await order.save({ session });
     await session.commitTransaction();
-    // TODO: Notify customer/driver
     return { message: `Order ${orderId} status updated to ${newStatus} by admin.`, order: order.toObject() };
   } catch (error) {
     await session.abortTransaction();
@@ -521,6 +491,7 @@ const adminUpdateOrderStatus = async (orderId, newStatus, notes, adminId, adminR
     session.endSession();
   }
 };
+
 const adminAssignDriver = async (orderId, driverIdToAssign, adminId, adminRole) => {
     const session = await mongoose.startSession();
     session.startTransaction();
@@ -533,14 +504,12 @@ const adminAssignDriver = async (orderId, driverIdToAssign, adminId, adminRole) 
         const driver = await User.findOne({ id: driverIdToAssign, role: 'driver' }).session(session);
         if (!driver) throw new HttpError(404, `Driver with ID ${driverIdToAssign} not found or is not a driver.`);
 
-        // 1. Update Order
         order.driverId = driverIdToAssign;
         order.status = 'Driver Assigned';
         const note = `Driver ${driver.name} (ID: ${driverIdToAssign}) assigned by admin ${adminId}.`;
         order.statusHistory.push({ status: 'Driver Assigned', timestamp: new Date(), notes: note, updatedBy: adminId, updaterRole: 'admin' });
         await order.save({ session });
 
-        // 2. Create a new Run document
         const newRun = new Run({
             id: uuidv4(),
             driverId: driverIdToAssign,
@@ -561,14 +530,19 @@ const adminAssignDriver = async (orderId, driverIdToAssign, adminId, adminRole) 
         await session.commitTransaction();
         logger.info(`Run ${newRun.id} created and driver ${driver.name} assigned to order ${orderId}.`);
 
-        const populatedOrder = await getOrder(orderId, adminId, 'admin');
-        return { message: `Driver ${driver.name} assigned to order ${orderId}.`, order: populatedOrder };
+        // Assuming getOrder needs a requesting user object for auth, simplified for this context.
+        // If getOrder needs the full user, you'd fetch it here.
+        const populatedOrder = await Order.findOne({ id: orderId })
+            .populate('customerId', 'id name email phone')
+            .populate('driverId', 'id name phone vehicleType licensePlate')
+            .session(session); // Use the session for consistency
+
+        return { message: `Driver ${driver.name} assigned to order ${orderId}.`, order: populatedOrder.toObject() };
 
     } catch (error) {
           await session.abortTransaction();
         logger.error('Unexpected error in adminAssignDriver:', { error: error.message, stack: error.stack, orderId });
         if (error instanceof HttpError) throw error;
-        // --- MODIFIED: Pass the actual Mongoose validation error message to the client ---
         if (error.name === 'ValidationError') {
             throw new HttpError(400, error.message);
         }
@@ -578,7 +552,8 @@ const adminAssignDriver = async (orderId, driverIdToAssign, adminId, adminRole) 
     }
 };
 
-const cancelOrder = async (orderId, customerId, customerRole) => { /* ... as previously provided ... */   const session = await mongoose.startSession();
+const cancelOrder = async (orderId, customerId, customerRole) => {
+  const session = await mongoose.startSession();
   session.startTransaction();
   try {
     if (customerRole !== 'customer') throw new HttpError(403, 'Only customers can cancel orders via this method.');
@@ -592,8 +567,7 @@ const cancelOrder = async (orderId, customerId, customerRole) => { /* ... as pre
         const user = await User.findOne({ id: customerId }).session(session);
         if (user) {
             user.walletBalance += order.walletAmountUsed;
-            // TODO: Create wallet transaction log for this refund
-            await user.save({ session }); // MODIFIED: Moved save inside if (user) block to prevent potential errors
+            await user.save({ session });
         } else {
             logger.error(`Critical: User ${customerId} not found to refund wallet for canceled order ${orderId}.`);
             throw new HttpError(500, "Error processing cancellation refund: User not found.");
@@ -614,20 +588,15 @@ const cancelOrder = async (orderId, customerId, customerRole) => { /* ... as pre
   }
 };
 
-/**
- * Retrieves the last two delivered orders for a customer to calculate consumption rate.
- * @param {string} customerId - The ID of the customer.
- * @returns {Promise<Array<object>>} An array containing the last two delivered orders.
- */
 const getCustomerConsumptionData = async (customerId) => {
   try {
     const orders = await Order.find({
       customerId: customerId,
       status: 'Delivered'
     })
-    .sort({ orderDate: -1 }) // Sort by most recent first
-    .limit(2) // Limit to only the last two
-    .select('orderDate status'); // Select only the fields we need
+    .sort({ orderDate: -1 })
+    .limit(2)
+    .select('orderDate status');
 
     return orders.map(order => order.toObject());
   } catch (error) {
@@ -649,5 +618,4 @@ module.exports = {
   adminAssignDriver,
   cancelOrder,
   getCustomerConsumptionData,
-  
 };

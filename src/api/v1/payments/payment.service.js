@@ -1,74 +1,107 @@
 // File: src/api/v1/payments/payment.service.js
-const crypto = require('crypto'); // Keep crypto for potential future webhook verification
-const Order = require('../../../models/order.model'); // Keep Order model import if needed elsewhere
-const HttpError = require('../../../utils/HttpError'); // Adjust path as needed
-const { logger } = require('../../../config/logger.config'); // Assuming a logger utility
-const axios = require('axios'); // Added axios for HTTP requests
+const crypto = require('crypto');
+const HttpError = require('../../../utils/HttpError');
+const { logger } = require('../../../config/logger.config');
+const orderService = require('../orders/order.service'); // Import the order service
 const dotenv = require('dotenv');
 
 dotenv.config();
 
-const MONNIFY_BASE_URL = "https://sandbox.monnify.com";
-// Use process.env directly for keys
-const MONNIFY_API_KEY = process.env.MONNIFY_API_KEY; // Public Key
-const MONNIFY_SECRET_KEY = process.env.MONNIFY_SECRET_KEY; // Secret Key
-const MONNIFY_CONTRACT_CODE = process.env.MONNIFY_CONTRACT_CODE; // Contract Code
+const MONNIFY_SECRET_KEY = process.env.MONNIFY_SECRET_KEY;
 
-// This function can be used to create Monnify payments initiated from your backend
-// (e.g., if you process payments on your server instead of directly from Flutter SDK)
-async function createMonnifyPayment(
-  amount, // in Naira (major unit)
-  customerName,
-  customerEmail,
-  paymentReference,
-  paymentDescription,
-  redirectUrl
-) {
-  try {
-    // First, obtain an access token using Basic Auth for your API Key and Secret Key
-    const authString = Buffer.from(`${MONNIFY_API_KEY}:${MONNIFY_SECRET_KEY}`).toString(
-      "base64"
-    );
-    const authResponse = await axios.post(
-      `${MONNIFY_BASE_URL}/auth/login`,
-      {},
-      { headers: { Authorization: `Basic ${authString}` } }
-    );
-    const accessToken = authResponse.data.responseBody.accessToken;
-
-    // Then, use the Bearer token for the init-transaction call
-    const response = await axios.post(
-      `${MONNIFY_BASE_URL}/merchant/transactions/init-transaction`,
-      {
-        amount: amount,
-        customerName: customerName,
-        customerEmail: customerEmail,
-        paymentReference: paymentReference,
-        paymentDescription: paymentDescription,
-        currencyCode: "NGN",
-        contractCode: MONNIFY_CONTRACT_CODE, // Use from env
-        redirectUrl: redirectUrl,
-        // paymentMethods: ["CARD", "ACCOUNT_TRANSFER"], // You can specify preferred methods
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`, // Use Bearer token
-          "Content-Type": "application/json",
-        },
-      }
-    );
-    logger.info(`[Payment Service] Monnify payment initiation successful for ref: ${paymentReference}`);
-    return response.data;
-  } catch (error) {
-    logger.error("Monnify init payment error:", error.response?.data || error.message);
-    throw new HttpError(500, "Failed to initialize Monnify payment"); // Use HttpError for consistency
+/**
+ * Verifies the integrity of the Monnify webhook notification.
+ * @param {string} signature - The value of the 'monnify-signature' header.
+ * @param {Buffer} rawBody - The raw request body from Express.
+ * @returns {boolean} - True if the signature is valid, false otherwise.
+ */
+const verifySignature = (signature, rawBody) => {
+  if (!signature || !rawBody || !MONNIFY_SECRET_KEY) {
+    logger.error('[Payment Service] Missing signature, request body, or secret key for verification.');
+    return false;
   }
-}
+  // The hash is calculated using your secret key and the raw request body [cite: 68]
+  const hash = crypto
+    .createHmac('sha512', MONNIFY_SECRET_KEY)
+    .update(rawBody)
+    .digest('hex');
+  
+  const isSignatureValid = hash === signature;
+  if (!isSignatureValid) {
+    logger.warn(`[Payment Service] Invalid webhook signature. Computed: ${hash}, Received: ${signature}`);
+  }
+  return isSignatureValid;
+};
 
-// The processMonnifyWebhook function from the original file is removed as per the update instruction.
-// If it's still needed, it would need to be re-added and potentially modified to use the new Order model structure.
+/**
+ * Processes the validated webhook event from Monnify.
+ * @param {object} eventData - The 'eventData' object from the Monnify payload.
+ */
+const processWebhookEvent = async (eventData) => {
+  const { paymentReference, paymentStatus, transactionReference, amountPaid, paymentMethod } = eventData;
+
+  // The 'paymentReference' from the SDK is your internal orderId
+  const orderId = paymentReference; 
+
+  if (!orderId) {
+    logger.warn('[Payment Service] Webhook received without a paymentReference (orderId). Skipping.');
+    throw new HttpError('Webhook payload missing paymentReference.', 400);
+  }
+
+  // Check if the transaction was successful [cite: 45]
+  if (paymentStatus === 'PAID') {
+    logger.info(`[Payment Service] Processing successful payment for order: ${orderId}`);
+    
+    const paymentDetails = {
+      method: paymentMethod || 'Monnify', // e.g., 'CARD', 'ACCOUNT_TRANSFER'
+      transactionId: transactionReference,
+      amount: amountPaid, // Amount is already in the smallest unit (kobo) from Monnify
+      paidAt: new Date(),
+      monnifyStatus: paymentStatus,
+    };
+
+    // Call your existing order service to securely update the order
+    // This will change status to 'Order Placed', set payment to 'Completed', etc.
+    await orderService.updateOrderStatus({
+      orderId: orderId,
+      status: 'paid', // A trigger word for the service to know it's a successful payment
+      paymentDetails: paymentDetails,
+      verifiedAmount: amountPaid,
+    });
+
+  } else {
+    // Handle other statuses like 'FAILED', 'PENDING', etc.
+    logger.warn(`[Payment Service] Received non-successful payment status '${paymentStatus}' for order: ${orderId}`);
+  }
+};
+
+/**
+ * Main entry point for handling the webhook from the controller.
+ * @param {object} params - The webhook parameters.
+ * @param {string} params.signature - The 'monnify-signature' from the request header.
+ * @param {Buffer} params.rawBody - The raw request body.
+ */
+const processMonnifyWebhook = async ({ signature, rawBody }) => {
+  // 1. Verify the signature for security [cite: 66, 389]
+  const isVerified = verifySignature(signature, rawBody);
+  if (!isVerified) {
+    throw new HttpError('Invalid Monnify signature.', 401);
+  }
+
+  // 2. Parse the body and process the event
+  const payload = JSON.parse(rawBody.toString());
+  const { eventType, eventData } = payload;
+  
+  logger.info(`[Payment Service] Received Monnify webhook. Event Type: ${eventType}`);
+
+  // We only care about successful transaction events for this flow [cite: 45]
+  if (eventType === 'SUCCESSFUL_TRANSACTION') {
+    await processWebhookEvent(eventData);
+  } else {
+    logger.info(`[Payment Service] Skipping event type '${eventType}' as it is not 'SUCCESSFUL_TRANSACTION'.`);
+  }
+};
 
 module.exports = {
-  createMonnifyPayment,
-  // If processMonnifyWebhook is still needed, it should be re-added here.
+  processMonnifyWebhook,
 };

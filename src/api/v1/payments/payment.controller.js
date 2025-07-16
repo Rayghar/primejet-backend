@@ -1,16 +1,24 @@
 // File: src/api/v1/payments/payment.controller.js
 const paymentService = require('./payment.service');
+const { logger } = require('../../../config/logger.config');
 
 const handleMonnifyWebhook = async (req, res, next) => {
   try {
+    // Acknowledge receipt immediately to Monnify's server 
+    res.sendStatus(200);
+
     const signature = req.headers['monnify-signature'];
-    // req.body is the raw buffer due to the middleware in app.js
-    await paymentService.processMonnifyWebhook({ signature, rawBody: req.body });
     
-    // Always acknowledge receipt with a 200 OK status.
-    res.sendStatus(200); 
+    // Process the logic in the background
+    await paymentService.processMonnifyWebhook({ signature, rawBody: req.body });
+
   } catch (error) {
-    next(error);
+    // Even if an error occurs, we've already sent a 200 status.
+    // We log the error for internal review.
+    logger.error('[Payment Controller] Error processing Monnify webhook:', {
+      error: error.message,
+      stack: error.stack,
+    });
   }
 };
 

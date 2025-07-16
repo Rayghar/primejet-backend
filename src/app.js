@@ -35,6 +35,7 @@ const agentRoutes = require('./api/v1/agents/agent.routes'); // <<< ADDED: Impor
 const paymentController = require('./api/v1/payments/payment.controller'); // Import controller for webhook
 
 const app = express();
+app.set('trust proxy', 1); // Trust the first hop from the proxy (Render)
 
 logger.info('[APP] Initializing Express application...');
 

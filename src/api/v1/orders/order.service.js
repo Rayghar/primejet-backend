@@ -7,12 +7,13 @@ const Run = require('../../../models/run.model');
 const Config = require('../../../models/config.model');
 const Promotion = require('../../../models/promotion.model');
 const Address = require('../../../models/address.model'); // Ensure Address model is imported
-const HttpError = require('../../../utils/HttpError'); // Renamed from AppError to HttpError for consistency
+const HttpError = require('../../../utils/HttpError');
 const { firestore, admin, isFirebaseInitialized } = require('../../../config/firebase.config.js');
 const { logger } = require('../../../config/logger.config.js'); // Assuming logger is set up
 const referralService = require('../referrals/referral.service'); // For referral logic
 
-// This service no longer needs to interact with a payment service during order creation.
+// REMOVED: No longer importing paymentService for order placement
+// const paymentService = require('../payments/payment.service');
 
 const getOrders = async (options) => {
   const { status, customerId, driverId, page, limit, userId, role, sortBy } = options;
@@ -42,7 +43,7 @@ const getOrders = async (options) => {
       if (driverId) query.driverId = driverId;
     } else {
         // This case should ideally be prevented by authMiddleware if role is always present
-        throw new HttpError(403, 'Unauthorized role for accessing orders.');
+        throw new new HttpError(403, 'Unauthorized role for accessing orders.');
     }
 
     const pageNum = parseInt(page, 10) || 1;
@@ -120,12 +121,11 @@ const getOrder = async (orderId, requestingUser) => {
   }
 };
 
-// Function to create a new order (initial state: pending_payment)
-async function createOrder(orderData) {
+const placeOrder = async (customerId, orderData) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const user = await User.findOne({ id: orderData.customerId }).select('name phone walletBalance defaultAddressId role referredBy').session(session);
+    const user = await User.findOne({ id: customerId }).select('name phone walletBalance defaultAddressId role referredBy').session(session);
     if (!user) {
       throw new HttpError(404, 'User placing order not found.');
     }
@@ -135,7 +135,7 @@ async function createOrder(orderData) {
 
     const {
       deliveryAddressId, items, recipientName, recipientPhone, isExpress,
-      useWalletBalance, promoCodeApplied, referralCode
+      useWalletBalance, promoCodeApplied,
     } = orderData;
 
     if (!deliveryAddressId || !items || items.length === 0 ) {
@@ -152,7 +152,7 @@ async function createOrder(orderData) {
         throw new HttpError(400, 'Recipient name and phone are required.');
     }
 
-    const deliveryAddress = await Address.findOne({ id: deliveryAddressId, userId: orderData.customerId }).session(session);
+    const deliveryAddress = await Address.findOne({ id: deliveryAddressId, userId: customerId }).session(session);
     if (!deliveryAddress) {
       throw new HttpError(404, `Delivery address with ID ${deliveryAddressId} not found or does not belong to user.`);
     }
@@ -179,31 +179,7 @@ async function createOrder(orderData) {
       throw new HttpError(500, 'System configuration for fees not found or incomplete.');
     }
 
-    let itemsSubtotal = 0;
-    const orderItems = [];
-
-    for (const item of items) {
-        // Assume item.productId is actually item.cylinderId from frontend
-        const product = await Product.findOne({ id: item.cylinderId }).session(session);
-        if (!product) {
-            throw new HttpError(404, `Product with ID ${item.cylinderId} not found.`);
-        }
-        // Basic stock check
-        if (product.stock < item.quantity) {
-            throw new HttpError(400, `Not enough stock for ${product.name}. Available: ${product.stock}, Requested: ${item.quantity}`);
-        }
-
-        const itemPrice = product.price * item.quantity; // Assuming product.price is in Kobo
-        itemsSubtotal += itemPrice;
-
-        orderItems.push({
-            productId: product.id, // Store product's own ID
-            productName: product.name,
-            quantity: item.quantity,
-            unitPrice: product.price, // Store individual product price in Kobo
-        });
-    }
-
+    const itemsSubtotal = items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
     let discountAmount = 0.0;
     let referrerId = null;
 
@@ -258,10 +234,10 @@ async function createOrder(orderData) {
 
     const newOrder = new Order({
       id: uuidv4(),
-      customerId: orderData.customerId,
+      customerId,
       deliveryAddressId,
       deliveryAddressSnapshot,
-      items: orderItems, // Use the validated and enriched orderItems
+      items,
       recipientName: effectiveRecipientName,
       recipientPhone: effectiveRecipientPhone,
       isExpressDelivery: isExpress || false,
@@ -286,7 +262,7 @@ async function createOrder(orderData) {
     if (walletAmountUsed > 0) {
       user.walletBalance -= walletAmountUsed;
       await user.save({ session });
-      logger.info(`[ORDER_SERVICE] Wallet balance ${walletAmountUsed} deducted for user ${orderData.customerId}, order ${newOrder.id}. New balance: ${user.walletBalance}`);
+      logger.info(`[ORDER_SERVICE] Wallet balance ${walletAmountUsed} deducted for user ${customerId}, order ${newOrder.id}. New balance: ${user.walletBalance}`);
     }
 
     const savedOrder = await newOrder.save({ session });
@@ -294,6 +270,7 @@ async function createOrder(orderData) {
     await session.commitTransaction();
     logger.info(`[ORDER_SERVICE] Order ${savedOrder.id} placed successfully. PaymentNeeded: ${grandTotalToPayByGateway > 0}`);
 
+    // The function now simply returns the created order details to the client.
     return {
       order: savedOrder.toObject(),
       paymentNeeded: grandTotalToPayByGateway > 0,
@@ -302,128 +279,14 @@ async function createOrder(orderData) {
     };
   } catch (error) {
     await session.abortTransaction();
-    logger.error(`[ORDER_SERVICE] Place order error for customer ${orderData.customerId}:`, {error: error.message, stack: error.stack, inputOrderData: orderData});
+    logger.error(`[ORDER_SERVICE] Place order error for customer ${customerId}:`, {error: error.message, stack: error.stack, inputOrderData: orderData});
     if (error instanceof HttpError) throw error;
     console.error('Full error object in placeOrder service:', error);
     throw new HttpError(500, `Failed to place order due to an unexpected error: ${error.message}`);
   } finally {
     session.endSession();
   }
-}
-
-// NEW: Function to update order status securely, called ONLY by the webhook service
-async function updateOrderStatus({ orderId, status, paymentDetails, verifiedAmount }) {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  try {
-    logger.info(`[Order Service] Attempting to update order ${orderId} to status '${status}'.`);
-    const order = await Order.findOne({ id: orderId }).session(session);
-    if (!order) {
-        logger.error(`[Order Service] Order not found for status update: ${orderId}`);
-        throw new HttpError('Order not found', 404);
-    }
-
-    // Idempotency: Prevent re-processing if order is already in a final paid/failed state
-    if (order.paymentStatus === 'Completed' || order.status === 'Cancelled' || order.status === 'Delivered') {
-        logger.warn(`[Order Service] Order ${orderId} already in a final state (${order.status}). Avoiding re-update.`);
-        await session.abortTransaction(); // Abort the transaction as no changes are needed
-        return order.toObject(); // Successfully handled, no error.
-    }
-
-    // Crucial validation: Ensure the verified amount from Monnify API matches the order's expected total.
-    // Both `verifiedAmount` and `order.grandTotal` should be in kobo for direct comparison.
-    if (status === 'paid' && verifiedAmount !== order.grandTotal) {
-        logger.error(`[Order Service] Amount mismatch for order ${orderId} during payment confirmation. Expected: ${order.grandTotal}, Verified: ${verifiedAmount}`);
-        order.status = 'Payment Discrepancy'; // Set a specific status for manual review
-        order.paymentStatus = 'Failed'; // Mark payment as failed due to discrepancy
-        order.paymentTransactionId = paymentDetails.transactionId; // Store transaction ID
-        order.paymentGateway = paymentDetails.method; // Store payment method
-        order.statusHistory.push({ status: 'Payment Discrepancy', timestamp: new Date(), notes: `Amount mismatch. Expected: ${order.grandTotal}, Verified: ${verifiedAmount}.` });
-        await order.save({ session });
-        await session.commitTransaction();
-        throw new HttpError('Verified payment amount does not match order total.', 400);
-    }
-
-    // Update order status and payment details
-    order.status = (status === 'paid' ? 'Order Placed' : status); // If paid, set to 'Order Placed'
-    order.paymentStatus = (status === 'paid' ? 'Completed' : 'Failed'); // Set payment status based on webhook
-    order.paymentTransactionId = paymentDetails.transactionId;
-    order.paymentGateway = paymentDetails.method;
-    order.finalAmountPaid = paymentDetails.amount; // Store the amount from the webhook
-
-    order.statusHistory.push({ status: order.status, timestamp: new Date(), notes: `Payment confirmed via webhook. Ref: ${paymentDetails.transactionId}` });
-    await order.save({ session });
-
-    logger.info(`[Order Service] Order ${orderId} successfully updated to status '${order.status}'. Payment Status: '${order.paymentStatus}'.`);
-
-    // Optionally, if status is 'paid', decrement product stock here and trigger fulfillment
-    if (status === 'paid') {
-        for (const item of order.items) {
-            // Find the product by its stored productId (which is the actual product ID)
-            const product = await Product.findOne({ id: item.productId }).session(session);
-            if (product) {
-                await Product.findOneAndUpdate({ id: item.productId }, { $inc: { stock: -item.quantity } }, { session });
-                logger.info(`[Order Service] Decremented stock for product ${item.productId} by ${item.quantity}.`);
-            } else {
-                logger.warn(`[Order Service] Product ${item.productId} not found for stock decrement during order ${orderId} fulfillment.`);
-            }
-        }
-        // Further actions like notifying fulfillment team, sending confirmation emails, etc., go here
-    }
-
-    await session.commitTransaction();
-    return order.toObject();
-  } catch (error) {
-    await session.abortTransaction();
-    logger.error(`[Order Service] Error updating order status for ${orderId}:`, { error: error.message, stack: error.stack });
-    if (error instanceof HttpError) throw error;
-    throw new HttpError(500, `Failed to update order status: ${error.message}`);
-  } finally {
-    session.endSession();
-  }
-}
-
-// Function to get an order by ID (used by frontend for polling)
-async function getOrderById(orderId) {
-  logger.info(`[ORDER_SERVICE] Fetching order by ID: ${orderId}`);
-  try {
-    const order = await Order.findOne({ id: orderId })
-      .populate({
-          path: 'customer',
-          select: 'id name email phone',
-          model: 'User',
-          foreignField: 'id'
-      })
-      .populate({
-          path: 'driver',
-          select: 'id name phone vehicleType licensePlate',
-          model: 'User',
-          foreignField: 'id'
-      });
-
-    if (!order) {
-        throw new HttpError(404, 'Order not found.');
-    }
-    return order.toObject();
-  } catch (error) {
-    logger.error(`[ORDER_SERVICE] Get order by ID ${orderId} error:`, { error: error.message, stack: error.stack });
-    if (error instanceof HttpError) throw error;
-    throw new HttpError(500, 'Failed to retrieve order by ID due to an internal data issue.');
-  }
-}
-
-// Function to get all orders for a specific customer
-async function getOrdersByCustomerId(customerId) {
-  logger.info(`[ORDER_SERVICE] Fetching orders for customer: ${customerId}`);
-  try {
-    const orders = await Order.find({ customerId }).sort({ orderDate: -1 }); // Changed from createdAt to orderDate for consistency
-    return orders.map(order => order.toObject());
-  } catch (error) {
-    logger.error(`[ORDER_SERVICE] Get orders by customer ID ${customerId} error:`, { error: error.message, stack: error.stack });
-    if (error instanceof HttpError) throw error;
-    throw new HttpError(500, 'Failed to retrieve customer orders due to an internal data issue.');
-  }
-}
+};
 
 const processPayment = async (orderId, paymentData, customerId, customerRole) => {
   const session = await mongoose.startSession();
@@ -443,9 +306,11 @@ const processPayment = async (orderId, paymentData, customerId, customerRole) =>
 
     order.status = 'Order Placed';
     order.paymentStatus = 'Completed';
-    order.finalAmountPaid = paymentData.amount;
+    // Ensure finalAmountPaid updates correctly without adding if it's the first time being set
+    order.finalAmountPaid = paymentData.amount; // Direct assignment as per update
+
     order.paymentTransactionId = paymentData.transactionId;
-    order.paymentGateway = 'flutterwave'; // Updated to 'flutterwave'
+    order.paymentGateway = 'flutterwave'; // Set the gateway as specified in the update
     order.statusHistory.push({ status: 'Payment Completed', timestamp: new Date(), notes: `Confirmed by client app. Ref: ${paymentData.transactionId}` });
 
     await order.save({ session });
@@ -513,7 +378,7 @@ const getLocationHistory = async (orderId, requestingUserId, requestingUserRole)
     if (requestingUserRole === 'driver' && order.driverId !== requestingUserId) {
       throw new HttpError(403, 'You are not authorized to view location history for this order as a driver.');
     }
-    const historySnapshot = firestore.collection('driver_locations').where('orderId', '==', orderId).orderBy('timestamp', 'desc').get();
+    const historySnapshot = await firestore.collection('driver_locations').where('orderId', '==', orderId).orderBy('timestamp', 'desc').get();
     if (historySnapshot.empty) return [];
     return historySnapshot.docs.map(doc => doc.data());
   } catch (error) {
@@ -616,7 +481,7 @@ const adminUpdateOrderStatus = async (orderId, newStatus, notes, adminId, adminR
     if (newStatus === 'Delivered' && !order.actualDeliveryTime) order.actualDeliveryTime = new Date();
     await order.save({ session });
     await session.commitTransaction();
-    return { message: `Order ${orderId} status updated to ${newStatus}.`, order: order.toObject() };
+    return { message: `Order ${orderId} status updated to ${newStatus} by admin.`, order: order.toObject() };
   } catch (error) {
     await session.abortTransaction();
     if (error instanceof HttpError) throw error;
@@ -743,6 +608,7 @@ const getCustomerConsumptionData = async (customerId) => {
 module.exports = {
   getOrders,
   getOrder,
+  placeOrder,
   processPayment,
   submitFeedback,
   getLocationHistory,
@@ -753,5 +619,3 @@ module.exports = {
   cancelOrder,
   getCustomerConsumptionData,
 };
-
-

@@ -4,10 +4,12 @@ const orderController = require('./order.controller'); // Path to co-located con
 const authMiddleware = require('../../../middleware/auth.middleware'); // Path to global auth middleware
 const validate = require('../../../middleware/validate.middleware'); // Path to global validate middleware
 const {
-  placeOrderSchema, // Assuming this is the schema for creating an order
+  placeOrderSchema,
+  processOrderPaymentSchema,
   submitFeedbackSchema,
   orderStatusUpdateSchema,
   adminAssignDriverSchema,
+  // orderIdParamSchema, // Optional for param validation at route level
 } = require('./order.validation'); // Path to co-located validation schemas
 
 const router = express.Router();
@@ -15,30 +17,25 @@ const router = express.Router();
 console.log('[ORDER_ROUTES] Registering order routes...');
 
 // --- Customer specific routes ---
-
-// Create a new order (initial status will be 'pending_payment')
 router.post(
   '/',
-  authMiddleware('customer'), // Ensure only customers can place orders
-  validate(placeOrderSchema), // Use the schema for order creation
-  orderController.createOrder // New controller function for order creation
+  authMiddleware('customer'),
+  validate(placeOrderSchema),
+  orderController.placeOrder
 );
 
 router.delete(
-  '/:orderId',
-  authMiddleware('customer'),
+  '/:orderId', // This was authMiddleware('customer') in your original, ensure it's for customers only to cancel
+  authMiddleware('customer'), // Kept as customer, assuming only customers cancel their own orders this way
   orderController.cancelOrder
 );
 
-// !!! IMPORTANT: The client-side payment confirmation route is removed.
-// It is no longer used as payment confirmation is now handled securely
-// by Monnify webhooks on the backend.
-// router.post(
-//   '/:orderId/payment',
-//   authMiddleware('customer'),
-//   validate(processOrderPaymentSchema), // This schema should also be removed if not used elsewhere
-//   orderController.processOrderPayment // This controller function should also be removed or repurposed
-// );
+router.post(
+  '/:orderId/payment',
+  authMiddleware('customer'),
+  validate(processOrderPaymentSchema),
+  orderController.processOrderPayment
+);
 
 router.post(
   '/:orderId/feedback',
@@ -52,14 +49,6 @@ router.get(
   authMiddleware('customer'),
   orderController.getCustomerConsumptionData
 );
-
-// Get all orders for the authenticated user (customer)
-router.get(
-  '/me', // Specific route for authenticated user's orders
-  authMiddleware('customer'),
-  orderController.getOrdersByCustomerId // New controller function
-);
-
 // --- Driver specific routes ---
 router.put(
   '/driver/:orderId/status', // Specific path for driver updates
@@ -90,21 +79,18 @@ router.post(
 );
 
 // --- Routes accessible by authenticated users (customer, driver, admin - logic handled in service/controller) ---
-// Generic get all orders (filtered by role in service) - This route is now implicitly handled by /me for customers
-// and admin/driver specific routes, so it can be removed or repurposed if not needed generically.
-// For now, I will keep the existing generic / route but ensure it uses the appropriate controller method
-// based on the new service functions.
+// Generic get all orders (filtered by role in service)
 router.get(
   '/',
   authMiddleware(), // Any authenticated user can access, service layer filters based on role
-  orderController.getOrders // This will likely need to be adjusted in controller to use getOrdersByCustomerId if role is customer
+  orderController.getOrders
 );
 
-// Get single order by ID (for frontend polling/display)
+// Generic get single order (filtered by role in service)
 router.get(
   '/:orderId',
   authMiddleware(), // Any authenticated user can access, service layer filters based on role
-  orderController.getOrderById // New controller function for fetching by ID
+  orderController.getOrder
 );
 
 router.get(
@@ -112,6 +98,9 @@ router.get(
   authMiddleware(), // Any authenticated user, service layer filters
   orderController.getLocationHistory
 );
+
+
+
 
 console.log('[ORDER_ROUTES] Order routes registered.');
 

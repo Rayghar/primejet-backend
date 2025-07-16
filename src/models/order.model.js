@@ -71,9 +71,9 @@ const orderSchema = new mongoose.Schema(
       index: true,
     },
     paymentMethod: { type: String }, // e.g., 'card', 'wallet', 'stripe', 'paystack'
-    paymentGateway: { type: String, enum: ['stripe', 'paystack', 'wallet', null], sparse:true }, // To know which gateway processed
     paymentIntentId: { type: String, trim: true, index: true, sparse:true }, // For Stripe PaymentIntent ID
-    paymentGatewayReference: { type: String, trim: true, index: true, sparse:true }, // For other references like Paystack
+    PaymentGatewayReference: { type: String, trim: true, unique: true, sparse: true }, // Ensure unique reference from gateway
+
     paymentTransactionId: { type: String, trim: true }, // Actual charge/transaction ID from gateway
 
     isExpressDelivery: { type: Boolean, default: false },

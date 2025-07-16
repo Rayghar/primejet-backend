@@ -1,31 +1,27 @@
 // src/api/v1/orders/order.service.js
 const { v4: uuidv4 } = require('uuid');
-const mongoose = require('mongoose'); // Required for database sessions (transactions)
+const mongoose = require('mongoose');
 const Order = require('../../../models/order.model');
 const User = require('../../../models/user.model');
 const Run = require('../../../models/run.model');
 const Config = require('../../../models/config.model');
 const Promotion = require('../../../models/promotion.model');
-const Address = require('../../../models/address.model'); // Ensure Address model is imported
+const Address = require('../../../models/address.model');
 const HttpError = require('../../../utils/HttpError');
 const { firestore, admin, isFirebaseInitialized } = require('../../../config/firebase.config.js');
-const { logger } = require('../../../config/logger.config.js'); // Assuming logger is set up
-const referralService = require('../referrals/referral.service'); // For referral logic
-
-// REMOVED: No longer importing paymentService for order placement
-// const paymentService = require('../payments/payment.service');
+const { logger } = require('../../../config/logger.config.js');
+const referralService = require('../referrals/referral.service');
 
 const getOrders = async (options) => {
   const { status, customerId, driverId, page, limit, userId, role, sortBy } = options;
   try {
     const query = {};
-     if (status) {
-        // Handle comma-separated statuses for $in query
-        if (status.includes(',')) {
-            query.status = { $in: status.split(',').map(s => s.trim()).filter(s => s.length > 0) };
-        } else if (status.trim().length > 0) { // Ensure status is not an empty string
-            query.status = status.trim();
-        }
+    if (status) {
+      if (status.includes(',')) {
+        query.status = { $in: status.split(',').map(s => s.trim()).filter(s => s.length > 0) };
+      } else if (status.trim().length > 0) {
+        query.status = status.trim();
+      }
     }
 
     if (role === 'customer') {
@@ -42,8 +38,7 @@ const getOrders = async (options) => {
       if (customerId) query.customerId = customerId;
       if (driverId) query.driverId = driverId;
     } else {
-        // This case should ideally be prevented by authMiddleware if role is always present
-        throw new new HttpError(403, 'Unauthorized role for accessing orders.');
+      throw new HttpError(403, 'Unauthorized role for accessing orders.');
     }
 
     const pageNum = parseInt(page, 10) || 1;
@@ -60,16 +55,16 @@ const getOrders = async (options) => {
       .skip(skip)
       .limit(limitNum)
       .populate({
-          path: 'customerId',
-          select: 'id name email phone',
-          model: 'User',
-          foreignField: 'id'
+        path: 'customerId',
+        select: 'id name email phone',
+        model: 'User',
+        foreignField: 'id'
       })
       .populate({
-          path: 'driverId',
-          select: 'id name phone vehicleType licensePlate',
-          model: 'User',
-          foreignField: 'id'
+        path: 'driverId',
+        select: 'id name phone vehicleType licensePlate',
+        model: 'User',
+        foreignField: 'id'
       });
     return {
       orders: orders.map(order => order.toObject()),
@@ -270,7 +265,6 @@ const placeOrder = async (customerId, orderData) => {
     await session.commitTransaction();
     logger.info(`[ORDER_SERVICE] Order ${savedOrder.id} placed successfully. PaymentNeeded: ${grandTotalToPayByGateway > 0}`);
 
-    // The function now simply returns the created order details to the client.
     return {
       order: savedOrder.toObject(),
       paymentNeeded: grandTotalToPayByGateway > 0,
@@ -288,56 +282,94 @@ const placeOrder = async (customerId, orderData) => {
   }
 };
 
-const processPayment = async (orderId, paymentData, customerId, customerRole) => {
+async function updateOrderStatus({ orderId, status, paymentDetails, verifiedAmount }) {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const user = await User.findOne({ id: customerId }).session(session);
-    if (!user) throw new HttpError(404, 'User not found for payment processing.');
-    if (customerRole !== 'customer' || user.role !== 'customer') {
-      throw new HttpError(403, 'Insufficient permissions to process this payment.');
+    logger.info(`[Order Service] Attempting to update order ${orderId} to status '${status}'.`);
+    const order = await Order.findOne({ id: orderId }).session(session);
+    if (!order) {
+        logger.error(`[Order Service] Order not found for status update: ${orderId}`);
+        throw new HttpError(404, 'Order not found');
     }
 
-    const order = await Order.findOne({ id: orderId, customerId }).session(session);
-    if (!order) throw new HttpError(404, 'Order not found or does not belong to this user.');
-    if (order.paymentStatus === 'Completed') {
-      return { message: 'Payment for this order has already been completed.' };
+    if (order.paymentStatus === 'Completed' || order.status === 'Delivered' ||
+        (order.paymentDetails && paymentDetails && order.paymentDetails.transactionId === paymentDetails.transactionId)) {
+        logger.warn(`[Order Service] Order ${orderId} already in a final state (${order.status}) or transaction with this ref (${paymentDetails.transactionId}) already processed. Skipping re-update.`);
+        await session.abortTransaction();
+        return order.toObject();
     }
 
-    order.status = 'Order Placed';
-    order.paymentStatus = 'Completed';
-    // Ensure finalAmountPaid updates correctly without adding if it's the first time being set
-    order.finalAmountPaid = paymentData.amount; // Direct assignment as per update
+    if (status === 'paid' && verifiedAmount !== order.grandTotal) {
+        logger.error(`[Order Service] Amount mismatch for order ${orderId} during payment confirmation. Expected: ${order.grandTotal}, Verified: ${verifiedAmount}`);
+        order.status = 'Payment Discrepancy';
+        order.paymentStatus = 'Failed';
+        order.paymentDetails = {
+            method: paymentDetails.method,
+            transactionId: paymentDetails.transactionId,
+            amount: paymentDetails.amount,
+            paidAt: paymentDetails.paidAt,
+            monnifyStatus: paymentDetails.monnifyStatus,
+        };
+        order.statusHistory.push({ status: 'Payment Discrepancy', timestamp: new Date(), notes: `Amount mismatch. Expected: ${order.grandTotal}, Verified: ${verifiedAmount}. Txn: ${paymentDetails.transactionId}` });
+        await order.save({ session });
+        await session.commitTransaction();
+        throw new HttpError(400, 'Verified payment amount does not match order total.');
+    }
 
-    order.paymentTransactionId = paymentData.transactionId;
-    order.paymentGateway = 'flutterwave'; // Set the gateway as specified in the update
-    order.statusHistory.push({ status: 'Payment Completed', timestamp: new Date(), notes: `Confirmed by client app. Ref: ${paymentData.transactionId}` });
+    order.status = (status === 'paid' ? 'Order Placed' : (status === 'failed_payment' ? 'Failed' : order.status));
+    order.paymentStatus = (status === 'paid' ? 'Completed' : (status === 'failed_payment' ? 'Failed' : order.paymentStatus));
+    order.finalAmountPaid = paymentDetails.amount;
+    order.paymentDetails = {
+        method: paymentDetails.method,
+        transactionId: paymentDetails.transactionId,
+        amount: paymentDetails.amount,
+        paidAt: paymentDetails.paidAt,
+        monnifyStatus: paymentDetails.monnifyStatus,
+    };
 
+    order.statusHistory.push({ status: order.status, timestamp: new Date(), notes: `Payment confirmed via webhook. Ref: ${paymentDetails.transactionId}` });
     await order.save({ session });
 
-    // Your referral logic can remain here
-    if (user.referredBy) {
-      const completedOrdersCount = await Order.countDocuments({
-        customerId: user.id,
-        status: { $in: ['Delivered', 'Completed'] },
-      }).session(session);
-
-      if (completedOrdersCount === 0) {
-        console.log(`[ORDER_SERVICE] Referee ${user.id}'s first purchase (${order.id}). Triggering credit for referrer ${user.referredBy}.`);
-        order.referrerId = user.referredBy;
-        await referralService.creditReferrerForSuccessfulReferral(order, session);
-      }
-    }
+    logger.info(`[Order Service] Order ${orderId} successfully updated to status '${order.status}'. Payment Status: '${order.paymentStatus}'.`);
 
     await session.commitTransaction();
-    return { transactionId: paymentData.transactionId, message: 'Payment processed successfully.' };
+    return order.toObject();
   } catch (error) {
     await session.abortTransaction();
-    if (error instanceof HttpError) throw error;
-    logger.error('Unexpected error in processPayment:', { error: error.message, stack: error.stack, orderId });
-    throw new HttpError(500, 'Failed to process payment due to an unexpected error.');
+    if (error.code === 11000 && error.message.includes('transactionId')) {
+      logger.warn(`[Order Service] Attempted to update order ${orderId} with duplicate paymentDetails.transactionId. Likely duplicate webhook processing.`);
+      throw new HttpError(409, 'Payment for this order has already been processed with this transaction ID.');
+    }
+    if (error instanceof HttpError) {
+        logger.error(`[Order Service] HttpError during update for order ${orderId}: ${error.message}`, { stack: error.stack });
+        throw error;
+    }
+    logger.error(`[Order Service] Unexpected error updating order status for ${orderId}: ${error.message}`, { stack: error.stack });
+    throw new HttpError(500, `Failed to update order status: ${error.message}`);
   } finally {
     session.endSession();
+  }
+}
+
+// --- NEW FUNCTION: getOrderPaymentStatus for frontend reconciliation ---
+const getOrderPaymentStatus = async (orderId, customerId) => {
+  try {
+    const order = await Order.findOne({ id: orderId }).select('paymentStatus customerId');
+
+    if (!order) {
+      throw new HttpError(404, 'Order not found.');
+    }
+
+    if (order.customerId.toString() !== customerId) {
+      throw new HttpError(403, 'Unauthorized to access this order.');
+    }
+
+    return { paymentStatus: order.paymentStatus };
+  } catch (error) {
+    logger.error(`[ORDER_SERVICE] Error fetching payment status for order ${orderId}:`, { error: error.message, stack: error.stack });
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(500, 'Failed to retrieve order payment status.');
   }
 };
 
@@ -419,11 +451,11 @@ const adminGetOrders = async (options) => {
   try {
     const query = {};
     if (status) {
-        if (status.includes(',')) {
-            query.status = { $in: status.split(',').map(s => s.trim()).filter(s => s.length > 0) };
-        } else if (status.trim().length > 0) {
-            query.status = status.trim();
-        }
+      if (status.includes(',')) {
+        query.status = { $in: status.split(',').map(s => s.trim()).filter(s => s.length > 0) };
+      } else if (status.trim().length > 0) {
+        query.status = status.trim();
+      }
     }
     if (search) {
       const searchRegex = new RegExp(search, 'i');
@@ -530,17 +562,15 @@ const adminAssignDriver = async (orderId, driverIdToAssign, adminId, adminRole) 
         await session.commitTransaction();
         logger.info(`Run ${newRun.id} created and driver ${driver.name} assigned to order ${orderId}.`);
 
-        // Assuming getOrder needs a requesting user object for auth, simplified for this context.
-        // If getOrder needs the full user, you'd fetch it here.
         const populatedOrder = await Order.findOne({ id: orderId })
             .populate('customerId', 'id name email phone')
             .populate('driverId', 'id name phone vehicleType licensePlate')
-            .session(session); // Use the session for consistency
+            .session(session);
 
         return { message: `Driver ${driver.name} assigned to order ${orderId}.`, order: populatedOrder.toObject() };
 
     } catch (error) {
-          await session.abortTransaction();
+            await session.abortTransaction();
         logger.error('Unexpected error in adminAssignDriver:', { error: error.message, stack: error.stack, orderId });
         if (error instanceof HttpError) throw error;
         if (error.name === 'ValidationError') {
@@ -609,7 +639,8 @@ module.exports = {
   getOrders,
   getOrder,
   placeOrder,
-  processPayment,
+  updateOrderStatus, // NEW: Export the updateOrderStatus function
+  getOrderPaymentStatus, // NEW: Export the getOrderPaymentStatus function
   submitFeedback,
   getLocationHistory,
   driverUpdateOrderStatus,

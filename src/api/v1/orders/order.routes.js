@@ -1,107 +1,36 @@
 // src/api/v1/orders/order.routes.js
 const express = require('express');
-const orderController = require('./order.controller'); // Path to co-located controller
-const authMiddleware = require('../../../middleware/auth.middleware'); // Path to global auth middleware
-const validate = require('../../../middleware/validate.middleware'); // Path to global validate middleware
-const {
-  placeOrderSchema,
-  processOrderPaymentSchema,
-  submitFeedbackSchema,
-  orderStatusUpdateSchema,
-  adminAssignDriverSchema,
-  // orderIdParamSchema, // Optional for param validation at route level
-} = require('./order.validation'); // Path to co-located validation schemas
-
 const router = express.Router();
+const orderController = require('./order.controller');
+const authMiddleware = require('../../../middleware/auth.middleware'); // Assuming auth middleware path
+const validate = require('../../../middleware/validate.middleware'); // Assuming validate middleware path
+const { placeOrderSchema, submitFeedbackSchema, orderStatusUpdateSchema, adminAssignDriverSchema, orderIdParamSchema } = require('./order.validation'); // Assuming validation schemas path
 
-console.log('[ORDER_ROUTES] Registering order routes...');
+// Public routes (if any, typically none for orders except perhaps confirmation pages)
+// No public order routes for now
 
-// --- Customer specific routes ---
-router.post(
-  '/',
+// Customer routes
+router.post('/', authMiddleware('customer'), validate(placeOrderSchema, 'body'), orderController.placeOrder);
+router.get('/', authMiddleware(['customer', 'admin', 'driver']), orderController.getOrders); // Can be filtered by role in service
+router.get('/:orderId', authMiddleware(['customer', 'admin', 'driver']), orderController.getOrderDetails);
+router.post('/:orderId/feedback', authMiddleware('customer'), validate(submitFeedbackSchema, 'body'), orderController.submitFeedback);
+router.get('/:orderId/location-history', authMiddleware(['customer', 'driver']), orderController.getLocationHistory);
+router.post('/:orderId/cancel', authMiddleware('customer'), orderController.cancelOrder);
+router.get('/me/consumption-data', authMiddleware('customer'), orderController.getCustomerConsumptionData); // New route for consumption data
+
+// NEW: Route for fetching order payment status (for frontend reconciliation)
+router.get(
+  '/:orderId/payment-status',
   authMiddleware('customer'),
-  validate(placeOrderSchema),
-  orderController.placeOrder
+  orderController.getOrderPaymentStatus
 );
 
-router.delete(
-  '/:orderId', // This was authMiddleware('customer') in your original, ensure it's for customers only to cancel
-  authMiddleware('customer'), // Kept as customer, assuming only customers cancel their own orders this way
-  orderController.cancelOrder
-);
+// Driver routes
+router.patch('/:orderId/driver-status', authMiddleware('driver'), validate(orderStatusUpdateSchema, 'body'), orderController.driverUpdateOrderStatus);
 
-router.post(
-  '/:orderId/payment',
-  authMiddleware('customer'),
-  validate(processOrderPaymentSchema),
-  orderController.processOrderPayment
-);
-
-router.post(
-  '/:orderId/feedback',
-  authMiddleware('customer'),
-  validate(submitFeedbackSchema),
-  orderController.submitFeedback
-);
-
-router.get(
-  '/me/consumption-data', // New route
-  authMiddleware('customer'),
-  orderController.getCustomerConsumptionData
-);
-// --- Driver specific routes ---
-router.put(
-  '/driver/:orderId/status', // Specific path for driver updates
-  authMiddleware('driver'),
-  validate(orderStatusUpdateSchema),
-  orderController.driverUpdateOrderStatus
-);
-
-// --- Admin specific routes (defined before generic /:orderId to ensure correct matching) ---
-router.get(
-  '/admin', // Path for admin to get orders
-  authMiddleware('admin'),
-  orderController.adminGetOrders
-);
-
-router.put(
-  '/admin/:orderId/status',
-  authMiddleware('admin'),
-  validate(orderStatusUpdateSchema),
-  orderController.adminUpdateOrderStatus
-);
-
-router.post(
-  '/admin/:orderId/assign-driver',
-  authMiddleware('admin'),
-  validate(adminAssignDriverSchema),
-  orderController.adminAssignDriver
-);
-
-// --- Routes accessible by authenticated users (customer, driver, admin - logic handled in service/controller) ---
-// Generic get all orders (filtered by role in service)
-router.get(
-  '/',
-  authMiddleware(), // Any authenticated user can access, service layer filters based on role
-  orderController.getOrders
-);
-
-// Generic get single order (filtered by role in service)
-router.get(
-  '/:orderId',
-  authMiddleware(), // Any authenticated user can access, service layer filters based on role
-  orderController.getOrder
-);
-
-router.get(
-  '/:orderId/location-history',
-  authMiddleware(), // Any authenticated user, service layer filters
-  orderController.getLocationHistory
-);
-
-
-
-
-console.log('[ORDER_ROUTES] Order routes registered.');
+// Admin routes
+router.get('/admin', authMiddleware('admin'), orderController.adminGetOrders); // Admin can get all orders with filters
+router.patch('/admin/:orderId/status', authMiddleware('admin'), validate(orderStatusUpdateSchema, 'body'), orderController.adminUpdateOrderStatus);
+router.patch('/admin/:orderId/assign-driver', authMiddleware('admin'), validate(adminAssignDriverSchema, 'body'), orderController.adminAssignDriver);
 
 module.exports = router;

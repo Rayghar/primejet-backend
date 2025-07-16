@@ -7,8 +7,15 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
-const MONNIFY_SECRET_KEY ="2Z659QCSA4GCPR0VKTPQTB81A3R7XHK4";
+// Access the key from environment variables
+const MONNIFY_SECRET_KEY = process.env.MONNIFY_SECRET_KEY;
 
+// Ensure the key is present before proceeding
+if (!MONNIFY_SECRET_KEY) {
+  logger.error('[Payment Service] MONNIFY_SECRET_KEY is not defined in environment variables.');
+  // Potentially throw an error or handle this critical missing configuration
+  // For now, we'll rely on the verification check, but ideally, the app shouldn't start without it.
+}
 /**
  * Verifies the integrity of the Monnify webhook notification.
  * @param {string} signature - The value of the 'monnify-signature' header.
@@ -41,7 +48,7 @@ const processWebhookEvent = async (eventData) => {
   const { paymentReference, paymentStatus, transactionReference, amountPaid, paymentMethod } = eventData;
 
   // The 'paymentReference' from the SDK is your internal orderId
-  const orderId = paymentReference; 
+  const orderId = eventData.customerReservedAccount?.customerName || eventData.customerReservedAccount?.customerDisplayName; // Adjust this based on your actual Monnify webhook payload structure
 
   if (!orderId) {
     logger.warn('[Payment Service] Webhook received without a paymentReference (orderId). Skipping.');

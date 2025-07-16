@@ -7,7 +7,7 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
-const MONNIFY_SECRET_KEY = process.env.MONNIFY_SECRET_KEY;
+const MONNIFY_SECRET_KEY ="2Z659QCSA4GCPR0VKTPQTB81A3R7XHK4";
 
 /**
  * Verifies the integrity of the Monnify webhook notification.

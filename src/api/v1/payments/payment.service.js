@@ -1,68 +1,74 @@
 // File: src/api/v1/payments/payment.service.js
-const crypto = require('crypto');
-const Order = require('../../../models/order.model');
-const HttpError = require('../../../utils/HttpError');
-const { logger } = require('../../../config/logger.config');
+const crypto = require('crypto'); // Keep crypto for potential future webhook verification
+const Order = require('../../../models/order.model'); // Keep Order model import if needed elsewhere
+const HttpError = require('../../../utils/HttpError'); // Adjust path as needed
+const { logger } = require('../../../config/logger.config'); // Assuming a logger utility
+const axios = require('axios'); // Added axios for HTTP requests
+const dotenv = require('dotenv');
 
-const processMonnifyWebhook = async ({ signature, rawBody }) => {
-  // Step 1: Verify the webhook's integrity using the Client Secret Key.
-  const clientSecret = process.env.MONNIFY_SECRET_KEY;
-  if (!clientSecret) {
-    throw new HttpError(500, 'Monnify client secret is not configured.');
+dotenv.config();
+
+const MONNIFY_BASE_URL = "https://sandbox.monnify.com";
+// Use process.env directly for keys
+const MONNIFY_API_KEY = process.env.MONNIFY_API_KEY; // Public Key
+const MONNIFY_SECRET_KEY = process.env.MONNIFY_SECRET_KEY; // Secret Key
+const MONNIFY_CONTRACT_CODE = process.env.MONNIFY_CONTRACT_CODE; // Contract Code
+
+// This function can be used to create Monnify payments initiated from your backend
+// (e.g., if you process payments on your server instead of directly from Flutter SDK)
+async function createMonnifyPayment(
+  amount, // in Naira (major unit)
+  customerName,
+  customerEmail,
+  paymentReference,
+  paymentDescription,
+  redirectUrl
+) {
+  try {
+    // First, obtain an access token using Basic Auth for your API Key and Secret Key
+    const authString = Buffer.from(`${MONNIFY_API_KEY}:${MONNIFY_SECRET_KEY}`).toString(
+      "base64"
+    );
+    const authResponse = await axios.post(
+      `${MONNIFY_BASE_URL}/auth/login`,
+      {},
+      { headers: { Authorization: `Basic ${authString}` } }
+    );
+    const accessToken = authResponse.data.responseBody.accessToken;
+
+    // Then, use the Bearer token for the init-transaction call
+    const response = await axios.post(
+      `${MONNIFY_BASE_URL}/merchant/transactions/init-transaction`,
+      {
+        amount: amount,
+        customerName: customerName,
+        customerEmail: customerEmail,
+        paymentReference: paymentReference,
+        paymentDescription: paymentDescription,
+        currencyCode: "NGN",
+        contractCode: MONNIFY_CONTRACT_CODE, // Use from env
+        redirectUrl: redirectUrl,
+        // paymentMethods: ["CARD", "ACCOUNT_TRANSFER"], // You can specify preferred methods
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`, // Use Bearer token
+          "Content-Type": "application/json",
+        },
+      }
+    );
+    logger.info(`[Payment Service] Monnify payment initiation successful for ref: ${paymentReference}`);
+    return response.data;
+  } catch (error) {
+    logger.error("Monnify init payment error:", error.response?.data || error.message);
+    throw new HttpError(500, "Failed to initialize Monnify payment"); // Use HttpError for consistency
   }
+}
 
-  const computedHash = crypto.createHmac('sha512', clientSecret).update(rawBody).digest('hex');
-
-  if (computedHash !== signature) {
-    logger.warn('Webhook received with an invalid monnify-signature.');
-    throw new HttpError(401, 'Invalid signature.');
-  }
-
-  const body = JSON.parse(rawBody);
-  
-  // Step 2: Check for the successful transaction event.
-  if (body.eventType !== 'SUCCESSFUL_TRANSACTION') {
-    logger.info(`Ignoring Monnify webhook event: ${body.eventType}`);
-    return;
-  }
-  
-  const { paymentReference, transactionReference, amountPaid, paymentStatus } = body.eventData;
-
-  if (paymentStatus !== 'PAID') {
-    logger.info(`Ignoring transaction with non-PAID status: ${paymentStatus}`);
-    return;
-  }
-
-  // Step 3: Find the order using the paymentReference (which is our order ID).
-  const order = await Order.findOne({ id: paymentReference });
-  if (!order) {
-    logger.error(`Webhook Error: Order with paymentReference ${paymentReference} not found.`);
-    throw new HttpError(404, 'Order not found for webhook processing.');
-  }
-
-  // Step 4: Prevent processing the same event twice.
-  if (order.paymentStatus === 'Completed') {
-    logger.info(`Webhook: Order ${paymentReference} is already marked as completed.`);
-    return;
-  }
-
-  // Step 5: Verify the amount paid.
-  const amountPaidMajorUnit = amountPaid;
-  if ((order.grandTotal / 100) !== amountPaidMajorUnit) {
-    throw new HttpError(400, 'Payment amount mismatch.');
-  }
-
-  // Step 6: Update the order in the database.
-  order.paymentStatus = 'Completed';
-  order.finalAmountPaid = order.grandTotal;
-  order.paymentTransactionId = transactionReference;
-  order.status = 'Order Placed';
-  order.statusHistory.push({ status: 'Payment Completed', timestamp: new Date(), notes: `Verified by Monnify Webhook. Ref: ${transactionReference}` });
-  
-  await order.save();
-  logger.info(`Webhook: Successfully processed and updated order ${paymentReference}.`);
-};
+// The processMonnifyWebhook function from the original file is removed as per the update instruction.
+// If it's still needed, it would need to be re-added and potentially modified to use the new Order model structure.
 
 module.exports = {
-  processMonnifyWebhook,
+  createMonnifyPayment,
+  // If processMonnifyWebhook is still needed, it should be re-added here.
 };

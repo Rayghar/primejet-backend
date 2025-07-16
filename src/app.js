@@ -31,10 +31,19 @@ const referralRoutes = require('./api/v1/referrals/referral.routes');
 const runOrchestrationRoutes = require('./api/v1/run_orchestration/run_orchestration.routes');
 const notificationRoutes = require('./api/v1/notifications/notification.routes');
 const voiceRoutes = require('./api/v1/voice/voice.routes');
-const agentRoutes = require('./api/v1/agents/agent.routes'); // <<< ADDED: Import agent routes [cite: user_prompt]
+const agentRoutes = require('./api/v1/agents/agent.routes');
 const paymentController = require('./api/v1/payments/payment.controller'); // Import controller for webhook
 
 const app = express();
+
+// IMPORTANT: For webhook signature verification, you need the raw body.
+// This middleware should come BEFORE express.json() for the webhook route.
+// For all other routes, use express.json().
+app.post(
+  '/api/v1/webhooks/monnify',
+  express.raw({ type: 'application/json' }),
+  paymentController.handleMonnifyWebhook
+);
 
 logger.info('[APP] Initializing Express application...');
 
@@ -47,11 +56,8 @@ app.use('/api/v1/orchestration', runOrchestrationRoutes);
 app.use('/api/v1/voice', voiceRoutes); // Ensure this is before express.json if voice needs raw body
 
 // --- Step 3: Handle Special Routes (like Paystack Webhook) BEFORE general JSON parser ---
-app.post(
-  '/api/v1/payments/monnify/webhook',
-  express.raw({ type: 'application/json' }),
-  paymentController.handleMonnifyWebhook
-);
+// (The Monnify webhook is handled above, before general express.json())
+
 
 // --- Step 4: Setup General Middleware ---
 app.use(express.json());
@@ -76,7 +82,7 @@ app.use('/api/v1/wallet', walletRoutes);
 app.use('/api/v1/referrals', referralRoutes);
 app.use('/api/v1/notifications', notificationRoutes);
 
-app.use('/api/v1/agents', agentRoutes); // <<< ADDED: Mount agent routes [cite: user_prompt]
+app.use('/api/v1/agents', agentRoutes);
 logger.info('[APP] API v1 routes setup complete.');
 
 

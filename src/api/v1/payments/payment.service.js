@@ -2,14 +2,12 @@
 const crypto = require('crypto');
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
-const orderService = require('../orders/order.service'); // Import the order service
+const orderService = require('../orders/order.service');
 const dotenv = require('dotenv');
 
 dotenv.config();
 
-// Make sure this MONNIFY_SECRET_KEY is loaded from environment variables in a real app
-// For analysis, we will assume it's correctly loaded or hardcoded as per your request history for now.
-const MONNIFY_SECRET_KEY = process.env.MONNIFY_SECRET_KEY || "2Z659QCSA4GCPR0VKTPQTB81A3R7XHK4"; // Hardcoded for analysis as requested, but recommend dotenv.
+const MONNIFY_SECRET_KEY = process.env.MONNIFY_SECRET_KEY || "2Z659QCSA4GCPR0VKTPQTB81A3R7XHK4";
 
 /**
  * Verifies the integrity of the Monnify webhook notification.
@@ -20,7 +18,6 @@ const MONNIFY_SECRET_KEY = process.env.MONNIFY_SECRET_KEY || "2Z659QCSA4GCPR0VKT
 const verifySignature = (signature, rawBodyString) => {
   logger.debug('[Payment Service][verifySignature] Starting signature verification.');
   logger.debug(`[Payment Service][verifySignature] Received signature: ${signature}`);
-  // logger.debug(`[Payment Service][verifySignature] Raw body string for hashing: ${rawBodyString}`); // Be careful logging sensitive data
   logger.debug(`[Payment Service][verifySignature] Using secret key (first 5 chars): ${MONNIFY_SECRET_KEY ? MONNIFY_SECRET_KEY.substring(0, 5) : 'N/A'}...`);
 
 
@@ -31,7 +28,7 @@ const verifySignature = (signature, rawBodyString) => {
   // The hash is calculated using your secret key and the raw request body
   const hash = crypto
     .createHmac('sha512', MONNIFY_SECRET_KEY)
-    .update(rawBodyString) // Use the raw body string here
+    .update(rawBodyString)
     .digest('hex');
 
   logger.debug(`[Payment Service][verifySignature] Computed hash: ${hash}`);
@@ -49,6 +46,7 @@ const verifySignature = (signature, rawBodyString) => {
  * Processes the validated webhook event from Monnify.
  * @param {object} eventData - The 'eventData' object from the Monnify payload.
  * @param {string} eventType - The 'eventType' string from the Monnify payload.
+ * @throws {HttpError} If an error occurs during order update that should be propagated.
  */
 const processWebhookEvent = async (eventData, eventType) => {
   logger.info(`[Payment Service][processWebhookEvent] Processing webhook event of type: ${eventType}`);
@@ -62,6 +60,7 @@ const processWebhookEvent = async (eventData, eventType) => {
   if (!orderId) {
     logger.warn('[Payment Service][processWebhookEvent] Webhook received without a paymentReference (orderId). Skipping processing for this eventData.', eventData);
     // Do NOT throw HttpError here as it's an async background process, just log and exit.
+    // However, if processWebhookEvent is called directly and a valid orderId is expected, consider throwing.
     return;
   }
 
@@ -72,19 +71,19 @@ const processWebhookEvent = async (eventData, eventType) => {
   let updateNotes = '';
 
   if (paymentStatus === 'PAID') {
-    newOrderStatus = 'Order Placed'; // Or 'Confirmed', 'Processing', etc. as per your business flow
+    newOrderStatus = 'Order Placed';
     newPaymentStatus = 'Completed';
-    finalAmountForOrder = amountPaid; // Monnify sends amountPaid in kobo
+    finalAmountForOrder = amountPaid;
     updateNotes = `Payment successfully confirmed via Monnify webhook. Txn Ref: ${transactionReference}.`;
     logger.info(`[Payment Service][processWebhookEvent] Identified PAID status for order ${orderId}.`);
   } else if (paymentStatus === 'FAILED') {
-    newOrderStatus = 'Failed'; // Or 'Payment Failed'
+    newOrderStatus = 'Failed';
     newPaymentStatus = 'Failed';
     updateNotes = `Payment failed via Monnify webhook. Txn Ref: ${transactionReference}. Reason: ${responseMessage || 'N/A'}`;
     logger.warn(`[Payment Service][processWebhookEvent] Identified FAILED status for order ${orderId}.`);
   } else if (paymentStatus === 'CANCELLED') {
-    newOrderStatus = 'Canceled by Customer'; // Or a more specific status
-    newPaymentStatus = 'Failed'; // A cancelled payment is effectively a failed one
+    newOrderStatus = 'Canceled by Customer';
+    newPaymentStatus = 'Failed';
     updateNotes = `Payment cancelled by customer via Monnify webhook. Txn Ref: ${transactionReference}.`;
     logger.info(`[Payment Service][processWebhookEvent] Identified CANCELLED status for order ${orderId}.`);
   } else {
@@ -93,30 +92,37 @@ const processWebhookEvent = async (eventData, eventType) => {
   }
 
   const paymentDetails = {
-    method: paymentMethod || 'Monnify', // e.g., 'CARD', 'ACCOUNT_TRANSFER'
+    method: paymentMethod || 'Monnify',
     transactionId: transactionReference,
-    amount: amountPaid, // Amount is already in the smallest unit (kobo) from Monnify
+    amount: amountPaid,
     paidAt: eventData.paidOn ? new Date(eventData.paidOn) : new Date(),
     monnifyStatus: paymentStatus,
-    monnifyResponseMessage: responseMessage, // Capture Monnify's message
+    monnifyResponseMessage: responseMessage,
   };
 
   try {
-    // Call your existing order service to securely update the order
     await orderService.updateOrderStatus({
       orderId: orderId,
-      status: newOrderStatus, // Pass the new desired primary status
-      paymentStatus: newPaymentStatus, // Pass the new desired payment status
+      status: newOrderStatus,
+      paymentStatus: newPaymentStatus,
       paymentDetails: paymentDetails,
-      verifiedAmount: finalAmountForOrder, // Pass the amount verified by Monnify
-      notes: updateNotes, // Pass the notes for status history
+      verifiedAmount: finalAmountForOrder,
+      notes: updateNotes,
     });
     logger.info(`[Payment Service][processWebhookEvent] Order ${orderId} successfully processed and passed to order service for update.`);
   } catch (error) {
     logger.error(`[Payment Service][processWebhookEvent] Failed to call orderService.updateOrderStatus for order ${orderId}: ${error.message}`, { stack: error.stack, payload: eventData });
-    // IMPORTANT: Do not re-throw here. Webhooks should ideally handle their own failures internally
-    // and not return errors back to the payment gateway if a 200 OK has already been sent.
-    // Use a dead-letter queue or alert system for critical failures here.
+    // IMPORTANT: Re-throw HttpError or wrap generic errors to ensure controller sends correct status
+    if (error instanceof HttpError) {
+      // Ensure statusCode is an integer before re-throwing HttpError
+      const statusCode = Number.isInteger(error.statusCode) ? error.statusCode : 500;
+      logger.error(`[Payment Service][processWebhookEvent] Propagating HttpError: ${statusCode} - ${error.message}`);
+      throw new HttpError(statusCode, `Order update failed: ${error.message}`);
+    } else {
+      // For any other unexpected errors, wrap it in a generic HttpError 500
+      logger.error(`[Payment Service][processWebhookEvent] Propagating unexpected error as HttpError 500: ${error.message}`);
+      throw new HttpError(500, `An unexpected error occurred during order update: ${error.message}`);
+    }
   }
 };
 
@@ -125,6 +131,7 @@ const processWebhookEvent = async (eventData, eventType) => {
  * @param {object} params - The webhook parameters.
  * @param {string} params.signature - The 'monnify-signature' from the request header.
  * @param {string} params.rawBodyString - The raw request body as a string.
+ * @throws {HttpError} If signature is invalid, payload is malformed, or processing fails.
  */
 const processMonnifyWebhook = async ({ signature, rawBodyString }) => {
   logger.info('[Payment Service] Starting Monnify webhook processing pipeline.');
@@ -133,7 +140,7 @@ const processMonnifyWebhook = async ({ signature, rawBodyString }) => {
   const isVerified = verifySignature(signature, rawBodyString);
   if (!isVerified) {
     logger.error('[Payment Service] Webhook signature verification failed. Aborting processing.');
-    throw new HttpError('Invalid Monnify signature.', 401);
+    throw new HttpError(401, 'Invalid Monnify signature.');
   }
   logger.info('[Payment Service] Webhook signature verified successfully. Proceeding to parse payload.');
 
@@ -143,16 +150,14 @@ const processMonnifyWebhook = async ({ signature, rawBodyString }) => {
     payload = JSON.parse(rawBodyString);
   } catch (parseError) {
     logger.error(`[Payment Service] Failed to parse Monnify webhook raw body into JSON: ${parseError.message}`, { rawBody: rawBodyString });
-    throw new HttpError('Invalid JSON payload.', 400);
+    throw new HttpError(400, 'Invalid JSON payload.');
   }
 
   const { eventType, eventData } = payload;
   logger.info(`[Payment Service] Parsed Monnify webhook payload. Event Type: ${eventType}. Payment Reference: ${eventData?.paymentReference}.`);
   logger.debug(`[Payment Service] Full Parsed Payload: ${JSON.stringify(payload)}`);
 
-
-  // Pass eventType and eventData to the processing function.
-  // This allows processWebhookEvent to handle different types based on your business logic.
+  // Delegate processing to processWebhookEvent, which now handles its own error propagation
   await processWebhookEvent(eventData, eventType);
 
   logger.info('[Payment Service] Monnify webhook processing pipeline completed.');

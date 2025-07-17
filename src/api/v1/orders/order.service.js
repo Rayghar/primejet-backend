@@ -12,20 +12,18 @@ const { firestore, admin, isFirebaseInitialized } = require('../../../config/fir
 const { logger } = require('../../../config/logger.config.js'); // Assuming logger is set up
 const referralService = require('../referrals/referral.service'); // For referral logic
 
-// REMOVED: No longer importing paymentService for order placement
-// const paymentService = require('../payments/payment.service');
+// --- Existing Functions (getOrders, getOrder, placeOrder) ---
 
 const getOrders = async (options) => {
   const { status, customerId, driverId, page, limit, userId, role, sortBy } = options;
   try {
     const query = {};
-     if (status) {
-        // Handle comma-separated statuses for $in query
-        if (status.includes(',')) {
-            query.status = { $in: status.split(',').map(s => s.trim()).filter(s => s.length > 0) };
-        } else if (status.trim().length > 0) { // Ensure status is not an empty string
-            query.status = status.trim();
-        }
+    if (status) {
+      if (status.includes(',')) {
+        query.status = { $in: status.split(',').map(s => s.trim()).filter(s => s.length > 0) };
+      } else if (status.trim().length > 0) {
+        query.status = status.trim();
+      }
     }
 
     if (role === 'customer') {
@@ -42,8 +40,7 @@ const getOrders = async (options) => {
       if (customerId) query.customerId = customerId;
       if (driverId) query.driverId = driverId;
     } else {
-        // This case should ideally be prevented by authMiddleware if role is always present
-        throw new new HttpError(403, 'Unauthorized role for accessing orders.');
+      throw new HttpError(403, 'Unauthorized role for accessing orders.');
     }
 
     const pageNum = parseInt(page, 10) || 1;
@@ -52,7 +49,6 @@ const getOrders = async (options) => {
 
     const sortOptions = sortBy ? sortBy.replace(',', ' ') : { orderDate: -1 };
 
-
     const totalOrders = await Order.countDocuments(query);
 
     const orders = await Order.find(query)
@@ -60,16 +56,16 @@ const getOrders = async (options) => {
       .skip(skip)
       .limit(limitNum)
       .populate({
-          path: 'customerId',
-          select: 'id name email phone',
-          model: 'User',
-          foreignField: 'id'
+        path: 'customerId',
+        select: 'id name email phone',
+        model: 'User',
+        foreignField: 'id'
       })
       .populate({
-          path: 'driverId',
-          select: 'id name phone vehicleType licensePlate',
-          model: 'User',
-          foreignField: 'id'
+        path: 'driverId',
+        select: 'id name phone vehicleType licensePlate',
+        model: 'User',
+        foreignField: 'id'
       });
     return {
       orders: orders.map(order => order.toObject()),
@@ -270,7 +266,6 @@ const placeOrder = async (customerId, orderData) => {
     await session.commitTransaction();
     logger.info(`[ORDER_SERVICE] Order ${savedOrder.id} placed successfully. PaymentNeeded: ${grandTotalToPayByGateway > 0}`);
 
-    // The function now simply returns the created order details to the client.
     return {
       order: savedOrder.toObject(),
       paymentNeeded: grandTotalToPayByGateway > 0,
@@ -288,6 +283,149 @@ const placeOrder = async (customerId, orderData) => {
   }
 };
 
+// --- NEW/UPDATED updateOrderStatus function for webhook processing ---
+async function updateOrderStatus({ orderId, status, paymentDetails, verifiedAmount }) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    logger.info(`[Order Service] Attempting to update order ${orderId} to status '${status}'.`);
+    const order = await Order.findOne({ id: orderId }).session(session);
+    if (!order) {
+        logger.error(`[Order Service] Order not found for status update: ${orderId}`);
+        throw new HttpError(404, 'Order not found');
+    }
+
+    // Idempotency: Prevent re-processing if order is already in a final paid/failed state
+    // Ensure `paymentDetails` is not already set with a matching `transactionId`
+    if (order.paymentStatus === 'Completed' || order.status === 'Delivered' ||
+        (order.paymentDetails && paymentDetails && order.paymentDetails.transactionId === paymentDetails.transactionId)) {
+        logger.warn(`[Order Service] Order ${orderId} already in a final state (${order.status}) or transaction with this ref (${paymentDetails.transactionId}) already processed. Skipping re-update.`);
+        await session.abortTransaction();
+        return order.toObject(); // Return the existing order object
+    }
+
+    // Crucial validation: Ensure the verified amount from Monnify API matches the order's expected total.
+    // Both `verifiedAmount` and `order.grandTotal` should be in kobo for direct comparison.
+    // This check applies only for 'paid' status webhooks.
+    if (status === 'paid' && verifiedAmount !== order.grandTotal) {
+        logger.error(`[Order Service] Amount mismatch for order ${orderId} during payment confirmation. Expected: ${order.grandTotal}, Verified: ${verifiedAmount}`);
+        order.status = 'Payment Discrepancy';
+        order.paymentStatus = 'Failed'; // Mark payment as failed due to discrepancy
+        order.paymentDetails = { // Store details even on mismatch for investigation
+            method: paymentDetails.method,
+            transactionId: paymentDetails.transactionId,
+            amount: paymentDetails.amount,
+            paidAt: paymentDetails.paidAt,
+            monnifyStatus: paymentDetails.monnifyStatus,
+        };
+        order.statusHistory.push({ status: 'Payment Discrepancy', timestamp: new Date(), notes: `Amount mismatch. Expected: ${order.grandTotal}, Verified: ${verifiedAmount}. Txn: ${paymentDetails.transactionId}` });
+        await order.save({ session });
+        await session.commitTransaction();
+        throw new HttpError(400, 'Verified payment amount does not match order total.');
+    }
+
+    // Update order status and payment details
+    order.status = (status === 'paid' ? 'Order Placed' : (status === 'failed_payment' ? 'Failed' : order.status)); // Keep existing status if not 'paid' or 'failed_payment'
+    order.paymentStatus = (status === 'paid' ? 'Completed' : (status === 'failed_payment' ? 'Failed' : order.paymentStatus));
+    order.finalAmountPaid = paymentDetails.amount; // Store the amount from the webhook
+    order.paymentDetails = { // Assign the entire nested object
+        method: paymentDetails.method,
+        transactionId: paymentDetails.transactionId,
+        amount: paymentDetails.amount,
+        paidAt: paymentDetails.paidAt,
+        monnifyStatus: paymentDetails.monnifyStatus,
+    };
+
+    order.statusHistory.push({ status: order.status, timestamp: new Date(), notes: `Payment confirmed via webhook. Ref: ${paymentDetails.transactionId}` });
+    await order.save({ session });
+
+    logger.info(`[Order Service] Order ${orderId} successfully updated to status '${order.status}'. Payment Status: '${order.paymentStatus}'.`);
+
+    // No Product model used for stock updates as per clarification.
+
+    await session.commitTransaction();
+    return order.toObject();
+  } catch (error) {
+    await session.abortTransaction();
+    // Explicitly catch Mongoose duplicate key error (code 11000)
+    if (error.code === 11000 && error.message.includes('transactionId')) { // Added includes('transactionId') for specificity
+      logger.warn(`[Order Service] Attempted to update order ${orderId} with duplicate paymentDetails.transactionId. Likely duplicate webhook processing.`);
+      throw new HttpError(409, 'Payment for this order has already been processed with this transaction ID.');
+    }
+    if (error instanceof HttpError) {
+        logger.error(`[Order Service] HttpError during update for order ${orderId}: ${error.message}`, { stack: error.stack });
+        throw error;
+    }
+    logger.error(`[Order Service] Unexpected error updating order status for ${orderId}: ${error.message}`, { stack: error.stack });
+    throw new HttpError(500, `Failed to update order status: ${error.message}`);
+  } finally {
+    session.endSession();
+  }
+}
+
+// --- REMOVE THE OLD updateOrderPaymentStatus AND processPayment FUNCTIONS ---
+// Based on the new structure, these are no longer used for core payment processing via webhook.
+// If 'processPayment' had other purposes (e.g. wallet top-ups), it should be renamed and moved.
+
+/*
+// REMOVED: This function is replaced by updateOrderStatus for webhook processing
+const updateOrderPaymentStatus = async (orderId, paymentStatus, paymentDetails, verifiedAmount, paymentGatewayReference) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const order = await Order.findById(orderId).session(session);
+    if (!order) {
+      throw new HttpError(404, 'Order not found.');
+    }
+
+    if (order.paymentStatus === 'paid') {
+      logger.warn(`[ORDER_SERVICE] Order ${orderId} is already marked as paid. Skipping update.`);
+      await session.commitTransaction();
+      return { message: 'Order already paid.', order: order.toObject() };
+    }
+
+    order.paymentStatus = paymentStatus;
+    order.finalAmountPaid = verifiedAmount;
+    order.paymentGatewayReference = paymentGatewayReference; // Set the reference
+    order.paymentTransactionId = paymentDetails.transactionReference; // Assuming this from Monnify payload
+    order.paymentHistory.push({
+      status: paymentStatus,
+      timestamp: new Date(),
+      notes: `Payment updated via webhook. Gateway reference: ${paymentGatewayReference}`,
+      paymentDetails: paymentDetails, // Store full payment details for audit
+    });
+
+    if (paymentStatus === 'paid') {
+      order.status = 'Payment Confirmed'; // Or 'Processing'
+      order.statusHistory.push({
+        status: order.status,
+        timestamp: new Date(),
+        notes: 'Payment successfully confirmed via gateway webhook.',
+        updaterRole: 'system',
+      });
+    }
+
+    await order.save({ session });
+    await session.commitTransaction();
+    logger.info(`[ORDER_SERVICE] Order ${orderId} payment status updated to '${paymentStatus}'.`);
+    return { message: 'Order payment status updated successfully.', order: order.toObject() };
+  } catch (error) {
+    await session.abortTransaction();
+    if (error instanceof HttpError) throw error;
+    if (error.code === 11000 && error.keyPattern && error.keyPattern.paymentGatewayReference) {
+      logger.warn(`[ORDER_SERVICE] Attempted to update order ${orderId} with duplicate paymentGatewayReference: ${paymentGatewayReference}. Skipping.`);
+      throw new HttpError(409, 'Payment for this order has already been processed with this transaction ID.');
+    }
+    logger.error('Unexpected error in updateOrderPaymentStatus:', { error: error.message, stack: error.stack, orderId });
+    throw new HttpError(500, 'Failed to update order payment status due to an unexpected error.');
+  } finally {
+    session.endSession();
+  }
+};
+*/
+
+/*
+// REMOVED: This function is replaced by webhook-driven processing
 const processPayment = async (orderId, paymentData, customerId, customerRole) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -306,16 +444,13 @@ const processPayment = async (orderId, paymentData, customerId, customerRole) =>
 
     order.status = 'Order Placed';
     order.paymentStatus = 'Completed';
-    // Ensure finalAmountPaid updates correctly without adding if it's the first time being set
-    order.finalAmountPaid = paymentData.amount; // Direct assignment as per update
-
+    order.finalAmountPaid = paymentData.amount;
     order.paymentTransactionId = paymentData.transactionId;
-    order.paymentGateway = 'flutterwave'; // Set the gateway as specified in the update
+    order.paymentGateway = 'flutterwave'; // This was hardcoded to flutterwave
     order.statusHistory.push({ status: 'Payment Completed', timestamp: new Date(), notes: `Confirmed by client app. Ref: ${paymentData.transactionId}` });
 
     await order.save({ session });
 
-    // Your referral logic can remain here
     if (user.referredBy) {
       const completedOrdersCount = await Order.countDocuments({
         customerId: user.id,
@@ -340,6 +475,10 @@ const processPayment = async (orderId, paymentData, customerId, customerRole) =>
     session.endSession();
   }
 };
+*/
+
+// --- Existing Functions (submitFeedback, getLocationHistory, driverUpdateOrderStatus,
+// adminGetOrders, adminUpdateOrderStatus, adminAssignDriver, cancelOrder, getCustomerConsumptionData) ---
 
 const submitFeedback = async (orderId, feedbackData, customerId, customerRole) => {
   try {
@@ -419,11 +558,11 @@ const adminGetOrders = async (options) => {
   try {
     const query = {};
     if (status) {
-        if (status.includes(',')) {
-            query.status = { $in: status.split(',').map(s => s.trim()).filter(s => s.length > 0) };
-        } else if (status.trim().length > 0) {
-            query.status = status.trim();
-        }
+      if (status.includes(',')) {
+        query.status = { $in: status.split(',').map(s => s.trim()).filter(s => s.length > 0) };
+      } else if (status.trim().length > 0) {
+        query.status = status.trim();
+      }
     }
     if (search) {
       const searchRegex = new RegExp(search, 'i');
@@ -530,17 +669,15 @@ const adminAssignDriver = async (orderId, driverIdToAssign, adminId, adminRole) 
         await session.commitTransaction();
         logger.info(`Run ${newRun.id} created and driver ${driver.name} assigned to order ${orderId}.`);
 
-        // Assuming getOrder needs a requesting user object for auth, simplified for this context.
-        // If getOrder needs the full user, you'd fetch it here.
         const populatedOrder = await Order.findOne({ id: orderId })
             .populate('customerId', 'id name email phone')
             .populate('driverId', 'id name phone vehicleType licensePlate')
-            .session(session); // Use the session for consistency
+            .session(session);
 
         return { message: `Driver ${driver.name} assigned to order ${orderId}.`, order: populatedOrder.toObject() };
 
     } catch (error) {
-          await session.abortTransaction();
+            await session.abortTransaction();
         logger.error('Unexpected error in adminAssignDriver:', { error: error.message, stack: error.stack, orderId });
         if (error instanceof HttpError) throw error;
         if (error.name === 'ValidationError') {

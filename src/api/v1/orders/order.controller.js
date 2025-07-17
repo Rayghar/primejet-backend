@@ -1,166 +1,101 @@
-// src/api/v1/orders/order.controller.js
+// File: src/api/v1/orders/order.controller.js
 const orderService = require('./order.service');
-const { logger } = require('../../../config/logger.config'); // Ensure logger is imported
+// Assuming paymentService is imported if createStripePaymentIntent is called here
+// const paymentService = require('../payments/payment.service'); 
 const HttpError = require('../../../utils/HttpError');
+const { logger } = require('../../../config/logger.config.js');
 
-// Controller for placing a new order
+
 const placeOrder = async (req, res, next) => {
   try {
-    const customerId = req.user.id;
-    const orderData = req.body;
-    const result = await orderService.placeOrder(customerId, orderData);
-    res.status(201).json(result);
+    logger.info(`[ORDER_CONTROLLER] placeOrder initiated by user: ${req.user.id}`);
+    // req.user.id IS the customerId from the token
+    // req.body IS the orderData payload from the frontend
+    if (typeof req.user.id !== 'string' || !req.user.id) {
+        logger.error('[ORDER_CONTROLLER] customerId (req.user.id) is invalid:', req.user.id);
+        return next(new HttpError(400, 'Invalid user identifier for placing order.'));
+    }
+
+    const result = await orderService.placeOrder(req.user.id, req.body); 
+
+    // The call to paymentService.createPaymentIntent was in your file.
+    // This should align with how your payment flow is designed.
+    // If using Stripe and paymentService.createStripePaymentIntent is in order.service.js,
+    // then the result already contains clientSecret and paymentIntentId.
+    // If it's a separate call, ensure paymentService.createPaymentIntent is correctly defined.
+    
+    // For now, assuming result from orderService.placeOrder contains all necessary payment info:
+    res.status(201).json(result); // result = { order, paymentIntentClientSecret, paymentIntentId, paymentNeeded, ... }
+
   } catch (error) {
+    logger.error(`[ORDER_CONTROLLER] Error in placeOrder for user ${req.user.id}:`, { message: error.message, stack: error.stack });
     next(error);
   }
 };
 
-// Controller for fetching single order details
-const getOrderDetails = async (req, res, next) => {
-  try {
-    const { orderId } = req.params;
-    const requestingUser = req.user; // User object from auth middleware
-    const order = await orderService.getOrder(orderId, requestingUser);
+// ... (rest of your order.controller.js methods: getOrders, getOrder, etc.)
+const getOrders = async (req, res, next) => { /* ... */   try {
+    const { status, customerId, driverId, page = 1, limit = 10, sortBy } = req.query;
+    const result = await orderService.getOrders({ status, customerId, driverId, page: parseInt(page, 10), limit: parseInt(limit, 10), userId: req.user.id, role: req.user.role, sortBy});
+    res.status(200).json(result);
+  } catch (error) { next(error); }};
+const getOrder = async (req, res, next) => { /* ... */   try {
+    const order = await orderService.getOrder(req.params.orderId, req.user.id, req.user.role);
     res.status(200).json(order);
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Controller for fetching list of orders (customer, driver, admin)
-const getOrders = async (req, res, next) => {
-  try {
-    const options = {
-      ...req.query, // page, limit, status, sortBy, customerId, driverId
-      userId: req.user.id,
-      role: req.user.role,
-    };
-    const orders = await orderService.getOrders(options);
-    res.status(200).json(orders);
-  } catch (error) {
-    next(error);
-  }
-};
-
-// NEW: Controller for fetching payment status of an order
-const getOrderPaymentStatus = async (req, res, next) => {
-  try {
-    const { orderId } = req.params;
-    const customerId = req.user.id; // Assuming req.user.id holds the authenticated customer's ID
-
-    const result = await orderService.getOrderPaymentStatus(orderId, customerId);
+  } catch (error) { next(error); }};
+const processOrderPayment = async (req, res, next) => { /* ... */   try {
+    const result = await orderService.processPayment(req.params.orderId, req.body, req.user.id, req.user.role);
     res.status(200).json(result);
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Controller for submitting feedback
-const submitFeedback = async (req, res, next) => {
-  try {
-    const { orderId } = req.params;
-    const feedbackData = req.body;
-    const customerId = req.user.id;
-    const customerRole = req.user.role;
-    const result = await orderService.submitFeedback(orderId, feedbackData, customerId, customerRole);
-    res.status(200).json(result);
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Controller for getting location history
-const getLocationHistory = async (req, res, next) => {
-  try {
-    const { orderId } = req.params;
-    const requestingUserId = req.user.id;
-    const requestingUserRole = req.user.role;
-    const locations = await orderService.getLocationHistory(orderId, requestingUserId, requestingUserRole);
-    res.status(200).json(locations);
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Controller for driver to update order status
-const driverUpdateOrderStatus = async (req, res, next) => {
-  try {
-    const { orderId } = req.params;
+  } catch (error) { next(error); }};
+const submitFeedback = async (req, res, next) => { /* ... */   try {
+    const result = await orderService.submitFeedback(req.params.orderId, req.body, req.user.id, req.user.role);
+    res.status(201).json(result);
+  } catch (error) { next(error); }};
+const getLocationHistory = async (req, res, next) => { /* ... */   try {
+    const history = await orderService.getLocationHistory(req.params.orderId, req.user.id, req.user.role);
+    res.status(200).json(history);
+  } catch (error) { next(error); }};
+const driverUpdateOrderStatus = async (req, res, next) => { /* ... */   try {
     const { status, notes } = req.body;
-    const driverId = req.user.id;
-    const driverRole = req.user.role;
-    const result = await orderService.driverUpdateOrderStatus(orderId, status, notes, driverId, driverRole);
+    const result = await orderService.driverUpdateOrderStatus(req.params.orderId, status, notes, req.user.id, req.user.role );
     res.status(200).json(result);
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Admin specific order controllers
-const adminGetOrders = async (req, res, next) => {
-  try {
-    const options = req.query; // status, search, dateRangeStart, dateRangeEnd, page, limit, sortBy
-    const orders = await orderService.adminGetOrders(options);
-    res.status(200).json(orders);
-  } catch (error) {
-    next(error);
-  }
-};
-
-const adminUpdateOrderStatus = async (req, res, next) => {
-  try {
-    const { orderId } = req.params;
+  } catch (error) { next(error); }};
+const adminGetOrders = async (req, res, next) => { /* ... */   try {
+    const { status, search, dateRangeStart, dateRangeEnd, page = 1, limit = 10, sortBy } = req.query;
+    const result = await orderService.adminGetOrders({ status, search, dateRangeStart, dateRangeEnd, page: parseInt(page, 10), limit: parseInt(limit, 10), sortBy });
+    res.status(200).json(result);
+  } catch (error) { next(error); }};
+const adminUpdateOrderStatus = async (req, res, next) => { /* ... */   try {
     const { status, notes } = req.body;
-    const adminId = req.user.id;
-    const adminRole = req.user.role;
-    const result = await orderService.adminUpdateOrderStatus(orderId, status, notes, adminId, adminRole);
+    const result = await orderService.adminUpdateOrderStatus(req.params.orderId, status, notes, req.user.id, req.user.role);
     res.status(200).json(result);
-  } catch (error) {
-    next(error);
-  }
-};
-
-const adminAssignDriver = async (req, res, next) => {
-  try {
-    const { orderId } = req.params;
+  } catch (error) { next(error); }};
+const adminAssignDriver = async (req, res, next) => { /* ... */   try {
     const { driverId } = req.body;
-    const adminId = req.user.id;
-    const adminRole = req.user.role;
-    const result = await orderService.adminAssignDriver(orderId, driverId, adminId, adminRole);
+    const result = await orderService.adminAssignDriver(req.params.orderId, driverId, req.user.id, req.user.role);
     res.status(200).json(result);
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Controller for customer to cancel an order
-const cancelOrder = async (req, res, next) => {
-  try {
-    const { orderId } = req.params;
-    const customerId = req.user.id;
-    const customerRole = req.user.role;
-    const result = await orderService.cancelOrder(orderId, customerId, customerRole);
+  } catch (error) { next(error); }};
+const cancelOrder = async (req, res, next) => { /* ... */   try {
+    const result = await orderService.cancelOrder(req.params.orderId, req.user.id, req.user.role);
     res.status(200).json(result);
-  } catch (error) {
-    next(error);
-  }
-};
+  } catch (error) { next(error); }};
 
 const getCustomerConsumptionData = async (req, res, next) => {
   try {
     const customerId = req.user.id;
-    const data = await orderService.getCustomerConsumptionData(customerId);
-    res.status(200).json(data);
+    const result = await orderService.getCustomerConsumptionData(customerId);
+    res.status(200).json(result);
   } catch (error) {
     next(error);
   }
 };
 
+
 module.exports = {
-  placeOrder,
-  getOrderDetails,
   getOrders,
-  getOrderPaymentStatus, // NEW: Export the new controller function
+  getOrder,
+  placeOrder,
+  processOrderPayment,
   submitFeedback,
   getLocationHistory,
   driverUpdateOrderStatus,
@@ -169,5 +104,4 @@ module.exports = {
   adminAssignDriver,
   cancelOrder,
   getCustomerConsumptionData,
-  
 };

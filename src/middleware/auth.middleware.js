@@ -55,35 +55,23 @@ const authMiddleware = (requiredRole) => async (req, res, next) => {
     console.log('[AUTH_MIDDLEWARE DEBUG] User found in DB: ID:', user.id, 'Role:', user.role);
 
     // Role-based authorization check:
-    if (allowedRoles.length > 0) {
-        // FIX: Ensure user.role is trimmed before comparison.
-        const userRoleTrimmed = user.role.trim(); // Trim the user's role
-        const allowedRolesTrimmed = allowedRoles.map(role => role.trim()); // Ensure allowed roles are also trimmed
-
-        logger.debug(`[AUTH_MIDDLEWARE DEBUG] Role check for user ${user.id}. Expected: ${allowedRolesTrimmed.join(',')}, Actual: ${userRoleTrimmed}`);
-
-        if (!allowedRolesTrimmed.includes(userRoleTrimmed)) { // Compare trimmed roles
-          logger.debug(`[AUTH_MIDDLEWARE DEBUG] Role mismatch for user ${user.id}. Expected: ${allowedRolesTrimmed.join(',')}, Actual: ${userRoleTrimmed}`);
-          throw new HttpError(403, `Insufficient permissions for this resource. Your role is ${userRoleTrimmed}.`);
-        }
-      }
-
-      req.user = user.toObject(); // Attach user object to request
-      delete req.user.password; // Remove sensitive info
-      logger.debug(`[AUTH_MIDDLEWARE DEBUG] req.user successfully set. Calling next().`);
-      next();
-    } catch (error) {
-      logger.error(`[AUTH_MIDDLEWARE] Authentication/Authorization error: ${error.message}`, { stack: error.stack });
-      if (error instanceof HttpError) {
-        res.status(error.statusCode).json({ message: error.message });
-      } else if (error.name === 'TokenExpiredError') {
-        res.status(401).json({ message: 'Authentication failed: Token expired.' });
-      } else if (error.name === 'JsonWebTokenError') {
-        res.status(401).json({ message: 'Authentication failed: Invalid token.' });
-      } else {
-        res.status(500).json({ message: 'Authentication failed: An unexpected error occurred.' });
-      }
+    if (requiredRole && user.role !== requiredRole) {
+      console.log(`[AUTH_MIDDLEWARE DEBUG] Role mismatch for user ${user.id}. Expected: ${requiredRole}, Actual: ${user.role}`);
+      return next(new HttpError(403, `Insufficient permissions for this resource. Your role is ${user.role}.`));
     }
+
+    // Attach the fetched Mongoose user document to `req.user`.
+    req.user = user; 
+    console.log('[AUTH_MIDDLEWARE DEBUG] req.user successfully set. Calling next().');
+    next(); // Proceed to the next middleware or route handler
+  } catch (error) {
+    console.error('[AUTH_MIDDLEWARE DEBUG] UNEXPECTED Authentication error in catch block:', error.message, 'Stack:', error.stack);
+    if (error instanceof HttpError) {
+      return next(error); // Pass custom HttpErrors directly
+    }
+    // Fallback for other unexpected errors during token verification or user lookup
+    return next(new HttpError(500, 'Authentication process failed due to an unexpected server error.'));
   }
-  
+};
+
 module.exports = authMiddleware;

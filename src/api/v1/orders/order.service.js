@@ -319,13 +319,16 @@ const placeOrder = async (customerId, orderData) => {
  * @param {number} params.verifiedAmount - The amount paid as verified by the payment gateway (in kobo).
  * @param {string} [params.notes] - Additional notes for the status history.
  * @returns {Promise<object>} The updated order object.
+ * @throws {HttpError} If order not found, amount mismatch, or other processing errors.
  */
 async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetails, verifiedAmount, notes = '' }) {
   const session = await mongoose.startSession();
   session.startTransaction();
+  logger.debug(`[Order Service][updateOrderStatus] Starting transaction for order ${orderId}.`);
+
   try {
     logger.info(`[Order Service][updateOrderStatus] Initiating DB update for order ${orderId}. Target Status: '${status}', Target Payment Status: '${paymentStatus}'.`);
-    logger.debug(`[Order Service][updateOrderStatus] Received paymentDetails: ${JSON.stringify(paymentDetails)}, Verified Amount: ${verifiedAmount}, Notes: '${notes}'`);
+    logger.debug(`[Order Service][updateOrderStatus] Received paymentDetails: ${JSON.stringify(paymentDetails)}, Verified Amount: ${verifiedAmount}, Notes: '${notes}'.`);
 
     const order = await Order.findOne({ id: orderId }).session(session);
     if (!order) {
@@ -339,23 +342,24 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
     // the transactionId matches, skip to avoid duplicate processing.
     if (order.paymentStatus === 'Completed' && paymentDetails?.transactionId && order.paymentDetails?.transactionId === paymentDetails.transactionId) {
         logger.warn(`[Order Service][updateOrderStatus] Order ${orderId} already has paymentStatus 'Completed' with matching transaction ID '${paymentDetails.transactionId}'. Skipping re-update. Aborting transaction.`);
-        await session.abortTransaction(); // Abort transaction if it's a duplicate and no changes needed
-        return order.toObject(); // Return the existing order object
+        await session.abortTransaction();
+        return order.toObject();
     }
+    logger.debug(`[Order Service][updateOrderStatus] Idempotency check passed for order ${orderId}.`);
+
 
     // Logic for successful payment (Monnify paymentStatus 'PAID' mapping to 'Completed')
     if (paymentStatus === 'Completed') {
         logger.info(`[Order Service][updateOrderStatus] Processing successful payment confirmation for order ${orderId}.`);
 
         // Crucial validation: Ensure the verified amount from Monnify matches the order's expected total.
-        // Both `verifiedAmount` and `order.grandTotal` are expected to be in kobo for direct comparison.
         if (verifiedAmount !== order.grandTotal) {
-            logger.error(`[Order Service][updateOrderStatus] Amount mismatch for order ${orderId}. Expected: ${order.grandTotal}, Verified: ${verifiedAmount}. Txn Ref: ${paymentDetails.transactionId}.`);
+            logger.error(`[Order Service][updateOrderStatus] Amount mismatch for order ${orderId}. Expected: ${order.grandTotal}, Verified: ${verifiedAmount}. Txn Ref: ${paymentDetails.transactionId}. Aborting transaction.`);
             order.status = 'Payment Discrepancy';
-            order.paymentStatus = 'Failed'; // Mark payment as failed due to discrepancy
-            order.finalAmountPaid = verifiedAmount; // Store what was actually paid
-            order.paymentDetails = { // Store details even on mismatch for investigation
-                ...paymentDetails, // Spread existing details
+            order.paymentStatus = 'Failed';
+            order.finalAmountPaid = verifiedAmount;
+            order.paymentDetails = {
+                ...paymentDetails,
                 notes: `Amount mismatch. Expected: ${order.grandTotal}, Verified: ${verifiedAmount}.`,
             };
             order.statusHistory.push({ status: 'Payment Discrepancy', timestamp: new Date(), notes: `Amount mismatch. Expected: ${order.grandTotal}, Verified: ${verifiedAmount}. Txn: ${paymentDetails.transactionId}.` });
@@ -365,40 +369,30 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
             logger.info(`[Order Service][updateOrderStatus] Order ${orderId} updated to 'Payment Discrepancy' due to amount mismatch.`);
             throw new HttpError(400, 'Verified payment amount does not match order total.');
         }
+        logger.debug(`[Order Service][updateOrderStatus] Amount verification passed for order ${orderId}.`);
 
-        // Apply wallet refund if the payment was originally set to use wallet but not fully paid via gateway
-        // This logic depends on your exact wallet integration and how `grandTotal` and `finalAmountPaid` are defined.
-        // If `finalAmountPaid` is supposed to be only the gateway amount, this logic applies.
-        if (order.walletAmountUsed > 0 && order.finalAmountPaid === 0) { // Check if wallet was used but order not marked paid yet
-            // If the verifiedAmount from gateway is less than grandTotal, and the difference is exactly walletAmountUsed
-            // or if the grandTotal was fully covered by wallet and now gateway says "paid" for 0 amount.
-            // This part might need further refinement based on your exact payment flow (e.g., if total is 0 after wallet, no gateway payment needed)
-             logger.debug(`[Order Service][updateOrderStatus] Order ${orderId} originally used wallet balance: ${order.walletAmountUsed}.`);
-             // Revert wallet deduction if the payment was actually processed by gateway covering the whole amount
-             // This can be complex, often safer to handle wallet deduction at initial order placement and not revert here unless payment failed.
-             // For now, assuming wallet was deducted at `placeOrder` and Monnify just confirms the remaining amount.
-        }
+        // Apply wallet refund logic here if needed based on your business rules (e.g., if wallet was used but now gateway covered everything)
+        // Ensure this logic is sound and doesn't double-charge or double-refund.
 
-        order.finalAmountPaid = verifiedAmount; // This is the amount actually received from the gateway (in kobo)
-        order.status = 'Order Placed'; // Primary order status
-        order.paymentStatus = 'Completed'; // Payment status
-        order.paymentDetails = paymentDetails; // Assign the entire nested object from webhook
+        order.finalAmountPaid = verifiedAmount;
+        order.status = 'Order Placed';
+        order.paymentStatus = 'Completed';
+        order.paymentDetails = paymentDetails;
 
         const statusNotes = notes || `Payment confirmed successfully via webhook. Txn Ref: ${paymentDetails.transactionId}.`;
         order.statusHistory.push({ status: order.status, timestamp: new Date(), notes: statusNotes });
         logger.info(`[Order Service][updateOrderStatus] Order ${orderId} successfully transitioned to Status: '${order.status}', Payment Status: '${order.paymentStatus}'.`);
 
     } else if (paymentStatus === 'Failed' || paymentStatus === 'Canceled') {
-        // Handle explicit failure/cancellation webhooks
-        if (order.paymentStatus !== 'Completed') { // Only update if not already completed by a successful payment
-            order.status = 'Payment Failed'; // Primary order status for failures
-            order.paymentStatus = 'Failed'; // Payment status
-            order.paymentDetails = paymentDetails; // Store failure details
+        logger.debug(`[Order Service][updateOrderStatus] Processing FAILED or CANCELLED payment status for order ${orderId}.`);
+        if (order.paymentStatus !== 'Completed') {
+            order.status = 'Payment Failed';
+            order.paymentStatus = 'Failed';
+            order.paymentDetails = paymentDetails;
             const statusNotes = notes || `Payment failed via webhook. Txn Ref: ${paymentDetails.transactionId}. Monnify Status: ${paymentDetails.monnifyStatus}.`;
             order.statusHistory.push({ status: 'Payment Failed', timestamp: new Date(), notes: statusNotes });
             logger.warn(`[Order Service][updateOrderStatus] Order ${orderId} payment explicitly failed via webhook. Status: '${order.status}', Payment Status: '${order.paymentStatus}'.`);
 
-            // If wallet was used, and payment fails, refund wallet balance
             if (order.walletAmountUsed > 0) {
                 const user = await User.findOne({ id: order.customerId }).session(session);
                 if (user) {
@@ -406,67 +400,82 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
                     await user.save({ session });
                     logger.info(`[Order Service][updateOrderStatus] Refunded ${order.walletAmountUsed} to user ${user.id}'s wallet for failed order ${orderId}. New balance: ${user.walletBalance}.`);
                 } else {
-                    logger.error(`[Order Service][updateOrderStatus] Critical: User ${order.customerId} not found to refund wallet for failed order ${orderId}.`);
+                    logger.error(`[Order Service][updateOrderStatus] Critical: User ${order.customerId} not found to refund wallet for failed order ${orderId}. Throwing HttpError 500.`);
+                    throw new HttpError(500, "Error processing cancellation refund: User not found.");
                 }
             }
         } else {
-            logger.info(`[Order Service][updateOrderStatus] Received a failed/canceled webhook for order ${orderId}, but payment is already Completed. Skipping update.`);
-            await session.abortTransaction(); // No changes needed, abort to be safe
+            logger.info(`[Order Service][updateOrderStatus] Received a failed/canceled webhook for order ${orderId}, but payment is already Completed. Skipping update. Aborting transaction.`);
+            await session.abortTransaction();
             return order.toObject();
         }
     } else {
-        // For other intermediate statuses from Monnify, if you receive them and don't need to update your DB:
         logger.info(`[Order Service][updateOrderStatus] Received unhandled (or non-terminal) paymentStatus '${paymentStatus}' for order ${orderId}. No DB update performed by this block. Aborting transaction.`);
-        await session.abortTransaction(); // No changes needed, abort to be safe
+        await session.abortTransaction();
         return order.toObject();
     }
 
+    logger.debug(`[Order Service][updateOrderStatus] Attempting to save order ${orderId} document to DB.`);
     await order.save({ session });
-    logger.debug(`[Order Service][updateOrderStatus] Order ${orderId} document saved to DB. Attempting to commit transaction.`);
+    logger.debug(`[Order Service][updateOrderStatus] Order ${orderId} document saved. Attempting to commit transaction.`);
     await session.commitTransaction();
-    logger.info(`[Order Service][updateOrderStatus] Transaction committed for order ${orderId}. Final DB state: Status='${order.status}', PaymentStatus='${order.paymentStatus}'.`);
+    logger.info(`[Order Service][updateOrderStatus] Transaction committed for order ${orderId}. Final DB state: Status='${order.status}', Payment Status: '${order.paymentStatus}'.`);
 
-    // Potentially trigger referral service here if first successful order.
-    // Ensure this logic is idempotent if Monnify might re-send webhooks.
+    // Referral logic. Moved outside main transaction for robustness, ensure its own transaction/idempotency
     if (order.referrerId && paymentStatus === 'Completed') {
-        const user = await User.findOne({ id: order.customerId }).session(session); // Fetch again with session for safety
-        if (user && user.referredBy && user.referredBy === order.referrerId) {
-            const completedOrdersCount = await Order.countDocuments({
-                customerId: order.customerId,
-                paymentStatus: 'Completed',
-                status: { $nin: ['Canceled', 'Canceled by Customer', 'Payment Failed'] } // Count only genuinely completed orders
-            }).session(session);
+        logger.debug(`[Order Service][updateOrderStatus] Checking referral for order ${orderId} (referrerId: ${order.referrerId}).`);
+        try {
+            const user = await User.findOne({ id: order.customerId }); // Fetch outside the session or start a new one for referral if needed
+            if (user && user.referredBy && user.referredBy === order.referrerId) {
+                const completedOrdersCount = await Order.countDocuments({
+                    customerId: order.customerId,
+                    paymentStatus: 'Completed',
+                    status: { $nin: ['Canceled', 'Canceled by Customer', 'Payment Failed'] }
+                });
 
-            if (completedOrdersCount === 1) { // If this is the first successfully completed order for the referee
-                logger.info(`[ORDER_SERVICE][updateOrderStatus] Referee ${order.customerId}'s first completed purchase (${order.id}). Triggering referral credit for referrer ${order.referrerId}.`);
-                await referralService.creditReferrerForSuccessfulReferral(order, session); // Pass order and session
+                if (completedOrdersCount === 1) {
+                    logger.info(`[ORDER_SERVICE][updateOrderStatus] Referee ${order.customerId}'s first completed purchase (${order.id}). Triggering referral credit for referrer ${order.referrerId}.`);
+                    await referralService.creditReferrerForSuccessfulReferral(order); // Pass order object
+                } else {
+                    logger.debug(`[ORDER_SERVICE][updateOrderStatus] Referee ${order.customerId} has more than one completed order (${completedOrdersCount}). Not crediting referrer for this order based on first purchase rule.`);
+                }
             } else {
-                logger.debug(`[ORDER_SERVICE][updateOrderStatus] Referee ${order.customerId} has more than one completed order (${completedOrdersCount}). Not crediting referrer for this order based on first purchase rule.`);
+                logger.debug(`[ORDER_SERVICE][updateOrderStatus] Referral not credited for order ${orderId}: User ${order.customerId} not found or referredBy mismatch for referral logic.`);
             }
-        } else {
-            logger.debug(`[ORDER_SERVICE][updateOrderStatus] Referral not credited for order ${orderId}: User ${order.customerId} not found or referredBy mismatch.`);
+        } catch (referralError) {
+            logger.error(`[ORDER_SERVICE][updateOrderStatus] Error processing referral for order ${orderId}: ${referralError.message}`, { stack: referralError.stack });
+            // Do not re-throw referral errors as it shouldn't block the main order update.
         }
     }
 
-
     return order.toObject();
   } catch (error) {
+    // This catch block handles errors occurring within the transaction.
     await session.abortTransaction(); // Ensure transaction is aborted on any error
     logger.error(`[Order Service][updateOrderStatus] Transaction aborted for order ${orderId} due to error. Original error: ${error.message}`, { stack: error.stack, errorObject: error });
 
-    // Explicitly catch Mongoose duplicate key error (code 11000) for transactionId
-    if (error.code === 11000 && error.message.includes('transactionId')) {
-      logger.warn(`[Order Service][updateOrderStatus] Attempted to update order ${orderId} with duplicate paymentDetails.transactionId. This indicates a repeated webhook for the same transaction. Returning 409. Original message: ${error.message}`);
-      throw new HttpError(409, 'Payment for this order has already been processed with this transaction ID.');
-    }
+    // Ensure HttpError is re-thrown with a valid integer status code.
     if (error instanceof HttpError) {
-        logger.error(`[Order Service][updateOrderStatus] HttpError during update for order ${orderId}: ${error.message}`, { stack: error.stack, details: paymentDetails });
-        throw error;
+        const statusCode = Number.isInteger(error.statusCode) ? error.statusCode : 500;
+        logger.error(`[Order Service][updateOrderStatus] Propagating HttpError: ${statusCode} - ${error.message}.`);
+        throw new HttpError(statusCode, error.message);
+    } else {
+        // For unexpected non-HttpError errors, wrap and re-throw as HttpError 500.
+        logger.error(`[Order Service][updateOrderStatus] Propagating unexpected non-HttpError as HttpError 500: ${error.message}.`);
+        throw new HttpError(500, `Failed to update order status due to an unexpected error: ${error.message}`);
     }
-    logger.error(`[Order Service][updateOrderStatus] Unexpected error updating order status for ${orderId}: ${error.message}`, { stack: error.stack, details: paymentDetails, originalError: error });
-    throw new HttpError(500, `Failed to update order status: ${error.message}`);
   } finally {
-    session.endSession(); // Ensure session is always ended
+    // Ensure the session is always ended, regardless of success or failure.
+    if (session.inTransaction()) { // Check if session is still active (e.g., if commit/abort failed for some reason)
+        logger.warn(`[Order Service][updateOrderStatus] Session still active in finally block for order ${orderId}. Attempting to end session.`);
+        try {
+            await session.endSession();
+        } catch (e) {
+            logger.error(`[Order Service][updateOrderStatus] Error ending session for order ${orderId}: ${e.message}`);
+        }
+    } else {
+        logger.debug(`[Order Service][updateOrderStatus] Session ended successfully for order ${orderId}.`);
+    }
   }
 }
 

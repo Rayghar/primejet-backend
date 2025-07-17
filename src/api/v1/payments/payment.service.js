@@ -16,16 +16,14 @@ const MONNIFY_SECRET_KEY = process.env.MONNIFY_SECRET_KEY || "2Z659QCSA4GCPR0VKT
  * @returns {boolean} - True if the signature is valid, false otherwise.
  */
 const verifySignature = (signature, rawBodyString) => {
-  logger.debug('[Payment Service][verifySignature] Starting signature verification.');
+  logger.debug('[Payment Service][verifySignature] Starting signature verification process.');
   logger.debug(`[Payment Service][verifySignature] Received signature: ${signature}`);
   logger.debug(`[Payment Service][verifySignature] Using secret key (first 5 chars): ${MONNIFY_SECRET_KEY ? MONNIFY_SECRET_KEY.substring(0, 5) : 'N/A'}...`);
 
-
   if (!signature || !rawBodyString || !MONNIFY_SECRET_KEY) {
-    logger.error('[Payment Service][verifySignature] Missing signature, rawBodyString, or secret key for verification. Cannot proceed.');
+    logger.error('[Payment Service][verifySignature] Missing signature, rawBodyString, or secret key for verification. Aborting verification.');
     return false;
   }
-  // The hash is calculated using your secret key and the raw request body
   const hash = crypto
     .createHmac('sha512', MONNIFY_SECRET_KEY)
     .update(rawBodyString)
@@ -35,7 +33,7 @@ const verifySignature = (signature, rawBodyString) => {
 
   const isSignatureValid = hash === signature;
   if (!isSignatureValid) {
-    logger.warn(`[Payment Service][verifySignature] Signature Mismatch! Computed: ${hash}, Received: ${signature}.`);
+    logger.warn(`[Payment Service][verifySignature] Signature Mismatch detected! Computed: ${hash}, Received: ${signature}.`);
   } else {
     logger.info('[Payment Service][verifySignature] Signature successfully verified.');
   }
@@ -49,46 +47,47 @@ const verifySignature = (signature, rawBodyString) => {
  * @throws {HttpError} If an error occurs during order update that should be propagated.
  */
 const processWebhookEvent = async (eventData, eventType) => {
-  logger.info(`[Payment Service][processWebhookEvent] Processing webhook event of type: ${eventType}`);
-  logger.debug(`[Payment Service][processWebhookEvent] Event Data: ${JSON.stringify(eventData)}`);
+  logger.info(`[Payment Service][processWebhookEvent] Processing webhook event of type: ${eventType}.`);
+  logger.debug(`[Payment Service][processWebhookEvent] Full Event Data received: ${JSON.stringify(eventData)}`);
 
   const { paymentReference, paymentStatus, transactionReference, amountPaid, paymentMethod, responseMessage } = eventData;
-
-  // The 'paymentReference' from the SDK is your internal orderId
   const orderId = paymentReference;
 
+  logger.debug(`[Payment Service][processWebhookEvent] Extracted: Order ID: ${orderId}, Payment Status: ${paymentStatus}, Transaction Ref: ${transactionReference}`);
+
   if (!orderId) {
-    logger.warn('[Payment Service][processWebhookEvent] Webhook received without a paymentReference (orderId). Skipping processing for this eventData.', eventData);
-    // Do NOT throw HttpError here as it's an async background process, just log and exit.
-    // However, if processWebhookEvent is called directly and a valid orderId is expected, consider throwing.
-    return;
+    logger.warn('[Payment Service][processWebhookEvent] Webhook received without a paymentReference (orderId). Skipping processing for this eventData. Event Data:', eventData);
+    throw new HttpError(400, 'Webhook payload missing order ID (paymentReference).'); // Throwing here to ensure a non-200 response if critical data is missing
   }
 
-  // Determine the desired status for your order based on Monnify's paymentStatus
   let newOrderStatus = null;
   let newPaymentStatus = null;
-  let finalAmountForOrder = 0; // Initialize with 0
+  let finalAmountForOrder = 0;
   let updateNotes = '';
 
-  if (paymentStatus === 'PAID') {
-    newOrderStatus = 'Order Placed';
-    newPaymentStatus = 'Completed';
-    finalAmountForOrder = amountPaid;
-    updateNotes = `Payment successfully confirmed via Monnify webhook. Txn Ref: ${transactionReference}.`;
-    logger.info(`[Payment Service][processWebhookEvent] Identified PAID status for order ${orderId}.`);
-  } else if (paymentStatus === 'FAILED') {
-    newOrderStatus = 'Failed';
-    newPaymentStatus = 'Failed';
-    updateNotes = `Payment failed via Monnify webhook. Txn Ref: ${transactionReference}. Reason: ${responseMessage || 'N/A'}`;
-    logger.warn(`[Payment Service][processWebhookEvent] Identified FAILED status for order ${orderId}.`);
-  } else if (paymentStatus === 'CANCELLED') {
-    newOrderStatus = 'Canceled by Customer';
-    newPaymentStatus = 'Failed';
-    updateNotes = `Payment cancelled by customer via Monnify webhook. Txn Ref: ${transactionReference}.`;
-    logger.info(`[Payment Service][processWebhookEvent] Identified CANCELLED status for order ${orderId}.`);
-  } else {
-    logger.info(`[Payment Service][processWebhookEvent] Received unhandled Monnify payment status '${paymentStatus}' for order ${orderId}. No action defined for this status.`);
-    return; // Don't proceed if no explicit action is defined for the status
+  switch (paymentStatus) {
+    case 'PAID':
+      newOrderStatus = 'Order Placed';
+      newPaymentStatus = 'Completed';
+      finalAmountForOrder = amountPaid;
+      updateNotes = `Payment successfully confirmed via Monnify webhook. Txn Ref: ${transactionReference}.`;
+      logger.info(`[Payment Service][processWebhookEvent] Webhook indicates PAID status for order ${orderId}.`);
+      break;
+    case 'FAILED':
+      newOrderStatus = 'Failed';
+      newPaymentStatus = 'Failed';
+      updateNotes = `Payment failed via Monnify webhook. Txn Ref: ${transactionReference}. Reason: ${responseMessage || 'N/A'}`;
+      logger.warn(`[Payment Service][processWebhookEvent] Webhook indicates FAILED status for order ${orderId}.`);
+      break;
+    case 'CANCELLED':
+      newOrderStatus = 'Canceled by Customer';
+      newPaymentStatus = 'Failed';
+      updateNotes = `Payment cancelled by customer via Monnify webhook. Txn Ref: ${transactionReference}.`;
+      logger.info(`[Payment Service][processWebhookEvent] Webhook indicates CANCELLED status for order ${orderId}.`);
+      break;
+    default:
+      logger.info(`[Payment Service][processWebhookEvent] Received unhandled Monnify payment status '${paymentStatus}' for order ${orderId}. No specific action defined.`);
+      throw new HttpError(400, `Unhandled Monnify payment status: ${paymentStatus}.`); // Throwing if status is not explicitly handled
   }
 
   const paymentDetails = {
@@ -101,6 +100,7 @@ const processWebhookEvent = async (eventData, eventType) => {
   };
 
   try {
+    logger.debug(`[Payment Service][processWebhookEvent] Calling orderService.updateOrderStatus with: Order ID: ${orderId}, New Status: ${newOrderStatus}, New Payment Status: ${newPaymentStatus}, Verified Amount: ${finalAmountForOrder}, Notes: ${updateNotes}.`);
     await orderService.updateOrderStatus({
       orderId: orderId,
       status: newOrderStatus,
@@ -111,16 +111,14 @@ const processWebhookEvent = async (eventData, eventType) => {
     });
     logger.info(`[Payment Service][processWebhookEvent] Order ${orderId} successfully processed and passed to order service for update.`);
   } catch (error) {
-    logger.error(`[Payment Service][processWebhookEvent] Failed to call orderService.updateOrderStatus for order ${orderId}: ${error.message}`, { stack: error.stack, payload: eventData });
-    // IMPORTANT: Re-throw HttpError or wrap generic errors to ensure controller sends correct status
+    logger.error(`[Payment Service][processWebhookEvent] Error calling orderService.updateOrderStatus for order ${orderId}: ${error.message}`, { stack: error.stack, payload: eventData });
+
     if (error instanceof HttpError) {
-      // Ensure statusCode is an integer before re-throwing HttpError
       const statusCode = Number.isInteger(error.statusCode) ? error.statusCode : 500;
-      logger.error(`[Payment Service][processWebhookEvent] Propagating HttpError: ${statusCode} - ${error.message}`);
+      logger.error(`[Payment Service][processWebhookEvent] Propagating HttpError from order service: ${statusCode} - ${error.message}`);
       throw new HttpError(statusCode, `Order update failed: ${error.message}`);
     } else {
-      // For any other unexpected errors, wrap it in a generic HttpError 500
-      logger.error(`[Payment Service][processWebhookEvent] Propagating unexpected error as HttpError 500: ${error.message}`);
+      logger.error(`[Payment Service][processWebhookEvent] Propagating unexpected non-HttpError from order service as HttpError 500: ${error.message}`);
       throw new HttpError(500, `An unexpected error occurred during order update: ${error.message}`);
     }
   }
@@ -135,6 +133,7 @@ const processWebhookEvent = async (eventData, eventType) => {
  */
 const processMonnifyWebhook = async ({ signature, rawBodyString }) => {
   logger.info('[Payment Service] Starting Monnify webhook processing pipeline.');
+  logger.debug('[Payment Service] Received params for processMonnifyWebhook:', { signature, rawBodyString: rawBodyString.substring(0, 100) + '...' }); // Log a snippet of rawBody
 
   // 1. Verify the signature for security
   const isVerified = verifySignature(signature, rawBodyString);
@@ -148,6 +147,7 @@ const processMonnifyWebhook = async ({ signature, rawBodyString }) => {
   let payload;
   try {
     payload = JSON.parse(rawBodyString);
+    logger.debug('[Payment Service] Raw body parsed successfully into JSON payload.');
   } catch (parseError) {
     logger.error(`[Payment Service] Failed to parse Monnify webhook raw body into JSON: ${parseError.message}`, { rawBody: rawBodyString });
     throw new HttpError(400, 'Invalid JSON payload.');
@@ -157,9 +157,7 @@ const processMonnifyWebhook = async ({ signature, rawBodyString }) => {
   logger.info(`[Payment Service] Parsed Monnify webhook payload. Event Type: ${eventType}. Payment Reference: ${eventData?.paymentReference}.`);
   logger.debug(`[Payment Service] Full Parsed Payload: ${JSON.stringify(payload)}`);
 
-  // Delegate processing to processWebhookEvent, which now handles its own error propagation
-  await processWebhookEvent(eventData, eventType);
-
+  await processWebhookEvent(eventData, eventType); // Delegate to event processing
   logger.info('[Payment Service] Monnify webhook processing pipeline completed.');
 };
 

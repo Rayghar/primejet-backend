@@ -10,14 +10,15 @@ const consoleFormat = printf(({ level, message, timestamp, stack }) => {
 });
 
 const logger = winston.createLogger({
-  level: globalConfig.logLevel || 'info', // Overall logger level
-  format: combine( // Format for file transports (if any) and default exception handlers
-    timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-    json() // Use JSON format for file logs for easier parsing by log management tools
+  level: 'debug', // THIS IS KEY: Set to 'debug' to capture debug logs globalConfig.logLevel || 'info', // Overall logger level
+  format: winston.format.combine(
+    winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+    winston.format.printf(info => `${info.timestamp} ${info.level.toUpperCase()}: ${info.message}`)
   ),
   transports: [
-    new winston.transports.File({ filename: 'logs/app-error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'logs/app-combined.log' }),
+    new winston.transports.Console(),
+    //new winston.transports.File({ filename: 'logs/app-error.log', level: 'error' }),
+   // new winston.transports.File({ filename: 'logs/app-combined.log' }),
   ],
   exceptionHandlers: [ // For uncaught exceptions
     new winston.transports.File({ filename: 'logs/exceptions.log' }),

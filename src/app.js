@@ -3,7 +3,7 @@
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser'); // Import body-parser
-const paymentController = require('./src/api/v1/payments/payment.controller'); // Your webhook controller
+const paymentController = require('./api/v1/payments/payment.controller'); // Your webhook controller
 
 const helmet = require('helmet');
 const cors = require('cors');

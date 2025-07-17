@@ -9,10 +9,24 @@ dotenv.config();
 
 const MONNIFY_SECRET_KEY = process.env.MONNIFY_SECRET_KEY || "2Z659QCSA4GCPR0VKTPQTB81A3R7XHK4";
 
+// --- Monnify's Sample Data for Static Hashing Test (for extreme debugging only) ---
+// This static string is used to compare your computed hash against Monnify's documented hash.
+const MONNIFY_DOC_SAMPLE_REQUEST_BODY = '{"eventData":{"product":{"reference":"111222333","type":"OFFLINE_PAYMENT_AGENT"},"transactionReference":"MNFY |76|20211117154810|000001","paymentReference":"0.01462001097368737","paidOn":"17/11/2021 3:48:10 PM","paymentDescription":"Mockaroo Jesse", "metaData":{},"destinationAccountInformation":{},"paymentSourceInformation":{},"amountPaid":78000,"totalPayable":78000,"offlineProductInformation":{"code":"41470","type":"DYNAMIC"},"cardDetails":{},"paymentMethod":"CASH", "currency":"NGN", "settlementAmount":77600,"paymentStatus":"PAID", "customer":{"name":"Mockaroo Jesse","email":"111222333@ZZAMZ4WT4Y3E.monnify"}},"eventType":"SUCCESSFUL_TRANSACTION"}'; //
+
+// --- Hashing Function using js-sha512 (as per Monnify's documentation) ---
+// This function will be used for the actual signature verification.
+const computeMonnifyDocHash = (requestBodyString, secretKey) => {
+  // Uses sha512.hmac from the js-sha512 library as per Monnify's example.
+  const result = sha512.hmac(secretKey, requestBodyString);
+  logger.debug(`[Payment Service][computeMonnifyDocHash] Computed hash with js-sha512: ${result}`);
+  return result;
+};
+
+
 /**
  * Verifies the integrity of the Monnify webhook notification.
  * @param {string} signature - The value of the 'monnify-signature' header.
- * @param {string} rawBodyString - The raw request body as a string. IMPORTANT: This should be the raw string, not a parsed JSON object.
+ * @param {string} rawBodyString - The raw request body as a string.
  * @returns {boolean} - True if the signature is valid, false otherwise.
  */
 const verifySignature = (signature, rawBodyString) => {
@@ -24,16 +38,25 @@ const verifySignature = (signature, rawBodyString) => {
     logger.error('[Payment Service][verifySignature] Missing signature, rawBodyString, or secret key for verification. Aborting verification.');
     return false;
   }
-  const hash = crypto
-    .createHmac('sha512', MONNIFY_SECRET_KEY)
-    .update(rawBodyString)
-    .digest('hex');
 
-  logger.debug(`[Payment Service][verifySignature] Computed hash: ${hash}`);
+  // >>> DEBUG OVERRIDE for rawBodyString (TEMPORARY - REMOVE IN PRODUCTION!) <<<
+  // If you want to test the hashing with Monnify's exact sample string:
+  // const stringToHash = MONNIFY_DOC_SAMPLE_REQUEST_BODY;
+  // logger.warn('[Payment Service][verifySignature] DEBUG MODE ACTIVE: Using hardcoded Monnify sample raw body for hashing!');
+  // >>> END DEBUG OVERRIDE <<<
 
-  const isSignatureValid = hash === signature;
+  // Use the dynamically received rawBodyString for live verification
+  const stringToHash = rawBodyString;
+
+  // Use the computeMonnifyDocHash function which uses js-sha512
+  const computedHash = computeMonnifyDocHash(stringToHash, MONNIFY_SECRET_KEY);
+
+  logger.debug(`[Payment Service][verifySignature] Computed hash: ${computedHash}`);
+
+  const isSignatureValid = computedHash === signature;
   if (!isSignatureValid) {
-    logger.warn(`[Payment Service][verifySignature] Signature Mismatch detected! Computed: ${hash}, Received: ${signature}.`);
+    logger.warn(`[Payment Service][verifySignature] Signature Mismatch detected! Computed: ${computedHash}, Received: ${signature}.`);
+    logger.warn(`[Payment Service][verifySignature] Check if your MONNIFY_SECRET_KEY matches the dashboard EXACTLY. Also check for subtle whitespace differences in the raw body sent by Monnify.`);
   } else {
     logger.info('[Payment Service][verifySignature] Signature successfully verified.');
   }

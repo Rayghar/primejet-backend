@@ -3,6 +3,7 @@
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser'); // Import body-parser
+const paymentController = require('./src/api/v1/payments/payment.controller'); // Your webhook controller
 
 const helmet = require('helmet');
 const cors = require('cors');
@@ -34,7 +35,6 @@ const runOrchestrationRoutes = require('./api/v1/run_orchestration/run_orchestra
 const notificationRoutes = require('./api/v1/notifications/notification.routes');
 const voiceRoutes = require('./api/v1/voice/voice.routes');
 const agentRoutes = require('./api/v1/agents/agent.routes'); // <<< ADDED: Import agent routes [cite: user_prompt]
-const paymentController = require('./api/v1/payments/payment.controller'); // Import controller for webhook
 
 const app = express();
 app.set('trust proxy', 1); // Trust the first hop from the proxy (Render)

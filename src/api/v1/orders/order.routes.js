@@ -24,6 +24,12 @@ router.post(
   orderController.placeOrder
 );
 
+router.get(
+  '/:orderId/payment-status',
+  authMiddleware(), // Authenticated user (customer in this case)
+  orderController.getOrderPaymentStatus // Use the new controller function
+);
+
 router.delete(
   '/:orderId', // This was authMiddleware('customer') in your original, ensure it's for customers only to cancel
   authMiddleware('customer'), // Kept as customer, assuming only customers cancel their own orders this way

@@ -80,6 +80,32 @@ const getOrders = async (options) => {
   }
 };
 
+const getOrderPaymentStatus = async (orderId, requestingUser) => {
+  try {
+    // Reuse existing getOrder for authorization and retrieval
+    const order = await getOrder(orderId, requestingUser);
+
+    if (!order) {
+      throw new HttpError(404, 'Order not found.');
+    }
+
+    // Return only necessary payment-related information
+    return {
+      orderId: order.id,
+      status: order.status,
+      paymentStatus: order.paymentStatus,
+      grandTotal: order.grandTotal,
+      finalAmountPaid: order.finalAmountPaid,
+      paymentDetails: order.paymentDetails, // Include full payment details if available
+      message: 'Payment status retrieved successfully.'
+    };
+  } catch (error) {
+    logger.error(`[ORDER_SERVICE] Error fetching payment status for order ${orderId}:`, { error: error.message, stack: error.stack });
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(500, 'Failed to retrieve payment status due to an unexpected error.');
+  }
+};
+
 const getOrder = async (orderId, requestingUser) => {
   try {
     const order = await Order.findOne({ id: orderId })
@@ -754,4 +780,7 @@ module.exports = {
   adminAssignDriver,
   cancelOrder,
   getCustomerConsumptionData,
+  updateOrderStatus, 
+  getOrderPaymentStatus, // Export the new function// New function for webhook processing
+
 };

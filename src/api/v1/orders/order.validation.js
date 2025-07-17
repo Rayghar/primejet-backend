@@ -61,6 +61,13 @@ const processOrderPaymentSchema = Joi.object({
   // Add any other payment-related fields you expect, e.g., paymentMethodId, gatewayReference
 });
 
+const getOrderPaymentStatusSchema = Joi.object({
+  orderId: Joi.string().uuid().required().messages({ // Assuming orderId is a UUID
+    'any.required': 'Order ID is required.',
+    'string.uuid': 'Order ID must be a valid UUID.',
+  }),
+});
+
 const submitFeedbackSchema = Joi.object({
   rating: Joi.number().integer().min(1).max(5).required().messages({
     'number.base': 'Rating must be a number.',
@@ -103,5 +110,7 @@ module.exports = {
   submitFeedbackSchema,
   orderStatusUpdateSchema,
   adminAssignDriverSchema,
-  orderIdParamSchema, // Export if you want to validate params separately in routes
+  orderIdParamSchema,
+  getOrderPaymentStatusSchema,
+  // Export if you want to validate params separately in routes
 };

@@ -43,6 +43,19 @@ const getOrder = async (req, res, next) => { /* ... */   try {
     const order = await orderService.getOrder(req.params.orderId, req.user.id, req.user.role);
     res.status(200).json(order);
   } catch (error) { next(error); }};
+const getOrderPaymentStatus = async (req, res, next) => {
+  try {
+    const { orderId } = req.params;
+    const requestingUser = req.user; // User object from auth middleware
+
+    logger.info(`[ORDER_CONTROLLER] Fetching payment status for order ${orderId} by user ${requestingUser.id}`);
+    const paymentStatusData = await orderService.getOrderPaymentStatus(orderId, requestingUser);
+    res.status(200).json(paymentStatusData);
+  } catch (error) {
+    logger.error(`[ORDER_CONTROLLER] Error fetching payment status for order ${req.params.orderId}:`, { message: error.message, stack: error.stack });
+    next(error); // Pass error to error handling middleware
+  }
+};
 const processOrderPayment = async (req, res, next) => { /* ... */   try {
     const result = await orderService.processPayment(req.params.orderId, req.body, req.user.id, req.user.role);
     res.status(200).json(result);
@@ -104,4 +117,5 @@ module.exports = {
   adminAssignDriver,
   cancelOrder,
   getCustomerConsumptionData,
+  getOrderPaymentStatus
 };

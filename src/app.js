@@ -2,6 +2,8 @@
 
 require('dotenv').config();
 const express = require('express');
+const bodyParser = require('body-parser'); // Import body-parser
+
 const helmet = require('helmet');
 const cors = require('cors');
 const morgan = require('morgan');
@@ -48,11 +50,8 @@ app.use('/api/v1/orchestration', runOrchestrationRoutes);
 app.use('/api/v1/voice', voiceRoutes); // Ensure this is before express.json if voice needs raw body
 
 // --- Step 3: Handle Special Routes (like Paystack Webhook) BEFORE general JSON parser ---
-app.post(
-  '/api/v1/webhooks/monnify',
-  express.raw({ type: 'application/json' }),
-  paymentController.handleMonnifyWebhook
-);
+app.post('/api/v1/webhooks/monnify', bodyParser.raw({ type: 'application/json' }), paymentController.handleMonnifyWebhook);
+
 
 // --- Step 4: Setup General Middleware ---
 app.use(express.json());

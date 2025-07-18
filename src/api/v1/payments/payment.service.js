@@ -93,7 +93,7 @@ const processWebhookEvent = async (eventData, eventType) => {
     case 'PAID':
       newOrderStatus = 'Order Placed';
       newPaymentStatus = 'Completed';
-      finalAmountForOrder = amountPaid;
+      finalAmountForOrder = amountPaid * 100; // Convert to Naira if needed, assuming amountPaid is in Kobo
       updateNotes = `Payment successfully confirmed via Monnify webhook. Txn Ref: ${transactionReference}.`;
       logger.info(`[Payment Service][processWebhookEvent] Webhook indicates PAID status for order ${orderId}.`);
       break;

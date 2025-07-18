@@ -59,7 +59,7 @@ const orderSchema = new mongoose.Schema(
     status: { 
         type: String, 
         required: true, 
-        enum: ['Pending Payment', 'Order Placed', 'Processing', 'Driver Assigned', 'Out for Delivery', 'Reached Pickup', 'Gas Picked Up', 'Reached Dropoff', 'Delivered', 'Canceled by Customer', 'Canceled by Admin', 'Failed'],
+        enum: ['Pending Payment', 'Order Placed', 'Processing', 'Driver Assigned', 'Out for Delivery', 'Reached Pickup', 'Gas Picked Up', 'Reached Dropoff', 'Delivered', 'Canceled by Customer', 'Canceled by Admin', 'Failed','Payment Failed', 'Payment Discrepancy', 'Refunded', 'Partially Refunded'],
         default: 'Pending Payment',
         index: true 
     },

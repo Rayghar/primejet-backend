@@ -30,8 +30,7 @@ const handleMonnifyWebhook = async (req, res, next) => {
     const rawBodyString = req.rawBody ? req.rawBody.toString('utf8') : ''; // Ensure it's a string, even if Buffer is empty
 
     logger.debug('[Payment Controller] Extracted Monnify-Signature from Headers:', signature);
-    logger.debug('[Payment Controller] String for Hashing (from req.rawBody.toString(\'utf8\')): ' + rawBodyString.substring(0, 200) + '...');
-
+    logger.debug('[Payment Controller] FULL Stringified Request Body for Hashing (from req.rawBody.toString(\'utf8\')): ' + rawBodyString);  // TEMPORARY: Log FULL string for debugging (REMOVE AFTER TESTING to avoid sensitive data in logs)
 
     await paymentService.processMonnifyWebhook({ signature, rawBodyString });
 

@@ -1,5 +1,6 @@
 // File: src/api/v1/payments/payment.service.js
-const crypto = require('crypto');
+const crypto = require('crypto'); // Kept for potential other uses, but not for hashing
+const sha512 = require('js-sha512').sha512; // Added import: Monnify recommends js-sha512 for exact hashing match
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
 const orderService = require('../orders/order.service');

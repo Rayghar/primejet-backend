@@ -290,7 +290,7 @@ const placeOrder = async (customerId, orderData) => {
     const savedOrder = await newOrder.save({ session });
 
     await session.commitTransaction();
-    logger.info(`[ORDER_SERVICE] Order ${savedOrder.id} placed successfully. PaymentNeeded: ${grandTotalToPayByGateway > 0}`);
+    logger.info(`[ORDER_SERVICE] Order ${savedOrder.id} placed successfully. Payment Needed: ${grandTotalToPayByGateway > 0}`);
 
     return {
       order: savedOrder.toObject(),
@@ -871,6 +871,6 @@ module.exports = {
   cancelOrder,
   getCustomerConsumptionData,
   updateOrderStatus, 
-  getOrderPaymentStatus, // Export the new function// New function for webhook processing
+  getOrderPaymentStatus, // Export the new function
 
 };

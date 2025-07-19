@@ -23,27 +23,26 @@ const computeMonnifyDocHash = (requestBodyString, secretKey) => {
   return result;
 };
 
-
 /**
  * Verifies the integrity of the Monnify webhook notification.
  * @param {string} signature - The value of the 'monnify-signature' header.
  * @param {string} rawBodyString - The raw request body as a string.
- * @returns {boolean} - True if the signature is valid, false otherwise.
+ * @throws {HttpError} If the signature is invalid.
  */
-const verifySignature = (signature, rawBodyString) => {
-  logger.debug('[Payment Service][verifySignature] Starting signature verification process.');
-  logger.debug(`[Payment Service][verifySignature] Received signature: ${signature}`);
-  logger.debug(`[Payment Service][verifySignature] Using secret key (first 5 chars): ${MONNIFY_SECRET_KEY ? MONNIFY_SECRET_KEY.substring(0, 5) : 'N/A'}...`);
+const verifyMonnifySignature = ({ signature, rawBodyString }) => {
+  logger.debug('[Payment Service][verifyMonnifySignature] Starting signature verification process.');
+  logger.debug(`[Payment Service][verifyMonnifySignature] Received signature: ${signature}`);
+  logger.debug(`[Payment Service][verifyMonnifySignature] Using secret key (first 5 chars): ${MONNIFY_SECRET_KEY ? MONNIFY_SECRET_KEY.substring(0, 5) : 'N/A'}...`);
 
   if (!signature || !rawBodyString || !MONNIFY_SECRET_KEY) {
-    logger.error('[Payment Service][verifySignature] Missing signature, rawBodyString, or secret key for verification. Aborting verification.');
-    return false;
+    logger.error('[Payment Service][verifyMonnifySignature] Missing signature, rawBodyString, or secret key for verification. Aborting verification.');
+    throw new HttpError(401, 'Missing required verification parameters.');
   }
 
   // >>> DEBUG OVERRIDE for rawBodyString (TEMPORARY - REMOVE IN PRODUCTION!) <<<
   // If you want to test the hashing with Monnify's exact sample string:
   // const stringToHash = MONNIFY_DOC_SAMPLE_REQUEST_BODY;
-  // logger.warn('[Payment Service][verifySignature] DEBUG MODE ACTIVE: Using hardcoded Monnify sample raw body for hashing!');
+  // logger.warn('[Payment Service][verifyMonnifySignature] DEBUG MODE ACTIVE: Using hardcoded Monnify sample raw body for hashing!');
   // >>> END DEBUG OVERRIDE <<<
 
   // Use the dynamically received rawBodyString for live verification
@@ -52,16 +51,15 @@ const verifySignature = (signature, rawBodyString) => {
   // Use the computeMonnifyDocHash function which uses js-sha512
   const computedHash = computeMonnifyDocHash(stringToHash, MONNIFY_SECRET_KEY);
 
-  logger.debug(`[Payment Service][verifySignature] Computed hash: ${computedHash}`);
+  logger.debug(`[Payment Service][verifyMonnifySignature] Computed hash: ${computedHash}`);
 
-  const isSignatureValid = computedHash === signature;
-  if (!isSignatureValid) {
-    logger.warn(`[Payment Service][verifySignature] Signature Mismatch detected! Computed: ${computedHash}, Received: ${signature}.`);
-    logger.warn(`[Payment Service][verifySignature] Check if your MONNIFY_SECRET_KEY matches the dashboard EXACTLY. Also check for subtle whitespace differences in the raw body sent by Monnify.`);
-  } else {
-    logger.info('[Payment Service][verifySignature] Signature successfully verified.');
+  if (computedHash !== signature) {
+    logger.warn(`[Payment Service][verifyMonnifySignature] Signature Mismatch detected! Computed: ${computedHash}, Received: ${signature}.`);
+    logger.warn(`[Payment Service][verifyMonnifySignature] Check if your MONNIFY_SECRET_KEY matches the dashboard EXACTLY. Also check for subtle whitespace differences in the raw body sent by Monnify.`);
+    throw new HttpError(401, 'Invalid Monnify signature.');
   }
-  return isSignatureValid;
+
+  logger.info('[Payment Service][verifyMonnifySignature] Signature successfully verified.');
 };
 
 /**
@@ -160,11 +158,7 @@ const processMonnifyWebhook = async ({ signature, rawBodyString }) => {
   logger.debug('[Payment Service] Received params for processMonnifyWebhook:', { signature, rawBodyString: rawBodyString.substring(0, 100) + '...' }); // Log a snippet of rawBody
 
   // 1. Verify the signature for security
-  const isVerified = verifySignature(signature, rawBodyString);
-  if (!isVerified) {
-    logger.error('[Payment Service] Webhook signature verification failed. Aborting processing.');
-    throw new HttpError(401, 'Invalid Monnify signature.');
-  }
+  verifyMonnifySignature({ signature, rawBodyString }); // Throws on invalid
   logger.info('[Payment Service] Webhook signature verified successfully. Proceeding to parse payload.');
 
   // 2. Parse the body and process the event
@@ -187,4 +181,5 @@ const processMonnifyWebhook = async ({ signature, rawBodyString }) => {
 
 module.exports = {
   processMonnifyWebhook,
+  verifyMonnifySignature, // Exported for use in controller
 };

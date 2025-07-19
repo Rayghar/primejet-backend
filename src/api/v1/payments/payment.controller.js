@@ -3,27 +3,42 @@ const paymentService = require('./payment.service');
 const { logger } = require('../../../config/logger.config');
 const HttpError = require('../../../utils/HttpError');
 
-const handleMonnifyWebhook = async (req, res, next) => {
+const handleMonnifyWebhook = (req, res, next) => {  // Sync handler (no async)
   logger.debug('[Payment Controller] Webhook handler initiated.');
 
-  try {
-    const signature = req.headers['monnify-signature'];
-    const rawBodyString = req.body ? req.body.toString('utf8') : '';
+  const signature = req.headers['monnify-signature'];
+  const rawBody = req.body;  // Buffer from bodyParser.raw
+  const rawBodyString = Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : '';
 
-    await paymentService.processMonnifyWebhook({ signature, rawBodyString });
-    res.status(200).end();  // Always ack 200 on success
-    logger.info('[Payment Controller] Webhook processed successfully.');
+  logger.debug('[Payment Controller] Webhook received. Signature:', signature);
+  logger.debug('[Payment Controller] Raw Body Snippet:', rawBodyString.substring(0, 100) + '...');
+
+  try {
+    // Quick verification (sync)
+    paymentService.verifyMonnifySignature({ signature, rawBodyString });  // Throws on invalid
+
+    // Acknowledge immediately
+    res.status(200).end();
+    logger.info('[Payment Controller] Webhook acknowledged with 200 (empty body).');
+
+    // Process async (fire-and-forget)
+    paymentService.processMonnifyWebhook({ signature, rawBodyString })
+      .then(() => logger.info('[Payment Controller] Webhook processed successfully (async).'))
+      .catch(error => {
+        logger.error(`[Payment Controller] Async webhook processing error: ${error.message}`, { stack: error.stack });
+      });
 
   } catch (error) {
-    logger.error(`Webhook processing error: ${error.message}`, {
+    logger.error(`[Payment Controller] Webhook error: ${error.message}`, {
       stack: error.stack,
-      details: { signature, rawBody: rawBodyString.substring(0, 100) + '...' }
+      details: { signature, rawBodySnippet: rawBodyString.substring(0, 100) + '...' }
     });
+
     if (error.message.includes('signature')) {
-      res.status(401).end();  // Reject only on signature fail
-      logger.warn('Webhook rejected due to invalid signature.');
+      res.status(401).end();
+      logger.warn('[Payment Controller] Webhook rejected due to invalid signature.');
     } else {
-      res.status(200).end();  // Ack 200 for all other errors to stop retries
+      res.status(200).end();  // Ack for other errors
     }
   }
 };

@@ -29,7 +29,7 @@ const handleMonnifyWebhook = async (req, res, next) => {
 
     await paymentService.processMonnifyWebhook({ signature, rawBodyString });
 
-    res.status(200).json({ status: 'success', message: 'Webhook received and processed successfully.' });
+    res.status(200).end(); // Acknowledge with 200 OK
     logger.info('[Payment Controller] Webhook successfully processed and acknowledged with 200 OK.');
 
   } catch (error) {

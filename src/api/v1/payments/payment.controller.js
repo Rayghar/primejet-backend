@@ -11,17 +11,19 @@ const handleMonnifyWebhook = async (req, res, next) => {
     const rawBodyString = req.body ? req.body.toString('utf8') : '';
 
     await paymentService.processMonnifyWebhook({ signature, rawBodyString });
-
-    res.status(200).end();  // Success ack
+    res.status(200).end();  // Always ack 200 on success
     logger.info('[Payment Controller] Webhook processed successfully.');
 
   } catch (error) {
-    if (error.message.includes('signature')) {  // Signature fail: 401 to reject
-      res.status(401).end();
-      logger.error('Webhook rejected: Invalid signature.');
-    } else {  // All other errors (e.g., mismatch): Log but ack 200 to stop retries
-      logger.error(`Webhook processing error (acknowledged anyway): ${error.message}`);
-      res.status(200).end();
+    logger.error(`Webhook processing error: ${error.message}`, {
+      stack: error.stack,
+      details: { signature, rawBody: rawBodyString.substring(0, 100) + '...' }
+    });
+    if (error.message.includes('signature')) {
+      res.status(401).end();  // Reject only on signature fail
+      logger.warn('Webhook rejected due to invalid signature.');
+    } else {
+      res.status(200).end();  // Ack 200 for all other errors to stop retries
     }
   }
 };

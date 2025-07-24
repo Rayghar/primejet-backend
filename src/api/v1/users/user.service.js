@@ -219,11 +219,11 @@ const adminGetUser = async (userId) => {
     if (user.role === 'driver') {
       const driverOrders = await Order.find({ driverId: userId, status: 'Delivered' }).sort({ orderDate: -1 });
       const totalEarnings = driverOrders.reduce((sum, order) => sum + (order.deliveryFee || 0), 0);
+      let averageRating = 0; // Default value
 
-      let averageRating = 0; // Default value if Firebase fails
-
-      // ========================== FIX IS HERE (Added try-catch for Firebase) ==========================
-      if (isFirebaseInitialized && firestore) { // Check if Firebase is initialized and firestore object is available
+      // --- FIX STARTS HERE ---
+      // This block now safely attempts to get the rating without crashing if Firestore isn't available.
+      if (isFirebaseInitialized && firestore) {
         try {
           const feedbackSnapshot = await firestore.collection('feedback').where('driverId', '==', userId).get();
           if (!feedbackSnapshot.empty) {
@@ -234,17 +234,17 @@ const adminGetUser = async (userId) => {
             averageRating = parseFloat((totalRating / feedbackSnapshot.size).toFixed(2));
           }
         } catch (firebaseError) {
-          logger.error(`[USER_SERVICE] Error fetching driver feedback from Firestore for driver ${userId}:`, firebaseError.message);
+          logger.warn(`[USER_SERVICE] Could not fetch driver feedback from Firestore for driver ${userId}. This is expected if Firestore is not configured. Defaulting rating to 0. Error: ${firebaseError.message}`);
           // The averageRating will remain its default value (0)
         }
       } else {
-        logger.warn(`[USER_SERVICE] Firebase/Firestore not fully initialized. Skipping driver feedback query for driver ${userId}.`);
+        logger.warn(`[USER_SERVICE] Firebase/Firestore not initialized. Skipping driver feedback query for driver ${userId}.`);
       }
-      // ==============================================================================================
+      // --- FIX ENDS HERE ---
 
       userObject.totalDeliveriesCompleted = driverOrders.length;
       userObject.totalEarnings = totalEarnings;
-      userObject.averageRating = averageRating;
+      userObject.averageRating = averageRating; // Safely defaults to 0
       userObject.lastDeliveryDate = driverOrders.length > 0 ? driverOrders[0].orderDate : null;
       userObject.recentDeliveries = driverOrders.slice(0, 5).map(o => o.toObject());
     }

@@ -11,6 +11,7 @@ const stopSchema = new mongoose.Schema(
     orderId: {
       type: String,
       required: [true, 'Order ID for stop is required.'],
+      // REMOVED: ref: 'Order' -> This was causing the CastError.
     },
     sequence: {
       type: Number,
@@ -26,15 +27,13 @@ const stopSchema = new mongoose.Schema(
             'Reached',
             'Completed',
             'FailedAttempt',
-            // === FIX: ADD THESE DRIVER-REPORTED STATUSES TO RUN.STOP SCHEMA ===
-            'DRIVER_ENROUTE_PICKUP',
-            'PICKED_UP_ENROUTE_STATION',
-            'CYLINDER_REFILLING',
-            'OUT_FOR_DELIVERY',
-            'DELIVERED',
-            'CUSTOMER_UNAVAILABLE',
-            'ISSUE_REPORTED'
-            // ===============================================================
+            'Driver enroute to pickup',
+            'Driver enroute to gas station',
+            'Cylinder Refilling',
+            'Out for delivery',
+            'Delivered',
+            'Customer not available',
+            'Issue Reported'
       ],
       default: 'Pending',
     },
@@ -45,19 +44,27 @@ const stopSchema = new mongoose.Schema(
     latitude: { type: Number, min: -90, max: 90 },
     longitude: { type: Number, min: -180, max: 180 },
   },
-  {
+  { 
     _id: true,
+    // ========================== FIX IS HERE ==========================
+    // Enable virtuals for toJSON and toObject transformations.
     toJSON: { virtuals: true },
     toObject: { virtuals: true }
+    // ===============================================================
   }
 );
 
+// ========================== FIX IS HERE ==========================
+// Added a virtual field 'order' to the stopSchema to handle the population
+// of an Order document based on the string 'orderId'. This is the correct
+// way to handle relationships with non-ObjectId keys.
 stopSchema.virtual('order', {
   ref: 'Order',
   localField: 'orderId',
   foreignField: 'id',
   justOne: true
 });
+// ===============================================================
 
 const runSchema = new mongoose.Schema(
   {

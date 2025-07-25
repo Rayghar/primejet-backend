@@ -108,23 +108,26 @@ const getUnassignedOrders = async (options) => {
 
 const getRun = async (runId, requestingUser) => {
   try {
-    // ========================== FIX IS HERE (Updated population) ==========================
+    // ========================== FIX IS HERE ==========================
+    // The .populate() method now correctly uses the 'stops.order' virtual path,
+    // which correctly joins the string-based UUIDs. The nested populate
+    // to get the customer of each order within the run is also preserved.
     const run = await Run.findOne({ id: runId })
       .populate({
         path: 'driver',
-        select: 'id name phone'
+        select: 'id name phone' 
       })
       .populate({
-        path: 'stops.order', // <-- Populate the 'order' virtual within each stop
+        path: 'stops.order', // <-- Use the new virtual field 'order' on the stop
         model: 'Order',
-        select: 'id recipientName recipientPhone deliveryAddressSnapshot items status feedback', // Select all necessary fields
-        populate: {
-          path: 'customer', // Also populate the customer within the order if needed (e.g., customerId on frontend AdminOptimizedStopInfo)
-          model: 'User',
-          select: 'id name phone'
+        select: 'id customerId recipientName status items deliveryAddressSnapshot deliveryLatitude deliveryLongitude',
+        populate: { 
+          path: 'customer', 
+          model: 'User', 
+          select: 'id name phone' 
         }
       });
-    // =====================================================================================
+    // ===============================================================
 
     if (!run) {
       throw new HttpError(404, 'Run not found.');
@@ -135,8 +138,7 @@ const getRun = async (runId, requestingUser) => {
       throw new HttpError(403, 'You are not authorized to access this run.');
     }
 
-    // Ensure .toObject() is called with { virtuals: true } to include the populated 'order' data.
-    return run.toObject({ virtuals: true });
+    return run.toObject();
   } catch (error) {
     logger.error(`Unexpected error in getRun for runId ${runId}:`, error);
     if (error instanceof HttpError) throw error;
@@ -212,9 +214,9 @@ const getAssignedRuns = async (driverId) => {
   try {
     const runs = await Run.find({
         driverId: driverId,
-        overallStatus: { $in: ['Assigned', 'In Progress'] }
+        overallStatus: { $in: ['Assigned', 'In Progress'] } 
       })
-      .populate('driver')
+      .populate('driver') 
       .sort({ createdAt: -1 });
     return runs.map(run => run.toObject());
   } catch (error) {
@@ -224,11 +226,11 @@ const getAssignedRuns = async (driverId) => {
 };
 
 
-const acceptRun = async (batchOrRunId, driverId) => {
+const acceptRun = async (batchOrRunId, driverId) => { 
   try {
-    const existingActiveRun = await Run.findOne({
-      driverId: driverId,
-      overallStatus: 'In Progress'
+    const existingActiveRun = await Run.findOne({ 
+      driverId: driverId, 
+      overallStatus: 'In Progress' 
     });
 
     if (existingActiveRun) {
@@ -253,7 +255,7 @@ const acceptRun = async (batchOrRunId, driverId) => {
       throw new HttpError(404, 'Driver profile not found.');
     }
 
-    run.overallStatus = 'In Progress';
+    run.overallStatus = 'In Progress'; 
     run.actualStartDate = new Date();
     await run.save();
 
@@ -300,21 +302,15 @@ const driverUpdateStopStatus = async (runId, stopId, newStatus, notes, driverId)
     if (!order) {
       throw new HttpError(404, `Order ${stop.orderId} not found for this stop.`);
     }
-
+    
     if (order.driverId !== driverId) {
       throw new HttpError(403, `Order ${stop.orderId} is not assigned to this driver.`);
     }
 
-    // FIX: Update stop status directly. No changes needed to `order.status` here IF
-    // the system design implies `order.status` is a broader state, and `stop.status` is granular.
-    // However, the error indicated `order.status` validation.
-    // If you want order status to *mirror* stop status, then the frontend's
-    // status strings must be valid in the Order model's enum.
     stop.status = newStatus;
+    stop.actualArrivalTime = new Date();
 
-    // This section is what triggers the Order model validation
-    // Ensure newStatus is one of the valid ENUMs in order.model.js
-    order.status = newStatus; // This is the line that causes validation error if newStatus is not in Order enum
+    order.status = newStatus;
     order.statusHistory.push({
       status: newStatus,
       timestamp: new Date(),
@@ -325,11 +321,10 @@ const driverUpdateStopStatus = async (runId, stopId, newStatus, notes, driverId)
     if (newStatus === 'Delivered') {
         order.actualDeliveryTime = new Date();
     }
-    await order.save({ session }); // This save will trigger Order model validation
+    await order.save({ session });
 
-    const completedStops = run.stops.filter(s =>
-        // FIX: Ensure these statuses match the enum in run.model.js stop status
-        ['Delivered', 'FailedAttempt', 'Issue Reported', 'Customer not available'].includes(s.status)
+    const completedStops = run.stops.filter(s => 
+        ['Delivered', 'Failed', 'Issue Reported', 'Customer not available'].includes(s.status)
     ).length;
 
     run.completedStops = completedStops;
@@ -343,7 +338,7 @@ const driverUpdateStopStatus = async (runId, stopId, newStatus, notes, driverId)
 
     await run.save({ session });
     await session.commitTransaction();
-
+    
     return {
       message: 'Stop status updated successfully.',
       run: run.toObject(),
@@ -351,7 +346,6 @@ const driverUpdateStopStatus = async (runId, stopId, newStatus, notes, driverId)
   } catch (error) {
     await session.abortTransaction();
     logger.error(`Error updating stop status for run ${runId}, stop ${stopId}:`, error);
-    // FIX: Re-throw HttpError with its original status code, or default to 500
     throw error instanceof HttpError ? error : new HttpError(500, 'Failed to update stop status.');
   } finally {
     session.endSession();
@@ -389,21 +383,19 @@ const getRunHistory = async (driverId, options) => {
     };
 
     const totalRuns = await Run.countDocuments(query);
-
+    
     const runs = await Run.find(query)
       .sort({ actualCompletionDate: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
       .populate({
-        path: 'stops.order', // FIX: Populate the 'order' virtual within each stop
+        path: 'stops.order',
         model: 'Order',
-        select: 'recipientName deliveryAddressSnapshot items feedback', // Select fields needed by frontend
-        // Optionally populate customer within order if needed:
-        // populate: { path: 'customer', model: 'User', select: 'id name' }
+        select: 'recipientName deliveryAddressSnapshot feedback'
       });
 
     return {
-      runs: runs.map(run => run.toObject({ virtuals: true })), // FIX: Ensure virtuals are included
+      runs: runs.map(run => run.toObject()),
       currentPage: parseInt(page, 10),
       totalPages: Math.ceil(totalRuns / limit),
     };

@@ -1,63 +1,84 @@
-// src/middleware/error.handler.js
-const { Sentry, isSentryInitialized } = require('../config/sentry.config.js'); // Path to Sentry config
-const { logger } = require('../config/logger.config.js'); // Path to Logger config
-const globalConfig = require('../config'); // For NODE_ENV
+// File: src/middleware/error.handler.js
+
+const { logger } = require('../config/logger.config.js'); 
 
 /**
  * Centralized error handling middleware.
+ * @param {object} config - The loaded application configuration.
  */
-const errorHandler = (error, req, res, next) => {
-  const errorStatus = error.status || error.statusCode || 500;
-  const errorMessage = error.message || 'An unexpected internal server error occurred.';
-
-  // Detailed server-side logging
-  logger.error(
-    `${errorStatus} - ${errorMessage} - ${req.originalUrl} - ${req.method} - ${req.ip}`,
-    {
-      error: {
-        message: error.message, // Already captured in main log message
-        status: errorStatus,
-        name: error.name,
-        // Stack trace should only be logged in development for brevity in production logs,
-        // Sentry will capture the full stack trace.
-        stack: globalConfig.env === 'development' ? error.stack : undefined,
-      },
-      request: { // Basic request info for context
-        method: req.method,
-        url: req.originalUrl,
-        ip: req.ip,
-        // Avoid logging full req.headers or req.body in general logs unless redacted or in dev.
-      },
-    }
-  );
-
-  // Send to Sentry if initialized and not in a local/test environment that you want to exclude
-  if (isSentryInitialized && globalConfig.env !== 'test' && globalConfig.env !== 'development') { // Example: only send to Sentry in prod/staging
-    Sentry.withScope((scope) => {
-      scope.setTag("path", req.path);
-      scope.setTag("method", req.method);
-      if (req.user && req.user.id) {
-        scope.setUser({ id: req.user.id, role: req.user.role });
+const errorHandler = (config) => { 
+  // Sentry initialization logic
+  if (config.sentry && config.sentry.dsn && config.env !== 'test' && config.env !== 'development') {
+    const Sentry = require('@sentry/node');
+    if (!Sentry.isInitialized()) {
+      try {
+        Sentry.init({
+          dsn: config.sentry.dsn,
+          environment: config.env,
+          tracesSampleRate: config.env === 'production' ? 0.5 : 1.0, 
+        });
+        logger.info('[SENTRY_CONFIG] Sentry initialized successfully in error handler.');
+      } catch (error) {
+        logger.error('[SENTRY_CONFIG] Failed to initialize Sentry in error handler:', error);
       }
-      scope.setLevel(errorStatus >= 500 ? "error" : "warning"); // Categorize Sentry error level
-      Sentry.captureException(error);
-    });
+    } else {
+        logger.info('[SENTRY_CONFIG] Sentry already initialized.');
+    }
+  } else if (config.env !== 'test') {
+    logger.warn('[SENTRY_CONFIG] Sentry DSN not found or not in production/test env. Sentry will not be initialized.');
+  } else {
+    logger.info('[SENTRY_CONFIG] Sentry not initialized in test environment.');
   }
 
-  const clientResponse = {
-    error: errorMessage,
+  return (err, req, res, next) => {
+    const errorStatus = err.status || err.statusCode || 500;
+    const errorMessage = err.message || 'An unexpected internal server error occurred.';
+
+    logger.error(
+      `${errorStatus} - ${errorMessage} - ${req.originalUrl} - ${req.method} - ${req.ip}`,
+      {
+        error: {
+          message: err.message,
+          status: errorStatus,
+          name: err.name,
+          stack: config.env === 'development' ? err.stack : undefined, 
+        },
+        request: {
+          method: req.method,
+          url: req.originalUrl,
+          ip: req.ip,
+        },
+      }
+    );
+
+    if (config.sentry && config.sentry.dsn && config.env !== 'test' && config.env !== 'development') {
+        const Sentry = require('@sentry/node'); 
+        if (Sentry.isInitialized()) { 
+            Sentry.withScope((scope) => {
+                scope.setTag("path", req.path);
+                scope.setTag("method", req.method);
+                if (req.user && req.user.id) {
+                    scope.setUser({ id: req.user.id, role: req.user.role });
+                }
+                scope.setLevel(errorStatus >= 500 ? "error" : "warning");
+                Sentry.captureException(err);
+            });
+        }
+    }
+
+    const clientResponse = {
+      error: errorMessage,
+    };
+
+    if (config.env === 'development' && errorStatus >= 500 && err.stack) { 
+      clientResponse.stack = err.stack;
+    }
+    if (err.details && (config.env === 'development' || errorStatus < 500)) { 
+        clientResponse.details = err.details;
+    }
+
+    res.status(errorStatus).json(clientResponse);
   };
-
-  // Optionally, provide more error details in development
-  if (globalConfig.env === 'development' && errorStatus >= 500 && error.stack) {
-    clientResponse.stack = error.stack;
-  }
-  if (error.details && (globalConfig.env === 'development' || errorStatus < 500)) { // For Joi validation errors specifically
-      clientResponse.details = error.details;
-  }
-
-
-  res.status(errorStatus).json(clientResponse);
 };
 
 module.exports = { errorHandler };

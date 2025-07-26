@@ -1,102 +1,108 @@
-// src/server.js
-require('dotenv').config(); // Ensure environment variables are loaded at the very beginning
+// File: src/server.js
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('<<<<< UNHANDLED REJECTION >>>>> Reason:', reason);
   console.error('<<<<< UNHANDLED REJECTION >>>>> At Promise:', promise);
-  // logger.fatal('Unhandled Rejection:', { reason, promiseString: String(promise) }); // Use logger if initialized
   process.exit(1);
 });
 
 process.on('uncaughtException', (error) => {
   console.error('<<<<< UNCAUGHT EXCEPTION >>>>> Error:', error);
-  // logger.fatal('Uncaught Exception:', error); // Use logger if initialized
   process.exit(1);
 });
 
 const http = require('http');
-const app = require('./app');
-const globalConfig = require('./config'); // Import the global config
+let initializeApp; 
+const { loadConfig } = require('./config'); 
 const { logger } = require('./config/logger.config.js');
-// Import connectMongoDB, and also connectRedis and redisClient from database.config.js
 const { connectMongoDB, connectRedis, redisClient } = require('./config/database.config.js');
 
-const PORT = globalConfig.port;
-const server = http.createServer(app);
+const mongoose = require('mongoose'); 
+
+let globalConfig; 
+let server; 
 
 async function startServer() {
   logger.info('[SERVER] startServer called.');
   try {
+    logger.info('[SERVER] Loading application configuration...');
+    globalConfig = await loadConfig();
+    logger.info('[SERVER] Application configuration loaded successfully.');
+
+    initializeApp = require('./app'); 
+    const app = initializeApp(globalConfig, logger); 
+
+    const PORT = globalConfig.port; 
+    server = http.createServer(app); 
+
     if (globalConfig.env !== 'test') {
       logger.info('[SERVER] Connecting to MongoDB...');
-      await connectMongoDB();
+      await connectMongoDB(globalConfig.mongo.uri); 
       logger.info('[SERVER] MongoDB connection attempt finished.');
 
-      // Conditionally connect to Redis ONLY if REDIS_URL was set (which means redisClient will exist)
-      if (redisClient && typeof connectRedis === 'function') {
+      if (globalConfig.redis && globalConfig.redis.url && typeof connectRedis === 'function') {
           logger.info('[SERVER] Attempting to connect to Redis...');
-          await connectRedis(); // This function already checks if client is not open
-          // The connectRedis function itself logs success or failure.
+          await connectRedis(globalConfig.redis.url); 
           logger.info('[SERVER] Redis connection attempt sequence finished.');
       } else {
-          logger.warn('[SERVER] Redis not configured (REDIS_URL not set in .env or client not available). Skipping Redis connection.');
+          logger.warn('[SERVER] Redis not configured (REDIS_URL not set in secrets/env or client not available). Skipping Redis connection.');
       }
     } else {
         logger.info('[SERVER] Skipping DB and Redis connections in test environment.');
     }
 
-    server.listen(PORT, '0.0.0.0', () => {
+    server.listen(PORT, '0.0.0.0', () => { 
       logger.info(`[SERVER] Server running on port ${PORT}`);
       logger.info(`[SERVER] Environment: ${globalConfig.env}`);
     });
     logger.info('[SERVER] server.listen called, process should be kept alive.');
   } catch (error) {
     logger.error('[SERVER] Failed to start server:', error);
-    process.exit(1);
+    process.exit(1); 
   }
 }
 
-// Graceful shutdown (remains the same)
 const gracefulShutdown = (signal) => {
   logger.info(`[SERVER] ${signal} received. Shutting down gracefully...`);
-  server.close(() => {
-    logger.info('[SERVER] HTTP server closed.');
-    if (mongoose.connection.readyState === 1) { // Check if mongoose is connected
-        mongoose.disconnect().then(() => {
-            logger.info('MongoDB connection closed through app termination');
-        }).catch(err => {
-            logger.error('Error disconnecting MongoDB:', err);
-        }).finally(() => {
-            if (redisClient && redisClient.isOpen) {
-                redisClient.quit().then(() => {
-                    logger.info('Redis client connection closed through app termination.');
-                }).catch(err => {
-                    logger.error('Error closing Redis client:', err);
-                }).finally(() => process.exit(0));
-            } else {
-                process.exit(0);
-            }
-        });
-    } else if (redisClient && redisClient.isOpen) {
-        redisClient.quit().then(() => {
-            logger.info('Redis client connection closed through app termination.');
-        }).catch(err => {
-            logger.error('Error closing Redis client:', err);
-        }).finally(() => process.exit(0));
-    } else {
-        process.exit(0);
-    }
-  });
+  if (server) {
+    server.close(() => {
+      logger.info('[SERVER] HTTP server closed.');
+      if (mongoose.connection && mongoose.connection.readyState === 1) { 
+          mongoose.disconnect().then(() => {
+              logger.info('MongoDB connection closed through app termination');
+          }).catch(err => {
+              logger.error('Error disconnecting MongoDB:', err);
+          }).finally(() => {
+              if (redisClient && redisClient.isOpen) {
+                  redisClient.quit().then(() => {
+                      logger.info('Redis client connection closed through app termination.');
+                  }).catch(err => {
+                      logger.error('Error closing Redis client:', err);
+                  }).finally(() => process.exit(0));
+              } else {
+                  process.exit(0);
+              }
+          });
+      } else if (redisClient && redisClient.isOpen) { 
+          redisClient.quit().then(() => {
+              logger.info('Redis client connection closed through app termination.');
+          }).catch(err => {
+              logger.error('Error closing Redis client:', err);
+          }).finally(() => process.exit(0));
+      } else { 
+          process.exit(0);
+      }
+    });
+  } else {
+    logger.warn('[SERVER] HTTP server not initialized, exiting directly.');
+    process.exit(0); 
+  }
 
-  // Force close server after a timeout
   setTimeout(() => {
     logger.error('[SERVER] Could not close connections in time, forcefully shutting down');
     process.exit(1);
-  }, 10000); // 10 seconds
+  }, 10000); 
 };
-
-// Mongoose import for graceful shutdown of MongoDB
-const mongoose = require('mongoose'); 
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
@@ -105,4 +111,4 @@ if (require.main === module) {
   startServer();
 }
 
-module.exports = server;
+module.exports = startServer;

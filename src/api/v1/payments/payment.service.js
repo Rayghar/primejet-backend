@@ -8,7 +8,7 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
-const MONNIFY_SECRET_KEY = process.env.MONNIFY_SECRET_KEY || "2Z659QCSA4GCPR0VKTPQTB81A3R7XHK4";
+const MONNIFY_SECRET_KEY = process.env.MONNIFY_SECRET_KEY;
 
 // --- Monnify's Sample Data for Static Hashing Test (for extreme debugging only) ---
 // This static string is used to compare your computed hash against Monnify's documented hash.

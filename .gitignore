@@ -25,7 +25,7 @@ lerna-debug.log*
 !.env.example # Keep an example file in git
 
 # Firebase Credentials
-firebase-credentials.json # CRITICAL: Do not commit this!
+firebase-credentials.json
 
 # IDEs and editors
 .idea

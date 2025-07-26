@@ -1,18 +1,44 @@
 // src/api/v1/orders/order.service.js
 const { v4: uuidv4 } = require('uuid');
-const mongoose = require('mongoose'); // Required for database sessions (transactions)
+const mongoose = require('mongoose');
 const Order = require('../../../models/order.model');
 const User = require('../../../models/user.model');
 const Run = require('../../../models/run.model');
 const Config = require('../../../models/config.model');
 const Promotion = require('../../../models/promotion.model');
-const Address = require('../../../models/address.model'); // Ensure Address model is imported
+const Address = require('../../../models/address.model');
 const HttpError = require('../../../utils/HttpError');
 const { firestore, admin, isFirebaseInitialized } = require('../../../config/firebase.config.js');
-const { logger } = require('../../../config/logger.config.js'); // Assuming logger is set up
-const referralService = require('../referrals/referral.service'); // For referral logic
+const { logger } = require('../../../config/logger.config.js');
+const referralService = require('../referrals/referral.service');
 
-// --- Existing Functions (getOrders, getOrder, placeOrder) ---
+// IMPORTANT: This helper function maps granular driver stop statuses (from Run.Stop enum)
+// to high-level customer-facing order statuses (from Order enum).
+// This function is ALSO defined in run.service.js. Ensure consistency.
+const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
+  switch (driverStopStatus) {
+    case 'DRIVER_ENROUTE_PICKUP':
+      return 'Driver Assigned';
+    case 'PICKED_UP_ENROUTE_STATION':
+    case 'CYLINDER_REFILLING':
+      return 'Processing';
+    case 'OUT_FOR_DELIVERY':
+      return 'Out for delivery';
+    case 'DELIVERED':
+      return 'Delivered';
+    case 'CUSTOMER_UNAVAILABLE':
+      return 'Customer Unavailable';
+    case 'ISSUE_REPORTED':
+      return 'Issue Reported';
+    case 'Pending':
+    case 'Assigned':
+      return 'Processing';
+    default:
+      logger.warn(`[mapDriverStopStatusToOrderStatus] Unhandled driverStopStatus: ${driverStopStatus}. Defaulting to 'Processing'.`);
+      return 'Processing';
+  }
+};
+
 
 const getOrders = async (options) => {
   const { status, customerId, driverId, page, limit, userId, role, sortBy } = options;
@@ -29,17 +55,20 @@ const getOrders = async (options) => {
     if (role === 'customer') {
       query.customerId = userId;
       if (customerId && customerId !== userId) {
+        logger.warn(`[ORDER_SERVICE] Unauthorized customer access attempt: User ${userId} tried to access orders for customer ${customerId}.`);
         throw new HttpError(403, 'Customers can only access their own orders.');
       }
     } else if (role === 'driver') {
       query.driverId = userId;
       if (driverId && driverId !== userId) {
+        logger.warn(`[ORDER_SERVICE] Unauthorized driver access attempt: Driver ${userId} tried to access orders for driver ${driverId}.`);
         throw new HttpError(403, 'Drivers can only access their assigned orders.');
       }
     } else if (role === 'admin') {
       if (customerId) query.customerId = customerId;
       if (driverId) query.driverId = driverId;
     } else {
+      logger.warn(`[ORDER_SERVICE] Unauthorized role '${role}' attempted to access orders.`);
       throw new HttpError(403, 'Unauthorized role for accessing orders.');
     }
 
@@ -56,19 +85,17 @@ const getOrders = async (options) => {
       .skip(skip)
       .limit(limitNum)
       .populate({
-        path: 'customerId',
+        path: 'customer',
         select: 'id name email phone',
         model: 'User',
-        foreignField: 'id'
       })
       .populate({
-        path: 'driverId',
+        path: 'driver',
         select: 'id name phone vehicleType licensePlate',
         model: 'User',
-        foreignField: 'id'
       });
     return {
-      orders: orders.map(order => order.toObject()),
+      orders: orders.map(order => order.toObject({ virtuals: true })),
       currentPage: pageNum,
       totalPages: Math.ceil(totalOrders / limitNum),
       totalOrders,
@@ -82,21 +109,18 @@ const getOrders = async (options) => {
 
 const getOrderPaymentStatus = async (orderId, requestingUser) => {
   try {
-    // Reuse existing getOrder for authorization and retrieval
     const order = await getOrder(orderId, requestingUser);
 
     if (!order) {
       throw new HttpError(404, 'Order not found.');
     }
 
-    // Return only necessary payment-related information
     return {
       orderId: order.id,
       status: order.status,
       paymentStatus: order.paymentStatus,
       grandTotal: order.grandTotal,
       finalAmountPaid: order.finalAmountPaid,
-      paymentDetails: order.paymentDetails, // Include full payment details if available
       message: 'Payment status retrieved successfully.'
     };
   } catch (error) {
@@ -121,7 +145,7 @@ const getOrder = async (orderId, requestingUser) => {
     }
 
     if (requestingUser.role === 'admin') {
-        return order.toObject();
+        return order.toObject({ virtuals: true });
     }
 
     if (requestingUser.role === 'customer' && order.customerId !== requestingUser.id) {
@@ -134,7 +158,7 @@ const getOrder = async (orderId, requestingUser) => {
       throw new HttpError(403, 'You are not authorized to view this order.');
     }
 
-    return order.toObject();
+    return order.toObject({ virtuals: true });
 
   } catch (error) {
     logger.error(`[ORDER_SERVICE] Get order ${orderId} error:`, { error: error.message, stack: error.stack });
@@ -149,9 +173,11 @@ const placeOrder = async (customerId, orderData) => {
   try {
     const user = await User.findOne({ id: customerId }).select('name phone walletBalance defaultAddressId role referredBy').session(session);
     if (!user) {
+      logger.error(`[ORDER_SERVICE] User placing order not found: ${customerId}`);
       throw new HttpError(404, 'User placing order not found.');
     }
     if (user.role !== 'customer') {
+      logger.warn(`[ORDER_SERVICE] Non-customer user ${customerId} attempted to place order.`);
       throw new HttpError(403, 'Only customers can place orders.');
     }
 
@@ -176,6 +202,7 @@ const placeOrder = async (customerId, orderData) => {
 
     const deliveryAddress = await Address.findOne({ id: deliveryAddressId, userId: customerId }).session(session);
     if (!deliveryAddress) {
+      logger.error(`[ORDER_SERVICE] Delivery address ${deliveryAddressId} not found or does not belong to user ${customerId}.`);
       throw new HttpError(404, `Delivery address with ID ${deliveryAddressId} not found or does not belong to user.`);
     }
 
@@ -198,6 +225,7 @@ const placeOrder = async (customerId, orderData) => {
 
     const config = await Config.findOne().session(session);
     if (!config || !config.feeSettings) {
+      logger.error(`[ORDER_SERVICE] System configuration for fees not found or incomplete. Config: ${JSON.stringify(config)}`);
       throw new HttpError(500, 'System configuration for fees not found or incomplete.');
     }
 
@@ -398,19 +426,19 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
                 if (user) {
                     user.walletBalance += order.walletAmountUsed;
                     await user.save({ session });
-                    logger.info(`[Order Service][updateOrderStatus] Refunded ${order.walletAmountUsed} to user ${user.id}'s wallet for failed order ${orderId}. New balance: ${user.walletBalance}.`);
+                    logger.info(`[ORDER_SERVICE] Refunded ${order.walletAmountUsed} to user ${user.id}'s wallet for failed order ${orderId}. New balance: ${user.walletBalance}.`);
                 } else {
-                    logger.error(`[Order Service][updateOrderStatus] Critical: User ${order.customerId} not found to refund wallet for failed order ${orderId}. Throwing HttpError 500.`);
+                    logger.error(`[ORDER_SERVICE][updateOrderStatus] Critical: User ${order.customerId} not found to refund wallet for failed order ${orderId}. Throwing HttpError 500.`);
                     throw new HttpError(500, "Error processing cancellation refund: User not found.");
                 }
             }
         } else {
-            logger.info(`[Order Service][updateOrderStatus] Received a failed/canceled webhook for order ${orderId}, but payment is already Completed. Skipping update. Aborting transaction.`);
+            logger.info(`[ORDER_SERVICE][updateOrderStatus] Received a failed/canceled webhook for order ${orderId}, but payment is already Completed. Skipping update. Aborting transaction.`);
             await session.abortTransaction();
             return order.toObject();
         }
     } else {
-        logger.info(`[Order Service][updateOrderStatus] Received unhandled (or non-terminal) paymentStatus '${paymentStatus}' for order ${orderId}. No DB update performed by this block. Aborting transaction.`);
+        logger.info(`[ORDER_SERVICE][updateOrderStatus] Received unhandled (or non-terminal) paymentStatus '${paymentStatus}' for order ${orderId}. No DB update performed by this block. Aborting transaction.`);
         await session.abortTransaction();
         return order.toObject();
     }
@@ -425,7 +453,7 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
     if (order.referrerId && paymentStatus === 'Completed') {
         logger.debug(`[Order Service][updateOrderStatus] Checking referral for order ${orderId} (referrerId: ${order.referrerId}).`);
         try {
-            const user = await User.findOne({ id: order.customerId }); // Fetch outside the session or start a new one for referral if needed
+            const user = await User.findOne({ id: order.customerId });
             if (user && user.referredBy && user.referredBy === order.referrerId) {
                 const completedOrdersCount = await Order.countDocuments({
                     customerId: order.customerId,
@@ -435,7 +463,7 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
 
                 if (completedOrdersCount === 1) {
                     logger.info(`[ORDER_SERVICE][updateOrderStatus] Referee ${order.customerId}'s first completed purchase (${order.id}). Triggering referral credit for referrer ${order.referrerId}.`);
-                    await referralService.creditReferrerForSuccessfulReferral(order); // Pass order object
+                    await referralService.creditReferrerForSuccessfulReferral(order);
                 } else {
                     logger.debug(`[ORDER_SERVICE][updateOrderStatus] Referee ${order.customerId} has more than one completed order (${completedOrdersCount}). Not crediting referrer for this order based on first purchase rule.`);
                 }
@@ -444,14 +472,13 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
             }
         } catch (referralError) {
             logger.error(`[ORDER_SERVICE][updateOrderStatus] Error processing referral for order ${orderId}: ${referralError.message}`, { stack: referralError.stack });
-            // Do not re-throw referral errors as it shouldn't block the main order update.
         }
     }
 
     return order.toObject();
   } catch (error) {
     // This catch block handles errors occurring within the transaction.
-    await session.abortTransaction(); // Ensure transaction is aborted on any error
+    await session.abortTransaction();
     logger.error(`[Order Service][updateOrderStatus] Transaction aborted for order ${orderId} due to error. Original error: ${error.message}`, { stack: error.stack, errorObject: error });
 
     // Ensure HttpError is re-thrown with a valid integer status code.
@@ -491,10 +518,11 @@ const updateOrderPaymentStatus = async (orderId, paymentStatus, paymentDetails, 
   try {
     const order = await Order.findById(orderId).session(session);
     if (!order) {
-      throw new HttpError(404, 'Order not found.');
+      logger.warn(`[ORDER_SERVICE] Order ${orderId} not found for updateOrderPaymentStatus.`);
+      throw new HttpError(404, 'Order not found');
     }
 
-    if (order.paymentStatus === 'paid') {
+    if (order.paymentStatus === 'Completed') {
       logger.warn(`[ORDER_SERVICE] Order ${orderId} is already marked as paid. Skipping update.`);
       await session.commitTransaction();
       return { message: 'Order already paid.', order: order.toObject() };
@@ -698,19 +726,17 @@ const adminGetOrders = async (options) => {
       .skip((page - 1) * limit)
       .limit(limit)
       .populate({
-        path: 'customerId',
+        path: 'customer', // FIX: Corrected from customerId to customer virtual
         select: 'id name email phone',
         model: 'User',
-        foreignField: 'id'
       })
       .populate({
-        path: 'driverId',
+        path: 'driver', // FIX: Corrected from driverId to driver virtual
         select: 'id name email phone',
         model: 'User',
-        foreignField: 'id'
       });
     return {
-      orders: orders.map(order => order.toObject()),
+      orders: orders.map(order => order.toObject({ virtuals: true })),
       currentPage: page,
       totalPages: Math.ceil(totalOrders / limit),
       totalOrders,
@@ -736,7 +762,7 @@ const adminUpdateOrderStatus = async (orderId, newStatus, notes, adminId, adminR
     if (newStatus === 'Delivered' && !order.actualDeliveryTime) order.actualDeliveryTime = new Date();
     await order.save({ session });
     await session.commitTransaction();
-    return { message: `Order ${orderId} status updated to ${newStatus} by admin.`, order: order.toObject() };
+    return { message: `Order ${orderId} status updated to ${newStatus}.`, order: order.toObject() };
   } catch (error) {
     await session.abortTransaction();
     if (error instanceof HttpError) throw error;
@@ -786,11 +812,11 @@ const adminAssignDriver = async (orderId, driverIdToAssign, adminId, adminRole) 
         logger.info(`Run ${newRun.id} created and driver ${driver.name} assigned to order ${orderId}.`);
 
         const populatedOrder = await Order.findOne({ id: orderId })
-            .populate('customerId', 'id name email phone')
-            .populate('driverId', 'id name phone vehicleType licensePlate')
+            .populate('customer', 'id name email phone')
+            .populate('driver', 'id name phone vehicleType licensePlate')
             .session(session);
 
-        return { message: `Driver ${driver.name} assigned to order ${orderId}.`, order: populatedOrder.toObject() };
+        return { message: `Driver ${driver.name} assigned to order ${orderId}.`, order: populatedOrder.toObject({ virtuals: true }) };
 
     } catch (error) {
             await session.abortTransaction();
@@ -848,10 +874,43 @@ const getCustomerConsumptionData = async (customerId) => {
       status: 'Delivered'
     })
     .sort({ orderDate: -1 })
-    .limit(2)
-    .select('orderDate status');
+    // We need items and orderDate for calculation, so select them
+    .select('orderDate items'); // FIX: Select 'items' to calculate total gas
 
-    return orders.map(order => order.toObject());
+    let totalGasKg = 0;
+    let totalOrders = orders.length;
+    let averageDaysBetweenOrders = 0;
+
+    // Calculate total gas in kg
+    for (const order of orders) {
+      for (const item of order.items) {
+        const match = item.productName.match(/(\d+(\.\d+)?)\s*KG/i); // Assuming format like "XX KG Cylinder"
+        if (match && match[1]) {
+          totalGasKg += (parseFloat(match[1]) * item.quantity);
+        }
+      }
+    }
+
+    // Calculate average days between orders
+    if (orders.length > 1) {
+      let totalDaysDiff = 0;
+      for (let i = 0; i < orders.length - 1; i++) {
+        const date1 = orders[i].orderDate;
+        const date2 = orders[i+1].orderDate;
+        totalDaysDiff += Math.abs(date1.getTime() - date2.getTime()) / (1000 * 60 * 60 * 24); // Difference in days
+      }
+      averageDaysBetweenOrders = totalDaysDiff / (orders.length - 1);
+    }
+    
+    // FIX: Return an object with aggregated stats, not the raw orders array
+    return {
+      totalOrders: totalOrders,
+      totalGasKg: parseFloat(totalGasKg.toFixed(1)), // Format for consistency
+      averageDaysBetweenOrders: parseFloat(averageDaysBetweenOrders.toFixed(1)), // Format for consistency
+      // Optionally, you can also include the recent orders if the frontend still needs them separately:
+      // recentDeliveredOrders: orders.map(order => order.toObject())
+    };
+
   } catch (error) {
     logger.error(`[ORDER_SERVICE] Error fetching consumption data for customer ${customerId}:`, error);
     throw new HttpError(500, 'Failed to retrieve order data for gas level calculation.');
@@ -870,7 +929,6 @@ module.exports = {
   adminAssignDriver,
   cancelOrder,
   getCustomerConsumptionData,
-  updateOrderStatus, 
-  getOrderPaymentStatus, // Export the new function
-
+  updateOrderStatus,
+  getOrderPaymentStatus,
 };

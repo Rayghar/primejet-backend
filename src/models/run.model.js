@@ -11,7 +11,6 @@ const stopSchema = new mongoose.Schema(
     orderId: {
       type: String,
       required: [true, 'Order ID for stop is required.'],
-      // REMOVED: ref: 'Order' -> This was causing the CastError.
     },
     sequence: {
       type: Number,
@@ -27,13 +26,14 @@ const stopSchema = new mongoose.Schema(
             'Reached',
             'Completed',
             'FailedAttempt',
-            'Driver enroute to pickup',
-            'Driver enroute to gas station',
-            'Cylinder Refilling',
-            'Out for delivery',
-            'Delivered',
-            'Customer not available',
-            'Issue Reported'
+            // FIX: Granular driver-specific statuses (these are fine here)
+            'DRIVER_ENROUTE_PICKUP',
+            'PICKED_UP_ENROUTE_STATION',
+            'CYLINDER_REFILLING',
+            'OUT_FOR_DELIVERY',
+            'DELIVERED',
+            'CUSTOMER_UNAVAILABLE',
+            'ISSUE_REPORTED'
       ],
       default: 'Pending',
     },

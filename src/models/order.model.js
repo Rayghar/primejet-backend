@@ -19,7 +19,7 @@ const statusHistorySchema = new mongoose.Schema({
 
 const adminNoteSchema = new mongoose.Schema({
   note: { type: String, required: [true, 'Admin note content is required.'], trim: true },
-  adminId: { type: String, required: [true, 'Admin ID is required.'], /* ref: 'User' // if 'id' is User's primary key */ },
+  adminId: { type: String, required: [true, 'Admin ID is required.'] /* ref: 'User' // if 'id' is User's primary key */ },
   timestamp: { type: Date, required: true, default: Date.now },
 }, { _id: false });
 
@@ -29,9 +29,9 @@ const orderSchema = new mongoose.Schema(
     customerId: { type: String, required: true, ref: 'User', index: true },
     driverId: { type: String, ref: 'User', index: true, sparse: true },
     items: [itemSchema],
-    deliveryAddressSnapshot: {
-         fullAddress: { type: String, required: true },
-         street: { type: String },
+    deliveryAddressSnapshot: { /* ... your existing address snapshot schema ... */ 
+         fullAddress: { type: String, required: true }, // Full address as a string
+         street: { type: String }, // Add other fields as needed
          city: { type: String },
          state: { type: String },
          country: { type: String },
@@ -43,7 +43,7 @@ const orderSchema = new mongoose.Schema(
     recipientName: { type: String, required: true },
     recipientPhone: { type: String, required: true },
     
-    itemsSubtotal: { type: Number, required: true, default: 0 },
+    itemsSubtotal: { type: Number, required: true, default: 0 }, // Smallest currency unit
     discountAmount: { type: Number, default: 0 },
     promoCodeApplied: { type: String, trim: true },
     referralCodeUsed: { type: String, trim: true, uppercase: true },
@@ -52,40 +52,31 @@ const orderSchema = new mongoose.Schema(
     serviceFeeAmount: { type: Number, default: 0 },
     deliveryFee: { type: Number, default: 0 },
     walletAmountUsed: { type: Number, default: 0 },
-    grandTotal: { type: Number, required: true, default: 0 },
-    finalAmountPaid: { type: Number, default: 0 },
+    grandTotal: { type: Number, required: true, default: 0 }, // Smallest currency unit, total before any external payment
+    finalAmountPaid: { type: Number, default: 0 }, // Actual amount paid via gateway
 
-    status: {
-        type: String,
-        required: true,
+    status: { 
+        type: String, 
+        required: true, 
+        // FIX: SIMPLIFIED ORDER STATUS ENUM - only high-level customer-facing statuses
         enum: [
           'Pending Payment',
           'Order Placed',
           'Processing',
           'Driver Assigned',
-          'Out for Delivery',
-          'Reached Pickup',
-          'Gas Picked Up',
-          'Reached Dropoff',
+          'Out for delivery', // Simplified from OUT_FOR_DELIVERY for customer view
           'Delivered',
           'Canceled by Customer',
           'Canceled by Admin',
-          'Failed',
           'Payment Failed',
           'Payment Discrepancy',
           'Refunded',
           'Partially Refunded',
-          // === FIX: ADD THESE DRIVER-REPORTED STATUSES TO ORDER SCHEMA ===
-          'DRIVER_ENROUTE_PICKUP',
-          'PICKED_UP_ENROUTE_STATION',
-          'CYLINDER_REFILLING',
-          'OUT_FOR_DELIVERY', // This might be a duplicate, if so, keep only one. Or distinguish driver vs admin set.
-          'CUSTOMER_UNAVAILABLE',
-          'ISSUE_REPORTED',
-          // =============================================================
+          'Customer Unavailable', // These are high-level states
+          'Issue Reported' // These are high-level states
         ],
         default: 'Pending Payment',
-        index: true
+        index: true 
     },
     paymentStatus: {
       type: String,
@@ -94,18 +85,18 @@ const orderSchema = new mongoose.Schema(
       default: 'Pending',
       index: true,
     },
-    paymentMethod: { type: String },
-    paymentGateway: { type: String, enum: ['stripe', 'paystack', 'wallet', null], sparse:true },
-    paymentIntentId: { type: String, trim: true, index: true, sparse:true },
-    paymentGatewayReference: { type: String, trim: true, index: true, sparse:true },
-    paymentTransactionId: { type: String, trim: true },
+    paymentMethod: { type: String }, // e.g., 'card', 'wallet', 'stripe', 'paystack'
+    paymentGateway: { type: String, enum: ['stripe', 'paystack', 'wallet', null], sparse:true }, // To know which gateway processed
+    paymentIntentId: { type: String, trim: true, index: true, sparse:true }, // For Stripe PaymentIntent ID
+    paymentGatewayReference: { type: String, trim: true, index: true, sparse:true }, // For other references like Paystack
+    paymentTransactionId: { type: String, trim: true }, // Actual charge/transaction ID from gateway
 
     isExpressDelivery: { type: Boolean, default: false },
     deliveryLatitude: { type: Number, min: -90, max: 90 },
     deliveryLongitude: { type: Number, min: -180, max: 180 },
     estimatedDeliveryTime: { type: Date },
     actualDeliveryTime: { type: Date },
-    statusHistory: [statusHistorySchema],
+    statusHistory: [statusHistorySchema], // Ensure statusHistorySchema is defined
     adminNotes: [{ note: String, adminId: String, timestamp: {type: Date, default: Date.now}, _id: false }],
     orderDate: { type: Date, required: true, default: Date.now, index: true },
   },
@@ -115,18 +106,24 @@ const orderSchema = new mongoose.Schema(
   }
 );
 
+// --- FIX START: Define Virtual Properties for Population ---
+
+// Virtual for the customer
 orderSchema.virtual('customer', {
-  ref: 'User',
-  localField: 'customerId',
-  foreignField: 'id',
-  justOne: true
+  ref: 'User',             // The model to use
+  localField: 'customerId',  // Find in this schema where localField
+  foreignField: 'id',        // is equal to foreignField in the 'User' model
+  justOne: true              // We only expect one User
 });
 
+// Virtual for the driver
 orderSchema.virtual('driver', {
   ref: 'User',
   localField: 'driverId',
   foreignField: 'id',
   justOne: true
 });
+
+// --- FIX END ---
 
 module.exports = mongoose.model('Order', orderSchema);

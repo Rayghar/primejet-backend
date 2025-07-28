@@ -6,13 +6,8 @@ const crypto = require('crypto');
 const User = require('../../../models/user.model');
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
-
-// ========================== FIX IS HERE (1 of 3) ==========================
-// Correctly import the OAuth2Client from the google-auth-library package.
 const { OAuth2Client } = require('google-auth-library');
-// The email service should be in the utils folder.
-const { sendEmail } = require('../../../services/email.service'); 
-// ========================================================================
+const { sendEmail } = require('../../../services/email.service');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-default-super-secret-key-for-dev';
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -29,8 +24,8 @@ const generateJwtForUser = (user, isNewUser = false) => {
     message: 'Login successful.' 
   };
 };
+
 const registerCustomer = async (userData) => {
-    // This function is correct from your file, included for completeness.
     const { email, password, name, phone } = userData;
     const existingUser = await User.findOne({ email: email.toLowerCase() }).select('+isVerified');
     if (existingUser && existingUser.isVerified) {
@@ -97,9 +92,6 @@ const verifyGoogleIdTokenAndLogin = async (idToken) => {
   }
 };
 
-// ========================== FIX IS HERE (3 of 3) ==========================
-// All other functions from your existing auth.service.js are included here
-// to provide a single, complete, and correct file.
 const verifyEmailOtp = async (email, otp) => {
     const user = await User.findOne({ 
       email: email.toLowerCase(),
@@ -153,6 +145,16 @@ const requestPasswordReset = async (email) => {
     user.passwordResetExpires = Date.now() + 3600000;
     await user.save();
     logger.info(`Password Reset Token for ${email}: ${resetToken}`);
+
+    // FIX: Send the email with the reset link
+    const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`; // Customize with your frontend URL
+    await sendEmail({
+      to: email,
+      subject: 'Gas2Door Password Reset',
+      text: `You requested a password reset. Click this link to reset your password: ${resetUrl}. If you didn't request this, ignore this email.`,
+      html: `<p>You requested a password reset. Click <a href="${resetUrl}">this link</a> to reset your password. If you didn't request this, ignore this email.</p>`,
+    });
+
     return { message: 'If your email is registered, you will receive a password reset link.' };
 };
 

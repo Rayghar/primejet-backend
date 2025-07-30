@@ -57,6 +57,16 @@ const resendOtp = async (req, res, next) => {
 };
 // ===============================================================
 
+const verifyPasswordResetToken = async (req, res, next) => {
+  try {
+    const { email, token } = req.body;
+    const result = await authService.verifyPasswordResetToken(email, token);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
 
 const registerCustomer = async (req, res, next) => {
   try {

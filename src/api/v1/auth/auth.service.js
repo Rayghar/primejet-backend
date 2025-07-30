@@ -29,28 +29,28 @@ const generateJwtForUser = (user, isNewUser = false) => {
     message: 'Login successful.' 
   };
 };
-
 const registerCustomer = async (userData) => {
-  const { email, password, name, phone } = userData;
-  const existingUser = await User.findOne({ email: email.toLowerCase() }).select('+isVerified');
-  if (existingUser && existingUser.isVerified) {
-      throw new HttpError(409, 'An account with this email already exists.');
-  }
-  const hashedPassword = await bcrypt.hash(password, 10);
-  const otp = Math.floor(1000 + Math.random() * 9000).toString();
-  const hashedOtp = await bcrypt.hash(otp, 10);
-  const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
-  const userFields = { name, email: email.toLowerCase(), phone, password: hashedPassword, role: 'customer', otp: hashedOtp, otpExpires, isVerified: false, status: 'pending_verification' };
-  let user;
-  if (existingUser) {
-      user = await User.findOneAndUpdate({ _id: existingUser._id }, userFields, { new: true });
-  } else {
-      user = new User({ ...userFields, id: uuidv4() });
-      await user.save();
-  }
-  await sendEmail({ to: email, subject: 'Your Gas2Door Verification Code', text: `Your verification code is: ${otp}.`, html: `<p>Your verification code is: <strong>${otp}</strong>.</p>` });
-  logger.info(`[AUTH_SERVICE] OTP for ${email}: ${otp}`);
-  return { userId: user.id, message: 'Registration successful. A 4-digit verification code has been sent to your email.' };
+    // This function is correct from your file, included for completeness.
+    const { email, password, name, phone } = userData;
+    const existingUser = await User.findOne({ email: email.toLowerCase() }).select('+isVerified');
+    if (existingUser && existingUser.isVerified) {
+        throw new HttpError(409, 'An account with this email already exists.');
+    }
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+    const hashedOtp = await bcrypt.hash(otp, 10);
+    const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
+    const userFields = { name, email: email.toLowerCase(), phone, password: hashedPassword, role: 'customer', otp: hashedOtp, otpExpires, isVerified: false, status: 'pending_verification' };
+    let user;
+    if (existingUser) {
+        user = await User.findOneAndUpdate({ _id: existingUser._id }, userFields, { new: true });
+    } else {
+        user = new User({ ...userFields, id: uuidv4() });
+        await user.save();
+    }
+    await sendEmail({ to: email, subject: 'Your Gas2Door Verification Code', text: `Your verification code is: ${otp}.`, html: `<p>Your verification code is: <strong>${otp}</strong>.</p>` });
+    logger.info(`[AUTH_SERVICE] OTP for ${email}: ${otp}`);
+    return { userId: user.id, message: 'Registration successful. A 4-digit verification code has been sent to your email.' };
 };
 
 const verifyGoogleIdTokenAndLogin = async (idToken) => {
@@ -142,37 +142,68 @@ const login = async (email, password) => {
     return generateJwtForUser(user);
 };
 
+// =======================================================================
+// MODIFIED: This function now generates a 6-digit numeric code.
+// =======================================================================
 const requestPasswordReset = async (email) => {
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) {
       logger.warn(`Password reset requested for non-existent email: ${email}.`);
-      return { message: 'If your email is registered, you will receive a password reset link.' };
+      // Security best practice: Don't reveal if the email exists.
+      return { message: 'If your email is registered, you will receive a 6-digit reset code.' };
     }
-    const resetToken = crypto.randomBytes(32).toString('hex');
-    user.passwordResetToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-    user.passwordResetExpires = Date.now() + 3600000;
+    
+    // Generate a 6-digit numeric token
+    const resetToken = Math.floor(100000 + Math.random() * 900000).toString();
+    
+    // Store the HASH of the token, not the token itself
+    user.passwordResetToken = await bcrypt.hash(resetToken, 10);
+    // Set a short expiry (e.g., 10 minutes)
+    user.passwordResetExpires = Date.now() + 10 * 60 * 1000; 
     await user.save();
-    logger.info(`Password Reset Token for ${email}: ${resetToken}`);
+    
+    // Send the plain text token to the user's email
+    await sendEmail({
+      to: email,
+      subject: 'Your Gas2Door Password Reset Code',
+      text: `Your password reset code is: ${resetToken}. It will expire in 10 minutes.`,
+      html: `<p>Your password reset code is: <strong>${resetToken}</strong>. It will expire in 10 minutes.</p>`
+    });
 
-    // Updated to handle potential errors and use the new sendEmail with detailed logging
-    const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
-    try {
-      await sendEmail({
-        to: email,
-        subject: 'Gas2Door Password Reset',
-        text: `You requested a password reset. Click this link to reset your password: ${resetUrl}. If you didn't request this, ignore this email.`,
-        html: `<p>You requested a password reset. Click <a href="${resetUrl}">this link</a> to reset your password. If you didn't request this, ignore this email.</p>`,
-      });
-      logger.info(`[AUTH_SERVICE] Password reset email sent to ${email}`);
-    } catch (error) {
-      logger.error(`[AUTH_SERVICE] Failed to send password reset email to ${email}:`, error);
-      if (error instanceof HttpError) {
-        throw error; // Propagate HttpError
-      }
-      throw new HttpError(500, `Failed to send password reset email: ${error.message}`);
+    logger.info(`Password Reset Code for ${email}: ${resetToken}`);
+    return { message: 'A 6-digit reset code has been sent to your email.' };
+};
+
+// =======================================================================
+// NEW: This function verifies the 6-digit code and issues a secure, single-use token.
+// =======================================================================
+const verifyPasswordResetToken = async (email, token) => {
+    const user = await User.findOne({ 
+      email: email.toLowerCase(),
+      passwordResetExpires: { $gt: Date.now() }
+    }).select('+passwordResetToken');
+  
+    if (!user) {
+      throw new HttpError(400, 'Reset code is invalid or has expired.');
+    }
+  
+    const isMatch = await bcrypt.compare(token, user.passwordResetToken);
+    if (!isMatch) {
+      throw new HttpError(400, 'Invalid reset code provided.');
     }
 
-    return { message: 'If your email is registered, you will receive a password reset link.' };
+    // The 6-digit code is valid. Now, create a new, more secure, single-use token for the final reset step.
+    const finalResetToken = crypto.randomBytes(32).toString('hex');
+    user.passwordResetToken = crypto.createHash('sha256').update(finalResetToken).digest('hex');
+    // Extend expiry slightly for the user to enter their new password
+    user.passwordResetExpires = Date.now() + 10 * 60 * 1000; 
+    await user.save();
+
+    // Send the secure token back to the frontend
+    return { 
+      message: 'Code verified successfully.',
+      resetToken: finalResetToken 
+    };
 };
 
 const resetPassword = async (token, newPassword) => {

@@ -25,6 +25,7 @@ router.post('/verify-otp', validate(verifyOtpSchema), authController.verifyEmail
 
 // --- Password Reset ---
 router.post('/request-password-reset', validate(requestPasswordResetSchema), authController.requestPasswordReset);
+router.post('/verify-password-token', validate(verifyPasswordTokenSchema), authController.verifyPasswordResetToken);
 router.post('/reset-password', validate(resetPasswordSchema), authController.resetPassword);
 
 // --- NEW ROUTE FOR MOBILE SOCIAL LOGIN ---

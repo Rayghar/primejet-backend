@@ -25,18 +25,39 @@ async function startServer() {
   logger.info('[SERVER] startServer called.');
   try {
     logger.info('[SERVER] Loading application configuration...');
-    globalConfig = require('./config').config;
-    logger.info('[SERVER] Application configuration loaded successfully.');
+    const { loadConfig } = require('./config');
+    globalConfig = await loadConfig();
+    if (!globalConfig || typeof globalConfig !== 'object') {
+      logger.warn('[SERVER] Configuration loading failed. Using fallback default configuration.');
+      globalConfig = {
+        env: 'development',
+        port: 3000,
+        mongo: {
+          uri: 'mongodb://localhost:27017/default_db', // Fallback Mongo URI (update as needed)
+        },
+        jwt: {
+          secret: 'fallback_super_secret_key_for_dev_only_please_change',
+          expiresIn: '1d',
+        },
+        // Add other fallback values as needed
+      };
+    } else {
+      logger.info('[SERVER] Application configuration loaded successfully. env: ' + (globalConfig.env || 'undefined'));
+    }
 
     initializeApp = require('./app'); 
     const app = initializeApp(globalConfig, logger); 
 
-    const PORT = globalConfig.port; 
+    const PORT = globalConfig.port || 3000; // Fallback to default port if undefined
     server = http.createServer(app); 
 
     if (globalConfig.env !== 'test') {
       logger.info('[SERVER] Connecting to MongoDB...');
-      await connectMongoDB(globalConfig.mongo.uri); 
+      if (!globalConfig.mongo || !globalConfig.mongo.uri) {
+        logger.warn('[SERVER] MongoDB URI is not configured. Skipping MongoDB connection.');
+      } else {
+        await connectMongoDB(globalConfig.mongo.uri); 
+      }
       logger.info('[SERVER] MongoDB connection attempt finished.');
 
       if (globalConfig.redis && globalConfig.redis.url && typeof connectRedis === 'function') {
@@ -52,7 +73,7 @@ async function startServer() {
 
     server.listen(PORT, '0.0.0.0', () => { 
       logger.info(`[SERVER] Server running on port ${PORT}`);
-      logger.info(`[SERVER] Environment: ${globalConfig.env}`);
+      logger.info(`[SERVER] Environment: ${globalConfig.env || 'undefined'}`);
     });
     logger.info('[SERVER] server.listen called, process should be kept alive.');
   } catch (error) {

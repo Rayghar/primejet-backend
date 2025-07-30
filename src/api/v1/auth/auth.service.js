@@ -228,5 +228,6 @@ module.exports = {
   verifyEmailOtp,
   login,
   requestPasswordReset,
+  verifyPasswordResetToken,
   resetPassword,
 };

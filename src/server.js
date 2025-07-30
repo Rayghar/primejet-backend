@@ -13,7 +13,6 @@ process.on('uncaughtException', (error) => {
 
 const http = require('http');
 let initializeApp; 
-const { loadConfig } = require('./config'); 
 const { logger } = require('./config/logger.config.js');
 const { connectMongoDB, connectRedis, redisClient } = require('./config/database.config.js');
 
@@ -26,7 +25,7 @@ async function startServer() {
   logger.info('[SERVER] startServer called.');
   try {
     logger.info('[SERVER] Loading application configuration...');
-    globalConfig = await loadConfig();
+    globalConfig = require('./config').config;
     logger.info('[SERVER] Application configuration loaded successfully.');
 
     initializeApp = require('./app'); 

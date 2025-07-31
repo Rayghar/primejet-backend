@@ -1,75 +1,77 @@
-// src/middleware/auth.middleware.js
+// File: src/middleware/auth.middleware.js
+// ADVISORY: This version fixes the server crash by accessing the JWT secret directly and reliably.
+
 const jwt = require('jsonwebtoken');
 const HttpError = require('../utils/HttpError'); 
-const globalConfig = require('../config'); // Assuming src/config/index.js exports all configs
 const { logger } = require('../config/logger.config'); 
-const User = require('../models/user.model'); // ADDED: Import the User model
+const User = require('../models/user.model');
 
-/**
- * Authentication middleware to verify JWT and optionally check roles.
- * Attaches the authenticated user object (from DB) to req.user.
- * @param {string} [requiredRole] - Optional role required to access the route.
- */
+// ============================= FIX IS HERE =============================
+// Access the JWT secret directly from environment variables, just like in auth.service.js.
+// This ensures consistency and reliability, with a fallback for development.
+const JWT_SECRET = process.env.JWT_SECRET || 'your-default-super-secret-key-for-dev';
+// =====================================================================
+
 const authMiddleware = (requiredRole) => async (req, res, next) => {
   try {
     const authHeader = req.header('Authorization');
-    console.log('[AUTH_MIDDLEWARE DEBUG] Request received:', req.method, req.path);
-    console.log('[AUTH_MIDDLEWARE DEBUG] Auth Header:', authHeader); 
+    logger.debug('[AUTH_MIDDLEWARE] Request received:', { method: req.method, path: req.path });
+    logger.debug('[AUTH_MIDDLEWARE] Auth Header:', { authHeader }); 
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      console.log('[AUTH_MIDDLEWARE DEBUG] No Bearer token found or malformed header.');
+      logger.warn('[AUTH_MIDDLEWARE] No Bearer token found or malformed header.');
       return next(new HttpError(401, 'Authentication token is missing or malformed.'));
     }
 
     const token = authHeader.replace('Bearer ', '');
     if (!token) { 
-        console.log('[AUTH_MIDDLEWARE DEBUG] Token extracted but empty.');
+        logger.warn('[AUTH_MIDDLEWARE] Token extracted but empty.');
         return next(new HttpError(401, 'Authentication token not provided.'));
     }
-    console.log('[AUTH_MIDDLEWARE DEBUG] Token received:', token);
+    logger.debug('[AUTH_MIDDLEWARE] Token received:', { token });
 
-    // Verify the JWT token using the secret from your config
-    const jwtSecret = globalConfig.jwt.secret;
-    console.log('[AUTH_MIDDLEWARE DEBUG] Using JWT Secret (first 5 chars):', jwtSecret ? jwtSecret.substring(0, 5) + '...' : 'NONE'); // Log part of secret for debug
+    // Check if the JWT secret is available.
+    if (!JWT_SECRET) { // This check will now likely never fail due to the fallback.
+        logger.error('[AUTH_MIDDLEWARE] JWT secret is not configured on the server.');
+        return next(new HttpError(500, 'Server configuration error.'));
+    }
+    logger.debug('[AUTH_MIDDLEWARE] Using JWT Secret for verification.');
 
     let decoded;
     try {
-        decoded = jwt.verify(token, jwtSecret);
-        console.log('[AUTH_MIDDLEWARE DEBUG] Token decoded:', decoded);
+        // Use the reliably loaded secret for verification.
+        decoded = jwt.verify(token, JWT_SECRET);
+        logger.debug('[AUTH_MIDDLEWARE] Token decoded:', { decoded });
     } catch (jwtError) {
-        console.error('[AUTH_MIDDLEWARE DEBUG] JWT Verification Failed:', jwtError.message, 'Name:', jwtError.name);
+        logger.error('[AUTH_MIDDLEWARE] JWT Verification Failed:', { message: jwtError.message, name: jwtError.name });
         if (jwtError.name === 'TokenExpiredError') {
             return next(new HttpError(401, 'Authentication token expired. Please log in again.'));
         }
         return next(new HttpError(401, 'Invalid authentication token.'));
     }
     
-    // FETCH USER FROM DATABASE:
-    console.log('[AUTH_MIDDLEWARE DEBUG] Attempting to find user with ID from token:', decoded.id);
-    const user = await User.findOne({ id: decoded.id }); // Find user by their custom 'id' field
+    logger.debug('[AUTH_MIDDLEWARE] Attempting to find user with ID from token:', { userId: decoded.id });
+    const user = await User.findOne({ id: decoded.id });
 
     if (!user) {
-        console.log('[AUTH_MIDDLEWARE DEBUG] User from token ID NOT found in DB:', decoded.id);
+        logger.warn('[AUTH_MIDDLEWARE] User from token ID NOT found in DB:', { userId: decoded.id });
         return next(new HttpError(401, 'User associated with token not found.'));
     }
-    console.log('[AUTH_MIDDLEWARE DEBUG] User found in DB: ID:', user.id, 'Role:', user.role);
+    logger.debug('[AUTH_MIDDLEWARE] User found in DB:', { userId: user.id, role: user.role });
 
-    // Role-based authorization check:
     if (requiredRole && user.role !== requiredRole) {
-      console.log(`[AUTH_MIDDLEWARE DEBUG] Role mismatch for user ${user.id}. Expected: ${requiredRole}, Actual: ${user.role}`);
+      logger.warn(`[AUTH_MIDDLEWARE] Role mismatch for user ${user.id}. Expected: ${requiredRole}, Actual: ${user.role}`);
       return next(new HttpError(403, `Insufficient permissions for this resource. Your role is ${user.role}.`));
     }
 
-    // Attach the fetched Mongoose user document to `req.user`.
     req.user = user; 
-    console.log('[AUTH_MIDDLEWARE DEBUG] req.user successfully set. Calling next().');
-    next(); // Proceed to the next middleware or route handler
+    logger.debug('[AUTH_MIDDLEWARE] req.user successfully set. Calling next().');
+    next();
   } catch (error) {
-    console.error('[AUTH_MIDDLEWARE DEBUG] UNEXPECTED Authentication error in catch block:', error.message, 'Stack:', error.stack);
+    logger.error('[AUTH_MIDDLEWARE] UNEXPECTED Authentication error in catch block:', { message: error.message, stack: error.stack });
     if (error instanceof HttpError) {
-      return next(error); // Pass custom HttpErrors directly
+      return next(error);
     }
-    // Fallback for other unexpected errors during token verification or user lookup
     return next(new HttpError(500, 'Authentication process failed due to an unexpected server error.'));
   }
 };

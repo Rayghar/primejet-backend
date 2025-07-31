@@ -212,13 +212,21 @@ const resetPassword = async (token, newPassword) => {
       passwordResetToken: hashedToken,
       passwordResetExpires: { $gt: Date.now() },
     });
+    
     if (!user) {
       throw new HttpError(400, 'Password reset token is invalid or has expired.');
     }
-    user.password = await bcrypt.hash(newPassword, 10);
+    
+    // CORRECTED: Set the plain text password.
+    // The Mongoose pre-save hook in the User model will handle the hashing automatically.
+    user.password = newPassword; 
+
+    // Clear the reset token fields
     user.passwordResetToken = undefined;
-    user.passwordResetExpires = null;
-    await user.save();
+    user.passwordResetExpires = undefined; // Use 'undefined' to remove from MongoDB document
+    
+    await user.save(); // The pre-save hook will now correctly hash the new password ONCE.
+    
     return { message: 'Password has been reset successfully.' };
 };
 
@@ -228,6 +236,5 @@ module.exports = {
   verifyEmailOtp,
   login,
   requestPasswordReset,
-  verifyPasswordResetToken,
   resetPassword,
 };

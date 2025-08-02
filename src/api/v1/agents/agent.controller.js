@@ -2,6 +2,29 @@
 const agentService = require('./agent.service');
 const HttpError = require('../../../utils/HttpError');
 
+const login = async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+    const result = await agentService.login(email, password);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+// ====================================================================
+
+// ============================= NEW FUNCTION =============================
+const getMyPerformance = async (req, res, next) => {
+  try {
+    // The agent's ID is attached to req.user by the authMiddleware
+    const agentId = req.user.id; 
+    const performanceData = await agentService.getMyPerformance(agentId);
+    res.status(200).json(performanceData);
+  } catch (error) {
+    next(error);
+  }
+};
+
 // Admin: Create Agent
 const createAgent = async (req, res, next) => {
   try {
@@ -89,4 +112,7 @@ module.exports = {
   updateAgent,
   deleteAgent,
   trackAgentLink,
+  login,
+  getMyPerformance,
+  
 };

@@ -11,6 +11,7 @@ const HttpError = require('../../../utils/HttpError');
 const { firestore, admin, isFirebaseInitialized } = require('../../../config/firebase.config.js');
 const { logger } = require('../../../config/logger.config.js');
 const referralService = require('../referrals/referral.service');
+const { sendOrderStatusUpdate } = require('../../../services/fcm.service'); // Import the new service
 
 // IMPORTANT: This helper function maps granular driver stop statuses (from Run.Stop enum)
 // to high-level customer-facing order statuses (from Order enum).
@@ -20,6 +21,7 @@ const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
     case 'DRIVER_ENROUTE_PICKUP':
       return 'Driver Assigned';
     case 'PICKED_UP_ENROUTE_STATION':
+       return 'Processing'; 
     case 'CYLINDER_REFILLING':
       return 'Processing';
     case 'OUT_FOR_DELIVERY':
@@ -232,6 +234,17 @@ const placeOrder = async (customerId, orderData) => {
     const itemsSubtotal = items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
     let discountAmount = 0.0;
     let referrerId = null;
+    // Check if the user was referred by another customer
+    if (user.referredByCode) {
+        const referral = await Referral.findOne({ referralCode: user.referredByCode }).session(session);
+        if (referral) {
+            // Get the original user ID of the person who referred them.
+            referrerId = referral.userId; 
+            logger.info(`[ORDER_SERVICE] Order placed by referred user ${customerId}. Referrer ID ${referrerId} will be stamped on the order.`);
+        }
+    }
+
+
 
     if (promoCodeApplied) {
       const promotion = await Promotion.findOne({
@@ -451,27 +464,25 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
 
     // Referral logic. Moved outside main transaction for robustness, ensure its own transaction/idempotency
     if (order.referrerId && paymentStatus === 'Completed') {
-        logger.debug(`[Order Service][updateOrderStatus] Checking referral for order ${orderId} (referrerId: ${order.referrerId}).`);
+        logger.debug(`[Order Service][updateOrderStatus] Checking referral for order ${orderId} (referrerId: ${order.referrerId}) after webhook confirmation.`);
         try {
-            const user = await User.findOne({ id: order.customerId });
-            if (user && user.referredBy && user.referredBy === order.referrerId) {
-                const completedOrdersCount = await Order.countDocuments({
-                    customerId: order.customerId,
-                    paymentStatus: 'Completed',
-                    status: { $nin: ['Canceled', 'Canceled by Customer', 'Payment Failed'] }
-                });
+            // Check if this is the referee's FIRST completed order.
+            const completedOrdersCount = await Order.countDocuments({
+                customerId: order.customerId,
+                paymentStatus: 'Completed',
+                status: { $nin: ['Canceled', 'Canceled by Customer', 'Payment Failed'] }
+            });
 
-                if (completedOrdersCount === 1) {
-                    logger.info(`[ORDER_SERVICE][updateOrderStatus] Referee ${order.customerId}'s first completed purchase (${order.id}). Triggering referral credit for referrer ${order.referrerId}.`);
-                    await referralService.creditReferrerForSuccessfulReferral(order);
-                } else {
-                    logger.debug(`[ORDER_SERVICE][updateOrderStatus] Referee ${order.customerId} has more than one completed order (${completedOrdersCount}). Not crediting referrer for this order based on first purchase rule.`);
-                }
+            if (completedOrdersCount === 1) {
+                logger.info(`[ORDER_SERVICE][updateOrderStatus] Referee ${order.customerId}'s first completed purchase (${order.id}). Triggering referral credit for referrer ${order.referrerId}.`);
+                // This function will handle the reward logic.
+                await referralService.creditReferrerForSuccessfulReferral(order);
             } else {
-                logger.debug(`[ORDER_SERVICE][updateOrderStatus] Referral not credited for order ${orderId}: User ${order.customerId} not found or referredBy mismatch for referral logic.`);
+                logger.debug(`[ORDER_SERVICE][updateOrderStatus] Referee ${order.customerId} has more than one completed order (${completedOrdersCount}). Not crediting referrer for this order.`);
             }
         } catch (referralError) {
             logger.error(`[ORDER_SERVICE][updateOrderStatus] Error processing referral for order ${orderId}: ${referralError.message}`, { stack: referralError.stack });
+            // We don't throw an error here because the main order update was successful.
         }
     }
 
@@ -686,6 +697,9 @@ const driverUpdateOrderStatus = async (orderId, newStatus, notes, driverId, driv
     if (newStatus === 'Delivered') order.actualDeliveryTime = new Date();
     await order.save({ session });
     await session.commitTransaction();
+    if (oldStatus !== newStatus) {
+      sendOrderStatusUpdate(order.customerId, order.id, newStatus);
+    }
     return { message: `Order status updated to ${newStatus}.`, order: order.toObject() };
   } catch (error) {
     await session.abortTransaction();
@@ -762,6 +776,9 @@ const adminUpdateOrderStatus = async (orderId, newStatus, notes, adminId, adminR
     if (newStatus === 'Delivered' && !order.actualDeliveryTime) order.actualDeliveryTime = new Date();
     await order.save({ session });
     await session.commitTransaction();
+    if (oldStatus !== newStatus) {
+      sendOrderStatusUpdate(order.customerId, order.id, newStatus);
+    }
     return { message: `Order ${orderId} status updated to ${newStatus}.`, order: order.toObject() };
   } catch (error) {
     await session.abortTransaction();

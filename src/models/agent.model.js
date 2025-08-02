@@ -1,6 +1,7 @@
 // File: src/models/agent.model.js
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
+const bcrypt = require('bcryptjs'); // Import bcrypt for hashing
 
 const agentSchema = new mongoose.Schema(
   {
@@ -23,7 +24,7 @@ const agentSchema = new mongoose.Schema(
       trim: true,
       lowercase: true,
       unique: true,
-      sparse: true, // Allows nulls to be non-unique, but actual emails must be unique
+      sparse: true, 
       match: [/\S+@\S+\.\S+/, 'Please use a valid email address.'],
     },
     phone: {
@@ -33,7 +34,14 @@ const agentSchema = new mongoose.Schema(
       unique: true,
       match: [/^\+?\d{10,15}$/, 'Please use a valid phone number (e.g., +23480...).'],
     },
-    agentCode: { // A unique, human-readable code for the agent
+    // ============================= NEW FIELD =============================
+    password: { 
+      type: String, 
+      required: [true, 'Password is required for agent login.'],
+      select: false // This ensures the password hash isn't sent in API responses by default
+    },
+    // =====================================================================
+    agentCode: {
       type: String,
       required: [true, 'Agent code is required.'],
       unique: true,
@@ -43,27 +51,40 @@ const agentSchema = new mongoose.Schema(
       maxlength: [12, 'Agent code cannot exceed 12 characters.'],
       index: true,
     },
-    referralLink: { // The full deep link URL the agent shares
+    referralLink: {
       type: String,
       required: [true, 'Referral link is required.'],
       unique: true,
       trim: true,
     },
-    totalCustomersReferred: { // Count of customers who successfully onboarded via this agent
+    totalCustomersReferred: {
       type: Number,
       default: 0,
       min: 0,
     },
-    isActive: { // Whether the agent's code/link is currently active
+    isActive: {
       type: Boolean,
       default: true,
     },
-    // Optional: Add more fields like address, bank details for payouts, etc.
   },
   {
-    timestamps: true, // Adds createdAt and updatedAt fields
+    timestamps: true,
   }
 );
+
+// ============================= NEW LOGIC =============================
+// Mongoose hook to automatically hash the password before saving an agent's profile.
+// This is a critical security measure.
+agentSchema.pre('save', async function (next) {
+  // Only hash the password if it has been modified (or is new)
+  if (!this.isModified('password')) return next();
+  
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
+  next();
+});
+// =====================================================================
+
 
 const Agent = mongoose.model('Agent', agentSchema);
 

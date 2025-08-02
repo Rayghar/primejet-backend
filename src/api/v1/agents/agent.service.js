@@ -5,11 +5,67 @@ const Agent = require('../../../models/agent.model');
 const AgentReferralEvent = require('../../../models/agentReferralEvent.model');
 const User = require('../../../models/user.model'); // To update user's referredByAgentId
 const HttpError = require('../../../utils/HttpError');
+const JWT_SECRET = process.env.JWT_SECRET || 'your-default-super-secret-key-for-dev';
+
 
 // Base URL for your app's deep links (e.g., from Firebase Dynamic Links or custom scheme)
 // This should be configured in your .env file.
 const BASE_APP_DEEPLINK_URL = process.env.BASE_APP_DEEPLINK_URL || 'https://yourdomain.com/app';
 const APP_STORE_LINK = process.env.APP_STORE_LINK || 'https://play.google.com/store/apps/details?id=com.example.yourapp';
+
+const login = async (email, password) => {
+  const agent = await Agent.findOne({ email: email.toLowerCase() }).select('+password');
+  if (!agent) {
+    throw new HttpError(401, 'Invalid email or password.');
+  }
+
+  const isMatch = await bcrypt.compare(password, agent.password);
+  if (!isMatch) {
+    throw new HttpError(401, 'Invalid email or password.');
+  }
+
+  const payload = { id: agent.id, role: 'agent' }; // Assign a specific role for agents
+  const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1d' });
+
+  return { 
+    token, 
+    agent: agent.toObject() // Return agent data without the password
+  };
+};
+// ====================================================================
+
+// ============================= NEW FUNCTION =============================
+const getMyPerformance = async (agentId) => {
+  const agent = await Agent.findOne({ id: agentId });
+  if (!agent) {
+    throw new HttpError(404, 'Agent profile not found.');
+  }
+
+  const totalClicks = await AgentReferralEvent.countDocuments({ agentId, eventType: 'LINK_CLICK' });
+  const totalRegistrations = agent.totalCustomersReferred || 0;
+  
+  // Find all customers referred by this agent
+  const referredUsers = await User.find({ referredByAgentId: agentId }).select('name email createdAt');
+  
+  // A more complex query would be needed to check their first order status,
+  // but for now we will return their registration details.
+  const referredCustomers = referredUsers.map(user => ({
+      name: user.name,
+      email: user.email,
+      registrationDate: user.createdAt,
+      firstOrderStatus: 'Pending' // This would be populated by a more complex query
+  }));
+
+  return {
+    agent: agent.toObject(),
+    totalClicks,
+    totalRegistrations,
+    referredCustomers,
+  };
+};
+
+
+
 
 // Helper to generate a unique agent code
 const generateUniqueAgentCode = async (length = 6) => {
@@ -27,7 +83,7 @@ const generateUniqueAgentCode = async (length = 6) => {
 
 // Admin: Create a new agent
 const createAgent = async (agentData) => {
-  const { name, email, phone, agentCode: providedAgentCode, isActive } = agentData;
+  const { name, email, phone, password, agentCode: providedAgentCode, isActive } = agentData;
 
   // Check for uniqueness of email, phone, and agentCode
   const existingAgentByPhone = await Agent.findOne({ phone });
@@ -54,8 +110,9 @@ const createAgent = async (agentData) => {
     name,
     email,
     phone,
+    password, // Pass the plain password here
     agentCode: agentCodeToUse,
-    referralLink,
+    referralLink: `${BASE_APP_DEEPLINK_URL}/agent_onboard?agentCode=${agentCodeToUse}`,
     isActive,
   });
 
@@ -225,6 +282,9 @@ const getAgentPerformance = async (agentId) => {
 
 
 module.exports = {
+  login,
+  getMyPerformance,
+  generateUniqueAgentCode,
   createAgent,
   getAgents,
   getAgentById,

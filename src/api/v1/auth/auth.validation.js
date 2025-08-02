@@ -8,6 +8,7 @@ const registerCustomerSchema = Joi.object({
   email: Joi.string().email().max(254).required(),
   phone: Joi.string().pattern(/^\+?\d{10,15}$/).required(),
   password: Joi.string().min(6).required(),
+  referralCode: Joi.string().trim().alphanum().optional().allow('', null),
 });
 
 const registerDriverSchema = Joi.object({

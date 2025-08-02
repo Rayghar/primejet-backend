@@ -104,7 +104,7 @@ const userSchema = new mongoose.Schema(
     passwordResetToken: { type: String, select: false, },
     passwordResetExpires: { type: Date, select: false, },
     // fcmTokens is commented out to disable FCM functionality
-    // fcmTokens: { type: [{ type: String }], default: [], select: false },
+    fcmTokens: { type: [{ type: String }], default: [], select: false },
     gatewayCustomerId: { type: String, trim: true, sparse: true, unique: true, select: false },
     referredByCode: { type: String, trim: true, sparse: true }, // Customer-to-customer referral code used
     referralBenefitApplied: { type: Boolean, default: false },

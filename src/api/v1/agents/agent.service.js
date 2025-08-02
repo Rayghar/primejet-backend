@@ -16,7 +16,7 @@ const BASE_APP_DEEPLINK_URL = process.env.BASE_APP_DEEPLINK_URL || 'https://your
 const APP_STORE_LINK = process.env.APP_STORE_LINK || 'https://play.google.com/store/apps/details?id=com.example.yourapp';
 
 const login = async (email, password) => {
-  const agent = await Agent.findOne({ email: email.toLowerCase() }).select('+password');
+  const agent = await Agent.findOne({ email: email.toLowerCase() });
   if (!agent) {
     throw new HttpError(401, 'Invalid email or password.');
   }

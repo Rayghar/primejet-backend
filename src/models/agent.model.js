@@ -38,7 +38,6 @@ const agentSchema = new mongoose.Schema(
     password: { 
       type: String, 
       required: [true, 'Password is required for agent login.'],
-      select: false // This ensures the password hash isn't sent in API responses by default
     },
     // =====================================================================
     agentCode: {
@@ -69,6 +68,14 @@ const agentSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
+    toJSON: {
+      transform: function(doc, ret) {
+        // This function runs every time a document is converted to JSON.
+        // It ensures the password hash is never included in the final output.
+        delete ret.password;
+        return ret;
+      }
+    }
   }
 );
 

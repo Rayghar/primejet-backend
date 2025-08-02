@@ -21,6 +21,13 @@ const login = async (email, password) => {
     throw new HttpError(401, 'Invalid email or password.');
   }
 
+  // --- START DEBUG LOGS ---
+  console.log('--- AGENT LOGIN DEBUG ---');
+  console.log('Value of JWT_SECRET:', JWT_SECRET);
+  console.log('Agent password from DB is defined:', agent.password !== undefined);
+  console.log('-------------------------');
+  // --- END DEBUG LOGS ---
+
   const isMatch = await bcrypt.compare(password, agent.password);
   if (!isMatch) {
     throw new HttpError(401, 'Invalid email or password.');

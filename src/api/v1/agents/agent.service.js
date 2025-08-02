@@ -1,6 +1,8 @@
 // File: src/api/v1/agents/agent.service.js
 const { v4: uuidv4 } = require('uuid');
 const crypto = require('crypto');
+const bcrypt = require('bcryptjs'); // <<< ADD THIS LINE
+const jwt = require('jsonwebtoken'); // <<< ADD THIS LINE
 const Agent = require('../../../models/agent.model');
 const AgentReferralEvent = require('../../../models/agentReferralEvent.model');
 const User = require('../../../models/user.model'); // To update user's referredByAgentId

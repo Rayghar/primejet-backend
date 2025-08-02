@@ -40,6 +40,13 @@ const agentSchema = new mongoose.Schema(
       required: [true, 'Password is required for agent login.'],
     },
     // =====================================================================
+    
+    role: {
+      type: String,
+      required: true,
+      default: 'agent',
+    },    
+    
     agentCode: {
       type: String,
       required: [true, 'Agent code is required.'],

@@ -12,4 +12,7 @@ router.get('/dashboard-stats', authMiddleware('admin'), adminController.getDashb
 router.get('/config/payment-gateway', authMiddleware('admin'), adminController.getActivePaymentGateway);
 router.patch('/config/payment-gateway', authMiddleware('admin'), adminController.updateActivePaymentGateway);
 
+// NEW ROUTE: Admin creating a new user of any role
+router.post('/users', authMiddleware('admin'), authController.adminCreateUser); // NEW ROUTE ADDED
+
 module.exports = router;

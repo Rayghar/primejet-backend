@@ -134,10 +134,22 @@ const googleMobileSignIn = async (req, res, next) => {
   }
 };
 
+const adminCreateUser = async (req, res, next) => {
+  try {
+    // req.user is the authenticated admin from the middleware
+    // req.body is the data for the new user to be created
+    const newUser = await authService.adminCreateUser(req.body, req.user);
+    res.status(201).json(newUser);
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   registerCustomer,
   registerDriver,
   registerAdmin,
+  adminCreateUser,
   googleMobileSignIn,
   login,
   requestPasswordReset,

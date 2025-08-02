@@ -197,6 +197,41 @@ const requestPasswordReset = async (email) => {
     return { message: 'A 6-digit reset code has been sent to your email.' };
 };
 
+const adminCreateUser = async (newUserData, requestingUser) => {
+  // This check is now robust. It uses the user object that the middleware already verified.
+  if (!requestingUser || requestingUser.role !== 'admin') {
+    throw new HttpError(403, 'Insufficient permissions. Only admins can create new users.');
+  }
+
+  const { email, password, name, phone, role } = newUserData;
+
+  const existingUser = await User.findOne({ email: email.toLowerCase() });
+  if (existingUser) {
+    throw new HttpError(409, 'An account with this email already exists.');
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+  
+  const newUser = new User({
+    id: uuidv4(),
+    name,
+    email: email.toLowerCase(),
+    phone,
+    password: hashedPassword,
+    role: role || 'customer', // Default to 'customer' if role not provided
+    isVerified: true, // Users created by admins are verified by default
+    status: 'active',
+  });
+
+  await newUser.save();
+  
+  // Return a clean version of the user object, without the password.
+  const userJson = newUser.toJSON();
+  delete userJson.password;
+
+  return userJson;
+};
+
 const verifyPasswordResetToken = async (email, token) => {
     const user = await User.findOne({ 
       email: email.toLowerCase(),
@@ -251,5 +286,6 @@ module.exports = {
   requestPasswordReset,
   verifyPasswordResetToken,
   resetPassword,
-  
+  adminCreateUser,
+
 };

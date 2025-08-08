@@ -31,6 +31,9 @@ module.exports = (config, logger) => {
   const notificationRoutes = require('./api/v1/notifications/notification.routes');
   const voiceRoutes = require('./api/v1/voice/voice.routes');
   const agentRoutes = require('./api/v1/agents/agent.routes');
+  const dailyLogRoutes = require('./api/v1/dailylogs/dailyLog.routes');
+  const inventoryRoutes = require('./api/v1/inventory/inventory.routes');
+
 
   const app = express();
   app.set('trust proxy', 1); 
@@ -66,6 +69,8 @@ module.exports = (config, logger) => {
   app.use('/api/v1/referrals', referralRoutes);
   app.use('/api/v1/notifications', notificationRoutes);
   app.use('/api/v1/agents', agentRoutes); 
+  app.use('/api/v1/dailylogs', dailyLogRoutes);
+  app.use('/api/v1/inventory', inventoryRoutes);
   logger.info('[APP] API v1 routes setup complete.');
 
   app.get('/', (req, res) => {

@@ -1,10 +1,11 @@
 // src/middleware/rateLimit.middleware.js
 const rateLimit = require('express-rate-limit');
 const { logger } = require('../config/logger.config'); // Import logger
+const globalConfig = require('../config'); // ADD THIS LINE: Import your global config
 
 const rateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per `windowMs`
+  max: globalConfig.env === 'development' ? 500 : 10, // Allow many more requests in dev, e.g., 500
   standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
   message: {

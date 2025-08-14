@@ -439,6 +439,39 @@ const getDriverStats = async (driverId, period = 'allTime') => {
   }
 };
 
+/**
+ * Finds a user by email and validates their password.
+ * This function is crucial for the login process.
+ * @param {string} email - The user's email.
+ * @param {string} password - The plain-text password provided by the user.
+ * @returns {Promise<User|null>} The user object if credentials are valid, otherwise null.
+ */
+const findUserByCredentials = async (email, password) => {
+    try {
+        // Use .select('+password') to explicitly include the password field, as it's set to select: false in schema
+        const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
+        if (!user) {
+            return null; // User not found
+        }
+
+        // Compare the provided password with the hashed password in the database
+        const isMatch = await user.comparePassword(password);
+        if (!isMatch) {
+            return null; // Passwords do not match
+        }
+
+        // Return the user object, but remove the password before sending it back
+        const userObject = user.toObject();
+        delete userObject.password;
+        return userObject;
+    } catch (error) {
+        logger.error(`Error in findUserByCredentials for email ${email}:`, error);
+        throw new HttpError(500, 'Authentication failed due to server error.');
+    }
+};
+
+
+
 
 module.exports = {
   getProfile,
@@ -454,4 +487,5 @@ module.exports = {
   updateDriverAvailability,
   getDriverStats,
   registerUser,
+  findUserByCredentials,
 };

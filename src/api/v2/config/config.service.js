@@ -1,7 +1,7 @@
-// src/services/configService.js
-const Config = require('../models/config.model');
-const HttpError = require('../utils/HttpError');
-const { logger } = require('../config/logger.config');
+// src/api/v2/config/config.service.js
+const Config = require('../../../models/config.model');
+const HttpError = require('../../../utils/HttpError');
+const { logger } = require('../../../config/logger.config');
 
 // Fetches general system settings from the database (fees, etc.)
 const getConfiguration = async () => {
@@ -29,10 +29,7 @@ const updateConfiguration = async (configData) => {
   }
 };
 
-// Note: I've removed the updateActiveGateway function as it's not called by the controller and might be a legacy v1 function.
-// If you need it, you can add it back and ensure your controller or a new route calls it.
-
 module.exports = {
   getConfiguration,
   updateConfiguration,
-}; 
+};

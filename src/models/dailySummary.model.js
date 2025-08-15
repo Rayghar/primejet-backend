@@ -1,12 +1,14 @@
+// src/models/dailySummary.model.js
 const mongoose = require('mongoose');
-const { v4: uuidv4 } = require('uuid'); // Import uuidv4 for default summaryId
+const { v4: uuidv4 } = require('uuid');
 
 const dailySummarySchema = new mongoose.Schema({
+    // The default _id field is sufficient. We will use `summaryId` for human-readable ID.
     summaryId: { 
         type: String, 
         unique: true, 
         required: true, 
-        default: uuidv4 // Automatically generate a unique ID
+        default: uuidv4, // Automatically generate a unique ID
     },
     date: { type: Date, required: true },
     branchId: { 
@@ -26,11 +28,11 @@ const dailySummarySchema = new mongoose.Schema({
         default: 'in_progress'
     },
     openingMeters: {
-        meterA: { type: Number, required: true },
+        meterA: { type: Number, required: true, default: 0 },
         meterB: { type: Number, default: 0 }
     },
     closingMeters: {
-        meterA: { type: Number, required: true },
+        meterA: { type: Number, required: true, default: 0 },
         meterB: { type: Number, default: 0 }
     },
     sales: {
@@ -43,14 +45,14 @@ const dailySummarySchema = new mongoose.Schema({
         items: [{ 
             type: mongoose.Schema.Types.ObjectId, 
             ref: 'SaleTransaction' 
-        }] // Reference to SaleTransaction model
+        }]
     },
     expenses: {
         total: { type: Number, default: 0 },
         items: [{ 
             type: mongoose.Schema.Types.ObjectId, 
             ref: 'ExpenseTransaction' 
-        }] // Reference to ExpenseTransaction model
+        }]
     },
     reconciliation: {
         discrepancy: { type: Number, default: 0 }
@@ -80,14 +82,12 @@ const dailySummarySchema = new mongoose.Schema({
         }
     },
 }, { 
-    timestamps: true,
-    // Optionally drop the problematic id_1 index if it exists
-    // Note: This requires a migration or manual index drop in MongoDB if already applied
+    timestamps: true
 });
+
+// We should handle the case where 'id_1' index exists and drops it.
+// This is a one-time migration step.
+dailySummarySchema.index({ summaryId: 1 }, { unique: true });
 
 const DailySummary = mongoose.model('DailySummary', dailySummarySchema);
 module.exports = DailySummary;
-
-// Migration note (to be executed separately if needed):
-// db.dailysummaries.dropIndex({ "id": 1 }); // Drop the id_1 index if it exists
-// This should be done via a MongoDB shell or migration script after schema update

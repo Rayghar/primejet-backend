@@ -1,4 +1,4 @@
-const dataEntryService = require('../../../services/dataEntry.service');
+const dataEntryService = require('./data-entry.service');
 const HttpError = require('../../../utils/HttpError');
 const mongoose = require('mongoose');
 
@@ -62,19 +62,38 @@ const updateMeters = async (req, res, next) => {
 
 const createSaleEntry = async (req, res, next) => {
     try {
-        console.debug('[DEBUG] Controller: Raw request body for createSaleEntry:', JSON.stringify(req.body, null, 2), 'at', new Date().toLocaleString('en-US', { timeZone: 'Africa/Lagos' }));
-        const { dailySummaryId, branchId, transactionType, amount, kgSold, pricePerKg, date } = req.body;
-        if (!dailySummaryId || !branchId || !transactionType || !amount || !kgSold || !pricePerKg || !date) {
-            throw new HttpError(400, 'Missing required fields: dailySummaryId, branchId, transactionType, amount, kgSold, pricePerKg, or date');
+        console.debug('[DEBUG] Controller: Incoming request body for createSaleEntry:', JSON.stringify(req.body, null, 2), 'at', new Date().toLocaleString('en-US', { timeZone: 'Africa/Lagos' }));
+        const { branchId, dailySummaryId, kgSold, amount, transactionType, pricePerKg } = req.body;
+        if (!branchId || !dailySummaryId || !kgSold || !amount || !transactionType || !pricePerKg) {
+            throw new HttpError(400, 'Missing required fields for sale entry');
         }
-        if (!mongoose.Types.ObjectId.isValid(dailySummaryId)) {
-            throw new HttpError(400, `Invalid dailySummaryId: ${dailySummaryId}`);
+        if (!mongoose.Types.ObjectId.isValid(branchId) || !mongoose.Types.ObjectId.isValid(dailySummaryId)) {
+            throw new HttpError(400, 'Invalid branchId or dailySummaryId');
         }
-        if (!mongoose.Types.ObjectId.isValid(branchId)) {
-            throw new HttpError(400, `Invalid branchId: ${branchId}`);
+        if (typeof kgSold !== 'number' || kgSold <= 0.01) {
+            throw new HttpError(400, 'kgSold must be a number greater than 0.01');
         }
-        const sale = await dataEntryService.createSaleEntry({ dailySummaryId, branchId, cashierId: req.user.id, transactionType, amount, kgSold, pricePerKg, date });
-        res.status(201).json(sale);
+        if (typeof amount !== 'number' || amount <= 0.01) {
+            throw new HttpError(400, 'Amount must be a number greater than 0.01');
+        }
+        if (!['POS', 'CASH', 'TRANSFER'].includes(transactionType.toUpperCase())) {
+            throw new HttpError(400, 'Invalid transaction type');
+        }
+        if (typeof pricePerKg !== 'number' || pricePerKg <= 0.01) {
+            throw new HttpError(400, 'pricePerKg must be a number greater than 0.01');
+        }
+        const saleData = {
+            branchId,
+            dailySummaryId,
+            kgSold,
+            amount,
+            transactionType: transactionType.toUpperCase(),
+            pricePerKg,  // Add this
+            cashierId: req.user.id,
+            date: new Date(),
+        };
+        const newSale = await dataEntryService.createSaleEntry(saleData);
+        res.status(201).json(newSale);
     } catch (error) {
         console.error('[DEBUG] Controller: Error in createSaleEntry:', error, 'at', new Date().toLocaleString('en-US', { timeZone: 'Africa/Lagos' }));
         next(error);
@@ -94,7 +113,19 @@ const createExpenseEntry = async (req, res, next) => {
         if (!mongoose.Types.ObjectId.isValid(branchId)) {
             throw new HttpError(400, `Invalid branchId: ${branchId}`);
         }
-        const expense = await dataEntryService.createExpenseEntry({ dailySummaryId, branchId, cashierId: req.user.id, category, amount, description, date });
+        if (!['Fuel', 'Maintenance', 'Salaries', 'Utilities', 'Miscellaneous'].includes(category)) {
+            throw new HttpError(400, `Invalid category: ${category}`);
+        }
+        if (typeof amount !== 'number' || amount <= 0.01) {
+            throw new HttpError(400, 'Amount must be a number greater than 0.01');
+        }
+        if (typeof description !== 'string' || description.trim().length === 0) {
+            throw new HttpError(400, 'Description must be a non-empty string');
+        }
+        if (!Date.parse(date)) {
+            throw new HttpError(400, `Invalid date: ${date}`);
+        }
+        const expense = await dataEntryService.createExpenseEntry(req.body);
         res.status(201).json(expense);
     } catch (error) {
         console.error('[DEBUG] Controller: Error in createExpenseEntry:', error, 'at', new Date().toLocaleString('en-US', { timeZone: 'Africa/Lagos' }));
@@ -161,11 +192,14 @@ const getPendingSummariesForApproval = async (req, res, next) => {
 const approveDailySummary = async (req, res, next) => {
     try {
         const { summaryId } = req.params;
-        console.debug('[DEBUG] Controller: Approving summary ID:', summaryId, 'at', new Date().toLocaleString('en-US', { timeZone: 'Africa/Lagos' }));
+        if (!req.user || !req.user.id) {
+            throw new HttpError(401, 'User not authenticated.');
+        }
+        console.debug('[DEBUG] Controller: Approving summary ID:', summaryId, 'by user:', req.user.id, 'at', new Date().toLocaleString('en-US', { timeZone: 'Africa/Lagos' }));
         if (!mongoose.Types.ObjectId.isValid(summaryId)) {
             throw new HttpError(400, `Invalid summaryId: ${summaryId}`);
         }
-        const updatedSummary = await dataEntryService.updateDailySummaryStatus(summaryId, 'approved');
+        const updatedSummary = await dataEntryService.updateDailySummaryStatus(summaryId, 'approved', req.user.id);
         res.status(200).json(updatedSummary);
     } catch (error) {
         console.error('[DEBUG] Controller: Error in approveDailySummary:', error, 'at', new Date().toLocaleString('en-US', { timeZone: 'Africa/Lagos' }));
@@ -177,11 +211,17 @@ const rejectDailySummary = async (req, res, next) => {
     try {
         const { summaryId } = req.params;
         const { reason } = req.body;
-        console.debug('[DEBUG] Controller: Rejecting summary ID:', summaryId, 'with reason:', reason, 'at', new Date().toLocaleString('en-US', { timeZone: 'Africa/Lagos' }));
+        if (!req.user || !req.user.id) {
+            throw new HttpError(401, 'User not authenticated.');
+        }
+        if (!reason || typeof reason !== 'string' || reason.trim().length === 0) {
+            throw new HttpError(400, 'Rejection reason is required and must be a non-empty string');
+        }
+        console.debug('[DEBUG] Controller: Rejecting summary ID:', summaryId, 'by user:', req.user.id, 'with reason:', reason, 'at', new Date().toLocaleString('en-US', { timeZone: 'Africa/Lagos' }));
         if (!mongoose.Types.ObjectId.isValid(summaryId)) {
             throw new HttpError(400, `Invalid summaryId: ${summaryId}`);
         }
-        const updatedSummary = await dataEntryService.updateDailySummaryStatus(summaryId, 'rejected', reason);
+        const updatedSummary = await dataEntryService.updateDailySummaryStatus(summaryId, 'rejected', req.user.id, reason);
         res.status(200).json(updatedSummary);
     } catch (error) {
         console.error('[DEBUG] Controller: Error in rejectDailySummary:', error, 'at', new Date().toLocaleString('en-US', { timeZone: 'Africa/Lagos' }));
@@ -191,8 +231,19 @@ const rejectDailySummary = async (req, res, next) => {
 
 const getTransactionHistory = async (req, res, next) => {
     try {
-        console.debug('[DEBUG] Controller: Fetching transaction history with filters:', req.query, 'at', new Date().toLocaleString('en-US', { timeZone: 'Africa/Lagos' }));
-        const history = await dataEntryService.getTransactionHistory(req.query);
+        console.debug('[DEBUG] Controller: Fetching transaction history with filters:', JSON.stringify(req.query, null, 2), 'at', new Date().toLocaleString('en-US', { timeZone: 'Africa/Lagos' }));
+        const filters = req.query;
+        const { startDate, endDate, branchId } = filters;
+        if (startDate && !Date.parse(startDate)) {
+            throw new HttpError(400, `Invalid startDate: ${startDate}`);
+        }
+        if (endDate && !Date.parse(endDate)) {
+            throw new HttpError(400, `Invalid endDate: ${endDate}`);
+        }
+        if (branchId && !mongoose.Types.ObjectId.isValid(branchId)) {
+            throw new HttpError(400, `Invalid branchId: ${branchId}`);
+        }
+        const history = await dataEntryService.getTransactionHistory(filters);
         res.status(200).json(history);
     } catch (error) {
         console.error('[DEBUG] Controller: Error in getTransactionHistory:', error, 'at', new Date().toLocaleString('en-US', { timeZone: 'Africa/Lagos' }));
@@ -217,7 +268,7 @@ const migrateDailySummaries = async (req, res, next) => {
             if (summary.cashierName && (typeof summary.cashierName !== 'string' || summary.cashierName.length < 3 || summary.cashierName.length > 100)) {
                 throw new HttpError(400, 'Cashier name must be a string between 3 and 100 characters');
             }
-            if (summary.status && !['in_progress', 'pending', 'approved', 'rejected'].includes(summary.status)) {
+            if (summary.status && !['in_progress', 'pending_approval', 'approved', 'rejected'].includes(summary.status)) {
                 throw new HttpError(400, `Invalid status in summary: ${summary.status}`);
             }
         }

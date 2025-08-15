@@ -2,7 +2,7 @@
 const Config = require('../../../models/config.model'); // Import the Config model
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
-
+const configService = require('./config.service');
 
 /**
  * Fetches the current global configuration settings.

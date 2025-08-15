@@ -19,9 +19,9 @@ const addPlantSchema = Joi.object({
   nextMaintenanceDate: Joi.date().iso().optional().allow(null).description('Date of the next scheduled maintenance.'),
 });
 
-// Schema for plant ID parameter (reusable)
+// Schema for plant ID parameter (reusable) - Updated to validate MongoDB ObjectId (24 hex chars)
 const plantIdParamSchema = Joi.object({
-  plantId: Joi.string().uuid({ version: 'uuidv4' }).required().description('UUID of the plant.'),
+  plantId: Joi.string().hex().length(24).required().description('ObjectId of the plant.'),
 });
 
 // NEW: Schema for adding a maintenance log

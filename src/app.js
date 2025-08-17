@@ -37,6 +37,7 @@ const voiceRoutesV1 = require('./api/v1/voice/voice.routes'); // Renamed for cla
 const dataEntryRoutes = require('./api/v2/data-entry/data-entry.routes'); // The new data-entry routes
 const financialsRoutes = require('./api/v2/financials/financials.routes'); // Corrected path for financials routes
 const financeRoutes = require('./api/v2/finance/finanace.routes'); // Corrected path for financials routes
+const zoneRoutes = require('./api/v1/zones/zone.routes');
 
 // --- Step 2: Import All v2 Route Handlers ---
 // These are the new routes specifically for the web application.
@@ -95,6 +96,7 @@ app.use('/api/v1/notifications', notificationRoutesV1);
 app.use('/api/v1/agents', agentRoutesV1);
 app.use('/api/v1/orchestration', runOrchestrationRoutesV1); // Mount existing orchestration route
 app.use('/api/v1/voice', voiceRoutesV1); // Mount existing voice route
+app.use('/api/v1/zones', zoneRoutes);
 logger.info('[APP] API v1 routes setup complete.');
 
 // Mount v2 API routes (for web app - new)

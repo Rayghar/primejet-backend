@@ -17,7 +17,17 @@ const getProfile = async (userId) => {
     if (!user) {
       throw new HttpError(404, 'User profile not found.');
     }
-    return user;
+
+    // << MODIFIED: Check for any previous completed orders >>
+    const pastOrderCount = await Order.countDocuments({
+      customerId: userId,
+      status: { $in: ['Delivered', 'Processing', 'Driver Assigned', 'Out for Delivery', 'Completed'] }
+    });
+
+    const userObject = user.toObject();
+    userObject.isFirstTimeCustomer = pastOrderCount === 0; // Add the new flag
+
+    return userObject;
   } catch (error) {
     if (error instanceof HttpError) throw error;
     console.error('Unexpected error in getProfile:', error);

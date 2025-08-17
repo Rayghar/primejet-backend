@@ -29,10 +29,10 @@ const orderSchema = new mongoose.Schema(
     id: { type: String, required: true, unique: true, default: () => uuidv4(), index: true },
     customerId: { type: String, required: true, ref: 'User', index: true },
     driverId: { type: String, ref: 'User', index: true, sparse: true },
-    items: [itemSchema], // Ensure this schema is defined
-    deliveryAddressSnapshot: { /* ... your existing address snapshot schema ... */ 
-         fullAddress: { type: String, required: true }, // Full address as a string
-         street: { type: String }, // Add other fields as needed
+    items: [itemSchema],
+    deliveryAddressSnapshot: { 
+         fullAddress: { type: String, required: true },
+         street: { type: String },
          city: { type: String },
          state: { type: String },
          country: { type: String },
@@ -44,7 +44,7 @@ const orderSchema = new mongoose.Schema(
     recipientName: { type: String, required: true },
     recipientPhone: { type: String, required: true },
     
-    itemsSubtotal: { type: Number, required: true, default: 0 }, // Smallest currency unit
+    itemsSubtotal: { type: Number, required: true, default: 0 },
     discountAmount: { type: Number, default: 0 },
     promoCodeApplied: { type: String, trim: true },
     referralCodeUsed: { type: String, trim: true, uppercase: true },
@@ -53,13 +53,27 @@ const orderSchema = new mongoose.Schema(
     serviceFeeAmount: { type: Number, default: 0 },
     deliveryFee: { type: Number, default: 0 },
     walletAmountUsed: { type: Number, default: 0 },
-    grandTotal: { type: Number, required: true, default: 0 }, // Smallest currency unit, total before any external payment
-    finalAmountPaid: { type: Number, default: 0 }, // Actual amount paid via gateway
+    grandTotal: { type: Number, required: true, default: 0 },
+    finalAmountPaid: { type: Number, default: 0 },
 
     status: { 
         type: String, 
         required: true, 
-        enum: ['Pending Payment', 'Order Placed', 'Processing', 'Driver Assigned', 'Out for Delivery', 'Reached Pickup', 'Gas Picked Up', 'Reached Dropoff', 'Delivered', 'Canceled by Customer', 'Canceled by Admin', 'Failed'],
+        enum: [ // << MODIFIED: Added new status >>
+            'Pending Payment', 
+            'Order Placed', 
+            'Awaiting Payment on Arrival', 
+            'Processing', 
+            'Driver Assigned', 
+            'Out for Delivery', 
+            'Reached Pickup', 
+            'Gas Picked Up', 
+            'Reached Dropoff', 
+            'Delivered', 
+            'Canceled by Customer', 
+            'Canceled by Admin', 
+            'Failed'
+        ],
         default: 'Pending Payment',
         index: true 
     },
@@ -70,18 +84,22 @@ const orderSchema = new mongoose.Schema(
       default: 'Pending',
       index: true,
     },
-    paymentMethod: { type: String }, // e.g., 'card', 'wallet', 'stripe', 'paystack'
-    paymentGateway: { type: String, enum: ['stripe', 'paystack', 'wallet', null], sparse:true }, // To know which gateway processed
-    paymentIntentId: { type: String, trim: true, index: true, sparse:true }, // For Stripe PaymentIntent ID
-    paymentGatewayReference: { type: String, trim: true, index: true, sparse:true }, // For other references like Paystack
-    paymentTransactionId: { type: String, trim: true }, // Actual charge/transaction ID from gateway
+    paymentMethod: { 
+        type: String,
+        enum: ['card', 'wallet', 'stripe', 'paystack', 'payOnPickup'], // << MODIFIED: Added 'payOnPickup'
+        default: 'paystack'
+    },
+    paymentGateway: { type: String, enum: ['stripe', 'paystack', 'wallet', null], sparse:true },
+    paymentIntentId: { type: String, trim: true, index: true, sparse:true },
+    paymentGatewayReference: { type: String, trim: true, index: true, sparse:true },
+    paymentTransactionId: { type: String, trim: true },
 
     isExpressDelivery: { type: Boolean, default: false },
     deliveryLatitude: { type: Number, min: -90, max: 90 },
     deliveryLongitude: { type: Number, min: -180, max: 180 },
     estimatedDeliveryTime: { type: Date },
     actualDeliveryTime: { type: Date },
-    statusHistory: [statusHistorySchema], // Ensure statusHistorySchema is defined
+    statusHistory: [statusHistorySchema],
     adminNotes: [{ note: String, adminId: String, timestamp: {type: Date, default: Date.now}, _id: false }],
     orderDate: { type: Date, required: true, default: Date.now, index: true },
   },

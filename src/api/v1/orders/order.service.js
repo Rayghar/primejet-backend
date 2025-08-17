@@ -131,143 +131,118 @@ const placeOrder = async (customerId, orderData) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const user = await User.findOne({ id: customerId }).select('name phone walletBalance defaultAddressId role referredBy').session(session); // MODIFIED: Added 'referredBy' to select
+    const {
+      deliveryAddressId, items, recipientName, recipientPhone, isExpress,
+      useWalletBalance, promoCodeApplied, paymentMethod
+    } = orderData;
+    
+    // << NEW: Service Zone Validation Block >>
+    if (!deliveryAddressId) {
+        throw new HttpError(400, 'Delivery address ID is required.');
+    }
+    const deliveryAddress = await Address.findOne({ id: deliveryAddressId, userId: customerId }).session(session);
+    if (!deliveryAddress || typeof deliveryAddress.longitude !== 'number' || typeof deliveryAddress.latitude !== 'number') {
+      throw new HttpError(400, 'Delivery address is invalid or missing location coordinates.');
+    }
+    const deliveryPoint = { type: 'Point', coordinates: [deliveryAddress.longitude, deliveryAddress.latitude] };
+    const coveringZone = await ServiceZone.findOne({ area: { $geoIntersects: { $geometry: deliveryPoint } }, isActive: true }).session(session);
+    if (!coveringZone) {
+      const config = await Config.findOne().session(session);
+      const message = config?.outOfZoneDefaultMessage || 'Sorry, we do not currently service this address.';
+      throw new HttpError(400, message);
+    }
+
+    const user = await User.findOne({ id: customerId }).select('name phone walletBalance defaultAddressId role referredBy').session(session);
     if (!user) {
       throw new HttpError(404, 'User placing order not found.');
     }
     if (user.role !== 'customer') {
       throw new HttpError(403, 'Only customers can place orders.');
     }
-
-    const {
-      deliveryAddressId, items, recipientName, recipientPhone, isExpress,
-      useWalletBalance, promoCodeApplied, // MODIFIED: Removed referralCode from here
-    } = orderData;
-
-    // Validate required fields from orderData (Joi handles schema, this is for service logic)
-    if (!deliveryAddressId || !items || items.length === 0 ) {
-      throw new HttpError(400, 'Missing delivery address or items for the order.');
+    if (!items || items.length === 0 || items.some(item => !item.cylinderId || !item.quantity || item.unitPrice == null || !item.productName)) {
+      throw new HttpError(400, 'Invalid or missing order items.');
     }
-    if (items.some(item => !item.cylinderId || !item.quantity || item.unitPrice == null || !item.productName)) {
-      throw new HttpError(400, 'Invalid item structure: cylinderId, quantity, unitPrice, and productName are required.');
-    }
-
     const effectiveRecipientName = recipientName || user.name;
     const effectiveRecipientPhone = recipientPhone || user.phone;
-
     if (!effectiveRecipientName || !effectiveRecipientPhone) {
         throw new HttpError(400, 'Recipient name and phone are required.');
     }
 
-
-    const deliveryAddress = await Address.findOne({ id: deliveryAddressId, userId: customerId }).session(session);
-    if (!deliveryAddress) {
-      throw new HttpError(404, `Delivery address with ID ${deliveryAddressId} not found or does not belong to user.`);
-    }
-
-    // *** CRITICAL CHECK FOR deliveryAddressSnapshot fields ***
-    if (!deliveryAddress.fullAddress || !deliveryAddress.street || !deliveryAddress.city || !deliveryAddress.state || !deliveryAddress.country) {
-        logger.error(`[ORDER_SERVICE] Delivery address ID ${deliveryAddressId} is critically incomplete (missing fullAddress, street, city, state, or country). Cannot create snapshot.`);
-        throw new HttpError(400, 'Selected delivery address details are incomplete. Please update your address.');
-    }
-
     const deliveryAddressSnapshot = {
-      fullAddress: deliveryAddress.fullAddress,
-      street: deliveryAddress.street,
-      city: deliveryAddress.city,
-      state: deliveryAddress.state,
-      country: deliveryAddress.country,
-      postalCode: deliveryAddress.postalCode, // Optional
-      latitude: deliveryAddress.latitude,     // Optional
-      longitude: deliveryAddress.longitude,   // Optional
-      deliveryInstructions: deliveryAddress.deliveryInstructions, // Optional
+      fullAddress: deliveryAddress.fullAddress, street: deliveryAddress.street, city: deliveryAddress.city,
+      state: deliveryAddress.state, country: deliveryAddress.country, postalCode: deliveryAddress.postalCode,
+      latitude: deliveryAddress.latitude, longitude: deliveryAddress.longitude, deliveryInstructions: deliveryAddress.deliveryInstructions,
     };
 
     const config = await Config.findOne().session(session);
     if (!config || !config.feeSettings) {
-      throw new HttpError(500, 'System configuration for fees not found or incomplete.');
+      throw new HttpError(500, 'System configuration for fees is not available.');
     }
 
-    // Calculate amounts based on items and config (all in smallest currency unit)
+    let orderStatus = 'Pending Payment';
+    let paymentStatusCurrent = 'Pending';
+    let isPayOnPickup = false;
+
+    // << NEW: Conditional logic for Pay on Arrival feature >>
+    if (paymentMethod === 'payOnPickup') {
+      const pastOrderCount = await Order.countDocuments({ customerId: customerId, status: 'Delivered' }).session(session);
+      if (pastOrderCount > 0) {
+        throw new HttpError(403, 'Pay on Arrival is only available for your first order.');
+      }
+      orderStatus = 'Awaiting Payment on Arrival';
+      paymentStatusCurrent = 'Pending';
+      isPayOnPickup = true;
+    }
+
     const itemsSubtotal = items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
     let discountAmount = 0.0;
-    let referrerId = null; // MODIFIED: Initialize referrerId here
-
-    // Removed referralCode logic block from here. It is handled at registration.
-
     if (promoCodeApplied) {
-      const promotion = await Promotion.findOne({
-          promoCode: promoCodeApplied.toUpperCase(),
-          isActive: true,
-          validFrom: { $lte: new Date() },
-          validUntil: { $gte: new Date() }
-      }).session(session);
-
+      const promotion = await Promotion.findOne({ promoCode: promoCodeApplied.toUpperCase(), isActive: true, validFrom: { $lte: new Date() }, validUntil: { $gte: new Date() } }).session(session);
       if (promotion) {
           if (promotion.minOrderAmount != null && itemsSubtotal < promotion.minOrderAmount) {
               logger.info(`[ORDER_SERVICE] Promo ${promoCodeApplied} not applied for order: Subtotal ${itemsSubtotal} is less than minimum ${promotion.minOrderAmount}`);
           } else {
-            if (promotion.type === 'Percentage Discount') {
-              discountAmount = itemsSubtotal * (promotion.value / 100);
-            } else if (promotion.type === 'Fixed Amount') {
-              discountAmount = promotion.value; // Assume value is in smallest unit
-            }
+            if (promotion.type === 'Percentage Discount') discountAmount = itemsSubtotal * (promotion.value / 100);
+            else if (promotion.type === 'Fixed Amount') discountAmount = promotion.value;
             discountAmount = Math.min(discountAmount, itemsSubtotal);
-            logger.info(`[ORDER_SERVICE] Promo ${promoCodeApplied} applied, discount: ${discountAmount}`);
           }
       } else {
-        logger.info(`[ORDER_SERVICE] Promo code ${promoCodeApplied} is invalid, expired, or not active.`);
-        // IMPORTANT: As per logs, a 400 is thrown here if promo is invalid
         throw new HttpError(400, 'Invalid or expired promo code.');
       }
     }
-
+    
     const subtotalAfterDiscount = itemsSubtotal - discountAmount;
-    const vatAmount = subtotalAfterDiscount > 0 ? subtotalAfterDiscount * (config.feeSettings.vatPercentage / 100) : 0;
-    const serviceFeeAmount = subtotalAfterDiscount > 0 ? subtotalAfterDiscount * (config.feeSettings.serviceFeePercentage / 100) : 0;
+    const vatAmount = subtotalAfterDiscount * (config.feeSettings.vatPercentage / 100);
+    const serviceFeeAmount = subtotalAfterDiscount * (config.feeSettings.serviceFeePercentage / 100);
     const deliveryFee = (isExpress ? config.feeSettings.baseDeliveryFee + config.feeSettings.expressDeliverySurcharge : config.feeSettings.baseDeliveryFee);
-
-    let totalBeforeWallet = subtotalAfterDiscount + vatAmount + serviceFeeAmount + deliveryFee;
+    const overallGrandTotal = subtotalAfterDiscount + vatAmount + serviceFeeAmount + deliveryFee;
+    let totalBeforeWallet = overallGrandTotal;
     let walletAmountUsed = 0;
-
     if (useWalletBalance && user.walletBalance > 0) {
       walletAmountUsed = Math.min(user.walletBalance, totalBeforeWallet);
-      totalBeforeWallet -= walletAmountUsed; // This is now grandTotalToPayByGateway
+      totalBeforeWallet -= walletAmountUsed;
     }
 
-    const grandTotalToPayByGateway = Math.max(0, totalBeforeWallet);
-    const overallGrandTotal = subtotalAfterDiscount + vatAmount + serviceFeeAmount + deliveryFee; // Total of the order after discount, before wallet
-
-    const orderStatus = grandTotalToPayByGateway > 0 ? 'Pending Payment' : 'Order Placed';
-    const paymentStatusCurrent = grandTotalToPayByGateway > 0 ? 'Pending' : 'Completed';
-
-    // MODIFIED: Ensure referrerId is set from the user's referredBy field if available
-    if (user.referredBy) {
-        referrerId = user.referredBy;
+    const grandTotalToPayByGateway = isPayOnPickup ? 0 : Math.max(0, totalBeforeWallet);
+    if (grandTotalToPayByGateway > 0) {
+        orderStatus = 'Pending Payment';
+    } else if (!isPayOnPickup) {
+        orderStatus = 'Order Placed';
+        paymentStatusCurrent = 'Completed';
     }
 
     const newOrder = new Order({
-      id: uuidv4(),
-      customerId,
-      deliveryAddressId,
-      deliveryAddressSnapshot, // Populated and validated
-      items,
-      recipientName: effectiveRecipientName,
-      recipientPhone: effectiveRecipientPhone,
-      isExpressDelivery: isExpress || false,
-      itemsSubtotal,
-      discountAmount,
-      // Removed referralCodeUsed: referralCode, // MODIFIED: Removed this line
-      referrerId: referrerId, // MODIFIED: Use the now-defined referrerId
-      promoCodeApplied: discountAmount > 0 ? (promoCodeApplied ? promoCodeApplied.toUpperCase() : null) : null, // Ensure promoCodeApplied exists before .toUpperCase()
-      vatAmount,
-      serviceFeeAmount,
-      deliveryFee,
-      walletAmountUsed,
+      id: uuidv4(), customerId, deliveryAddressId, deliveryAddressSnapshot, items,
+      recipientName: effectiveRecipientName, recipientPhone: effectiveRecipientPhone,
+      isExpressDelivery: isExpress || false, itemsSubtotal, discountAmount,
+      referrerId: user.referredBy || null,
+      promoCodeApplied: discountAmount > 0 ? (promoCodeApplied ? promoCodeApplied.toUpperCase() : null) : null,
+      vatAmount, serviceFeeAmount, deliveryFee, walletAmountUsed,
       grandTotal: overallGrandTotal,
       finalAmountPaid: (paymentStatusCurrent === 'Completed') ? (overallGrandTotal - walletAmountUsed) : 0,
       status: orderStatus,
       paymentStatus: paymentStatusCurrent,
+      paymentMethod: isPayOnPickup ? 'payOnPickup' : (orderData.paymentMethod || 'paystack'),
       statusHistory: [{ status: orderStatus, timestamp: new Date(), notes: 'Order created.' }],
       deliveryLatitude: deliveryAddress.latitude,
       deliveryLongitude: deliveryAddress.longitude,
@@ -277,38 +252,25 @@ const placeOrder = async (customerId, orderData) => {
     if (walletAmountUsed > 0) {
       user.walletBalance -= walletAmountUsed;
       await user.save({ session });
-      // TODO: Create wallet transaction log for this deduction
-      logger.info(`[ORDER_SERVICE] Wallet balance ${walletAmountUsed} deducted for user ${customerId}, order ${newOrder.id}. New balance: ${user.walletBalance}`);
     }
-
     const savedOrder = await newOrder.save({ session });
-
-    // ================== PAYSTACK LOGIC UPDATE START ==================
     let accessCode = null;
-
-    if (grandTotalToPayByGateway > 0) {
-        logger.info(`[ORDER_SERVICE] Order ${savedOrder.id} requires payment. Initializing transaction...`);
-        try {
-            // UPDATED: Pass the active session to the payment service
-            const paymentResult = await paymentService.initializePayment({
-                orderId: savedOrder.id,
-                userId: customerId,
-                session: session 
-            });
-            accessCode = paymentResult.accessCode;
-        } catch (error) {
-            logger.error(`Failed to initialize payment for new order ${savedOrder.id}:`, error);
-            throw new HttpError(500, 'Order was created, but payment could not be initialized. Please contact support.');
-        }
+    if (grandTotalToPayByGateway > 0 && !isPayOnPickup) {
+      try {
+        const paymentResult = await paymentService.initializePayment({ orderId: savedOrder.id, userId: customerId, session: session });
+        accessCode = paymentResult.accessCode;
+      } catch (error) {
+        logger.error(`Failed to initialize payment for new order ${savedOrder.id}:`, error);
+        throw new HttpError(500, 'Order was created, but payment could not be initialized.');
+      }
     }
 
     await session.commitTransaction();
-    logger.info(`[ORDER_SERVICE] Order ${savedOrder.id} placed successfully. PaymentNeeded: ${grandTotalToPayByGateway > 0}`);
-
+    logger.info(`[ORDER_SERVICE] Order ${savedOrder.id} placed. PaymentNeeded: ${grandTotalToPayByGateway > 0 && !isPayOnPickup}`);
     return {
       order: savedOrder.toObject(),
       accessCode: accessCode,
-      paymentNeeded: grandTotalToPayByGateway > 0,
+      paymentNeeded: grandTotalToPayByGateway > 0 && !isPayOnPickup,
       grandTotalToPay: grandTotalToPayByGateway,
       message: 'Order placed successfully.'
     };
@@ -316,9 +278,7 @@ const placeOrder = async (customerId, orderData) => {
     await session.abortTransaction();
     logger.error(`[ORDER_SERVICE] Place order error for customer ${customerId}:`, {error: error.message, stack: error.stack, inputOrderData: orderData});
     if (error instanceof HttpError) throw error;
-    // Log the full error for Mongoose validation details
-    console.error('Full error object in placeOrder service:', error);
-    throw new HttpError(500, `Failed to place order due to an unexpected error: ${error.message}`);
+    throw new HttpError(500, `Failed to place order: ${error.message}`);
   } finally {
     session.endSession();
   }

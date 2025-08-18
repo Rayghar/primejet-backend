@@ -1,17 +1,33 @@
 // File: src/api/v1/config/config.service.js
+// << UPDATED FILE >>
+
 const Config = require('../../../models/config.model');
+const ServiceZone = require('../../../models/serviceZone.model'); // << NEW: Import ServiceZone model
 const HttpError = require('../../../utils/HttpError');
 const { setActiveGateway } = require('../../../config');
+const { logger } = require('../../../config/logger.config');
 
 // Fetches general system settings from the database (fees, etc.)
 const getSystemConfig = async () => {
   try {
-    const config = await Config.findOne();
+    const config = await Config.findOne().lean(); // Use .lean() for a plain JS object
     if (!config) {
       throw new HttpError(404, 'System configuration not found. Please set it up via the admin panel.');
     }
-    return config.toObject();
+
+    // << FIX: Fetch all active service zones from the database >>
+    const activeZones = await ServiceZone.find({ isActive: true }).lean();
+
+    // << FIX: Combine the base config with the active zones into a single response object >>
+    const fullConfig = {
+      ...config,
+      activeZones: activeZones,
+    };
+
+    return fullConfig;
+
   } catch (error) {
+    logger.error(`[CONFIG_SERVICE] Error fetching system config: ${error.message}`);
     if (error instanceof HttpError) throw error;
     throw new HttpError(500, 'Failed to retrieve system configuration.');
   }
@@ -40,8 +56,9 @@ const updateActiveGateway = (gateway) => {
     if (!success) {
         throw new HttpError(400, 'Invalid or unsupported gateway specified.');
     }
-    return { message: `Active payment gateway successfully set to ${gateway}.` };
+    return { message: `Active payment gateway switched to ${gateway}.` };
 };
+
 
 module.exports = {
   getSystemConfig,

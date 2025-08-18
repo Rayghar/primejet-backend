@@ -44,11 +44,20 @@ router.post(
   orderController.submitFeedback
 );
 
-router.get(
+/*router.get(
   '/me/consumption-data', // New route
   authMiddleware('customer'),
   orderController.getCustomerConsumptionData
+);*/
+
+// << MODIFIED: This route is updated to point to the new stats endpoint >>
+router.get(
+  '/me/stats',
+  authMiddleware('customer'),
+  orderController.getCustomerStats
 );
+
+
 // --- Driver specific routes ---
 router.put(
   '/driver/:orderId/status', // Specific path for driver updates

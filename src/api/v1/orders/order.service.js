@@ -579,7 +579,7 @@ const cancelOrder = async (orderId, customerId, customerRole) => { /* ... as pre
  * @param {string} customerId - The ID of the customer.
  * @returns {Promise<Array<object>>} An array containing the last two delivered orders.
  */
-const getCustomerConsumptionData = async (customerId) => {
+/*const getCustomerConsumptionData = async (customerId) => {
   try {
     const orders = await Order.find({
       customerId: customerId,
@@ -593,6 +593,66 @@ const getCustomerConsumptionData = async (customerId) => {
   } catch (error) {
     logger.error(`[ORDER_SERVICE] Error fetching consumption data for customer ${customerId}:`, error);
     throw new HttpError(500, 'Failed to retrieve order data for gas level calculation.');
+  }
+};*/
+
+// << NEW METHOD: Calculates all customer stats in one go >>
+const getCustomerStats = async (customerId) => {
+  try {
+    const deliveredOrdersQuery = { customerId: customerId, status: 'Delivered' };
+
+    // Perform all calculations in parallel
+    const [totalOrders, lastTwoOrders, totalGasKgResult] = await Promise.all([
+      // 1. Get total number of delivered orders
+      Order.countDocuments(deliveredOrdersQuery),
+
+      // 2. Get the last two delivered orders for avg. calculation
+      Order.find(deliveredOrdersQuery).sort({ orderDate: -1 }).limit(2).select('orderDate items'),
+
+      // 3. Calculate total KG of gas purchased using an aggregation pipeline
+      Order.aggregate([
+        { $match: deliveredOrdersQuery },
+        { $unwind: '$items' },
+        {
+          $project: {
+            // Extract the numeric part of the cylinder size from the product name
+            kg: {
+              $let: {
+                vars: { numericPart: { $regexFind: { input: '$items.productName', regex: /^\d+(\.\d+)?/ } } },
+                in: { $toDouble: '$$numericPart.match' }
+              }
+            },
+            quantity: '$items.quantity'
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            totalKg: { $sum: { $multiply: ['$kg', '$quantity'] } }
+          }
+        }
+      ])
+    ]);
+
+    // Calculate average days between orders
+    let averageDaysBetweenOrders = 0;
+    if (lastTwoOrders.length === 2) {
+      const latestDate = lastTwoOrders[0].orderDate;
+      const previousDate = lastTwoOrders[1].orderDate;
+      const diffTime = Math.abs(latestDate - previousDate);
+      averageDaysBetweenOrders = diffTime / (1000 * 60 * 60 * 24);
+    }
+
+    const totalGasKg = totalGasKgResult.length > 0 ? totalGasKgResult[0].totalKg : 0;
+
+    return {
+      totalOrders: totalOrders,
+      totalGasKg: totalGasKg.toFixed(1),
+      averageDaysBetweenOrders: averageDaysBetweenOrders.toFixed(1)
+    };
+  } catch (error) {
+    logger.error(`[ORDER_SERVICE] Error fetching stats for customer ${customerId}:`, error);
+    throw new HttpError(500, 'Failed to retrieve customer statistics.');
   }
 };
 
@@ -608,6 +668,6 @@ module.exports = {
   adminUpdateOrderStatus,
   adminAssignDriver,
   cancelOrder,
-  getCustomerConsumptionData,
+  getCustomerStats,
   
 };

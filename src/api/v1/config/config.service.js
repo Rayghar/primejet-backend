@@ -3,11 +3,12 @@
 
 const Config = require('../../../models/config.model');
 const ServiceZone = require('../../../models/serviceZone.model'); // << NEW: Import ServiceZone model
+
 const HttpError = require('../../../utils/HttpError');
 const { setActiveGateway } = require('../../../config');
 const { logger } = require('../../../config/logger.config');
 
-// Fetches general system settings and active service zones from the database.
+// Fetches general system settings from the database (fees, etc.)
 const getSystemConfig = async () => {
   try {
     const config = await Config.findOne().lean(); // Use .lean() for a plain JS object
@@ -16,12 +17,12 @@ const getSystemConfig = async () => {
     }
 
     // << FIX: Fetch all active service zones from the database >>
-    const serviceZones = await ServiceZone.find({ isActive: true }).lean();
+    const activeZones = await ServiceZone.find({ isActive: true }).lean();
 
     // << FIX: Combine the base config with the active zones into a single response object >>
     const fullConfig = {
       ...config,
-      serviceZones: serviceZones, // Add the zones to the response
+      activeZones: activeZones,
     };
 
     return fullConfig;
@@ -56,7 +57,7 @@ const updateActiveGateway = (gateway) => {
     if (!success) {
         throw new HttpError(400, 'Invalid or unsupported gateway specified.');
     }
-    return { message: `Payment gateway successfully set to ${gateway}.`, gateway };
+    return { message: `Active payment gateway switched to ${gateway}.` };
 };
 
 

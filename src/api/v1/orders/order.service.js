@@ -177,8 +177,13 @@ const placeOrder = async (customerId, orderData) => {
     } = orderData;
     
     if (!deliveryAddressId) {
+<<<<<<< HEAD
       logger.warn('[ORDER_PLACE_FAIL] Missing deliveryAddressId');
       throw new HttpError(400, 'Delivery address ID is required.');
+=======
+        logger.warn('[ORDER_PLACE_FAIL] Missing deliveryAddressId');
+        throw new HttpError(400, 'Delivery address ID is required.');
+>>>>>>> 786cfb0 (updated payon arrival + service zones-geoJsonSchema fix5.1)
     }
     logger.debug('[ADDRESS_FETCH_START] Address ID: ' + deliveryAddressId);
     const deliveryAddress = await Address.findOne({ id: deliveryAddressId, userId: customerId }).session(session);
@@ -187,6 +192,10 @@ const placeOrder = async (customerId, orderData) => {
       throw new HttpError(400, 'Delivery address is invalid or missing location coordinates.');
     }
     logger.info('[ADDRESS_FETCH_SUCCESS] Address: ' + deliveryAddress.fullAddress);
+<<<<<<< HEAD
+=======
+    // Build Point as [lng, lat] — GeoJSON expects [longitude, latitude]
+>>>>>>> 786cfb0 (updated payon arrival + service zones-geoJsonSchema fix5.1)
     const deliveryPoint = {
       type: 'Point',
       coordinates: [deliveryAddress.longitude, deliveryAddress.latitude],
@@ -228,8 +237,13 @@ const placeOrder = async (customerId, orderData) => {
     const effectiveRecipientName = recipientName || user.name;
     const effectiveRecipientPhone = recipientPhone || user.phone;
     if (!effectiveRecipientName || !effectiveRecipientPhone) {
+<<<<<<< HEAD
       logger.warn('[ORDER_PLACE_FAIL] Missing recipient info');
       throw new HttpError(400, 'Recipient name and phone are required.');
+=======
+        logger.warn('[ORDER_PLACE_FAIL] Missing recipient info');
+        throw new HttpError(400, 'Recipient name and phone are required.');
+>>>>>>> 786cfb0 (updated payon arrival + service zones-geoJsonSchema fix5.1)
     }
 
     const deliveryAddressSnapshot = {
@@ -271,6 +285,7 @@ const placeOrder = async (customerId, orderData) => {
       logger.debug('[PROMO_CHECK_START] Code: ' + promoCodeApplied);
       const promotion = await Promotion.findOne({ promoCode: promoCodeApplied.toUpperCase(), isActive: true, validFrom: { $lte: new Date() }, validUntil: { $gte: new Date() } }).session(session);
       if (promotion) {
+<<<<<<< HEAD
         if (promotion.minOrderAmount != null && itemsSubtotal < promotion.minOrderAmount) {
           logger.info(`[PROMO_NOT_APPLIED] Subtotal ${itemsSubtotal} < min ${promotion.minOrderAmount}`);
         } else {
@@ -279,6 +294,16 @@ const placeOrder = async (customerId, orderData) => {
           discountAmount = Math.min(discountAmount, itemsSubtotal);
           logger.info('[PROMO_APPLIED] Discount: ' + discountAmount);
         }
+=======
+          if (promotion.minOrderAmount != null && itemsSubtotal < promotion.minOrderAmount) {
+              logger.info(`[PROMO_NOT_APPLIED] Subtotal ${itemsSubtotal} < min ${promotion.minOrderAmount}`);
+          } else {
+            if (promotion.type === 'Percentage Discount') discountAmount = itemsSubtotal * (promotion.value / 100);
+            else if (promotion.type === 'Fixed Amount') discountAmount = promotion.value;
+            discountAmount = Math.min(discountAmount, itemsSubtotal);
+            logger.info('[PROMO_APPLIED] Discount: ' + discountAmount);
+          }
+>>>>>>> 786cfb0 (updated payon arrival + service zones-geoJsonSchema fix5.1)
       } else {
         logger.warn('[PROMO_INVALID] Code: ' + promoCodeApplied);
         throw new HttpError(400, 'Invalid or expired promo code.');

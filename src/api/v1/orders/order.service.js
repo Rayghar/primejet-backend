@@ -144,11 +144,22 @@ const placeOrder = async (customerId, orderData) => {
     if (!deliveryAddress || typeof deliveryAddress.longitude !== 'number' || typeof deliveryAddress.latitude !== 'number') {
       throw new HttpError(400, 'Delivery address is invalid or missing location coordinates.');
     }
-    const deliveryPoint = { type: 'Point', coordinates: [deliveryAddress.longitude, deliveryAddress.latitude] };
-    const coveringZone = await ServiceZone.findOne({ area: { $geoIntersects: { $geometry: deliveryPoint } }, isActive: true }).session(session);
+    // Build Point as [lng, lat] — GeoJSON expects [longitude, latitude]
+    const deliveryPoint = {
+      type: 'Point',
+      coordinates: [deliveryAddress.longitude, deliveryAddress.latitude],
+    };
+
+    // Correct geospatial check: put everything in ONE filter object
+    const coveringZone = await ServiceZone.findOne({
+      isActive: true,
+      area: { $geoIntersects: { $geometry: deliveryPoint } },
+    }).session(session);
+
     if (!coveringZone) {
-      const config = await Config.findOne().session(session);
-      const message = config?.outOfZoneDefaultMessage || 'Sorry, we do not currently service this address.';
+      const cfg = await Config.findOne().session(session);
+      const message =
+        cfg?.outOfZoneDefaultMessage || 'Sorry, we do not currently service this address.';
       throw new HttpError(400, message);
     }
 

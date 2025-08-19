@@ -178,9 +178,12 @@ const placeOrder = async (customerId, orderData) => {
     
     if (!deliveryAddressId) {
 <<<<<<< HEAD
+<<<<<<< HEAD
       logger.warn('[ORDER_PLACE_FAIL] Missing deliveryAddressId');
       throw new HttpError(400, 'Delivery address ID is required.');
 =======
+=======
+>>>>>>> 786cfb0 (updated payon arrival + service zones-geoJsonSchema fix5.1)
         logger.warn('[ORDER_PLACE_FAIL] Missing deliveryAddressId');
         throw new HttpError(400, 'Delivery address ID is required.');
 >>>>>>> 786cfb0 (updated payon arrival + service zones-geoJsonSchema fix5.1)
@@ -193,7 +196,10 @@ const placeOrder = async (customerId, orderData) => {
     }
     logger.info('[ADDRESS_FETCH_SUCCESS] Address: ' + deliveryAddress.fullAddress);
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
+=======
+>>>>>>> 786cfb0 (updated payon arrival + service zones-geoJsonSchema fix5.1)
     // Build Point as [lng, lat] — GeoJSON expects [longitude, latitude]
 >>>>>>> 786cfb0 (updated payon arrival + service zones-geoJsonSchema fix5.1)
     const deliveryPoint = {
@@ -238,9 +244,12 @@ const placeOrder = async (customerId, orderData) => {
     const effectiveRecipientPhone = recipientPhone || user.phone;
     if (!effectiveRecipientName || !effectiveRecipientPhone) {
 <<<<<<< HEAD
+<<<<<<< HEAD
       logger.warn('[ORDER_PLACE_FAIL] Missing recipient info');
       throw new HttpError(400, 'Recipient name and phone are required.');
 =======
+=======
+>>>>>>> 786cfb0 (updated payon arrival + service zones-geoJsonSchema fix5.1)
         logger.warn('[ORDER_PLACE_FAIL] Missing recipient info');
         throw new HttpError(400, 'Recipient name and phone are required.');
 >>>>>>> 786cfb0 (updated payon arrival + service zones-geoJsonSchema fix5.1)

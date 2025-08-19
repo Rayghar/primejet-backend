@@ -8,11 +8,10 @@ const Promotion = require('../../../models/promotion.model');
 const Address = require('../../../models/address.model');
 const HttpError = require('../../../utils/HttpError');
 const { firestore, admin, isFirebaseInitialized } = require('../../../config/firebase.config.js');
-const { logger } = require('../../../config/logger.config.js');
-const referralService = require('../referrals/referral.service');
-const { sendOrderStatusUpdate } = require('../../../services/fcm.service');
-const paymentService = require('../payments/payment.service');
-const ServiceZone = require('../../../models/serviceZone.model');
+const { logger } = require('../../../config/logger.config.js'); // Assuming logger is set up
+const referralService = require('../referrals/referral.service'); // For referral logic // MODIFIED: Changed import path to match the service
+const paymentService = require('../payments/payment.service'); // Used for Paystack
+const ServiceZone = require('../../../models/serviceZone.model'); // << THE FIX IS HERE
 
 const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
   switch (driverStopStatus) {

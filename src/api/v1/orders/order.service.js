@@ -11,8 +11,8 @@ const HttpError = require('../../../utils/HttpError');
 const { firestore, admin, isFirebaseInitialized } = require('../../../config/firebase.config.js');
 const { logger } = require('../../../config/logger.config.js');
 const referralService = require('../referrals/referral.service');
-const paymentService = require('../payments/payment.service');
-const ServiceZone = require('../../../models/serviceZone.model');
+const ServiceZone = require('../../../models/serviceZone.model'); // << THE FIX IS HERE
+const paymentService = require('../payments/payment.service'); // Used for Paystack
 
 // IMPORTANT: This helper function maps granular driver stop statuses (from Run.Stop enum)
 // to high-level customer-facing order statuses (from Order enum).
@@ -22,7 +22,7 @@ const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
     case 'DRIVER_ENROUTE_PICKUP':
       return 'Driver Assigned';
     case 'PICKED_UP_ENROUTE_STATION':
-       return 'Processing';
+       return 'Processing'; 
     case 'CYLINDER_REFILLING':
       return 'Processing';
     case 'OUT_FOR_DELIVERY':
@@ -58,17 +58,20 @@ const getOrders = async (options) => {
     if (role === 'customer') {
       query.customerId = userId;
       if (customerId && customerId !== userId) {
+        logger.warn(`[ORDER_SERVICE] Unauthorized customer access attempt: User ${userId} tried to access orders for customer ${customerId}.`);
         throw new HttpError(403, 'Customers can only access their own orders.');
       }
     } else if (role === 'driver') {
       query.driverId = userId;
       if (driverId && driverId !== userId) {
+        logger.warn(`[ORDER_SERVICE] Unauthorized driver access attempt: Driver ${userId} tried to access orders for driver ${driverId}.`);
         throw new HttpError(403, 'Drivers can only access their assigned orders.');
       }
     } else if (role === 'admin') {
       if (customerId) query.customerId = customerId;
       if (driverId) query.driverId = driverId;
     } else {
+      logger.warn(`[ORDER_SERVICE] Unauthorized role '${role}' attempted to access orders.`);
       throw new HttpError(403, 'Unauthorized role for accessing orders.');
     }
 
@@ -85,19 +88,17 @@ const getOrders = async (options) => {
       .skip(skip)
       .limit(limitNum)
       .populate({
-          path: 'customerId',
-          select: 'id name email phone',
-          model: 'User',
-          foreignField: 'id'
+        path: 'customer',
+        select: 'id name email phone',
+        model: 'User',
       })
       .populate({
-          path: 'driverId',
-          select: 'id name phone vehicleType licensePlate',
-          model: 'User',
-          foreignField: 'id'
+        path: 'driver',
+        select: 'id name phone vehicleType licensePlate',
+        model: 'User',
       });
     return {
-      orders: orders.map(order => order.toObject()),
+      orders: orders.map(order => order.toObject({ virtuals: true })),
       currentPage: pageNum,
       totalPages: Math.ceil(totalOrders / limitNum),
       totalOrders,
@@ -108,44 +109,7 @@ const getOrders = async (options) => {
     throw new HttpError(500, 'Failed to list orders due to an unexpected error.');
   }
 };
-// Function to get a specific order, as requested
-const getOrder = async (orderId, requestingUser) => {
-  try {
-    const order = await Order.findOne({ id: orderId })
-        .populate('customer')
-        .populate('driver');
 
-    if (!order) {
-      throw new HttpError(404, 'Order not found.');
-    }
-
-    if (!requestingUser) {
-        throw new HttpError(401, 'Authentication details are missing.');
-    }
-
-    if (requestingUser.role === 'admin') {
-        return order.toObject();
-    }
-
-    if (requestingUser.role === 'customer' && order.customerId !== requestingUser.id) {
-      logger.warn(`[ORDER_SERVICE] Unauthorized customer access: User ${requestingUser.id} attempted to access order ${orderId} belonging to ${order.customerId}`);
-      throw new HttpError(403, 'You are not authorized to view this order.');
-    }
-
-    if (requestingUser.role === 'driver' && order.driverId !== requestingUser.id) {
-      logger.warn(`[ORDER_SERVICE] Unauthorized driver access: Driver ${requestingUser.id} attempted to access order ${orderId} assigned to ${order.driverId}`);
-      throw new HttpError(403, 'You are not authorized to view this order.');
-    }
-
-    return order.toObject();
-
-  } catch (error) {
-    logger.error(`[ORDER_SERVICE] Get order ${orderId} error:`, { error: error.message, stack: error.stack });
-    if (error instanceof HttpError) throw error;
-    throw new HttpError(500, 'Failed to retrieve order due to an internal data issue.');
-  }
-};
-// Function to get payment status, as requested
 const getOrderPaymentStatus = async (orderId, requestingUser) => {
   try {
     const order = await getOrder(orderId, requestingUser);
@@ -169,33 +133,76 @@ const getOrderPaymentStatus = async (orderId, requestingUser) => {
   }
 };
 
+const getOrder = async (orderId, requestingUser) => {
+  try {
+    const order = await Order.findOne({ id: orderId })
+        .populate('customer')
+        .populate('driver');
+
+    if (!order) {
+      throw new HttpError(404, 'Order not found.');
+    }
+
+    if (!requestingUser) {
+        throw new HttpError(401, 'Authentication details are missing.');
+    }
+
+    if (requestingUser.role === 'admin') {
+        return order.toObject({ virtuals: true });
+    }
+
+    if (requestingUser.role === 'customer' && order.customerId !== requestingUser.id) {
+      logger.warn(`[ORDER_SERVICE] Unauthorized customer access: User ${requestingUser.id} attempted to access order ${orderId} belonging to ${order.customerId}`);
+      throw new HttpError(403, 'You are not authorized to view this order.');
+    }
+
+    if (requestingUser.role === 'driver' && order.driverId !== requestingUser.id) {
+      logger.warn(`[ORDER_SERVICE] Unauthorized driver access: Driver ${requestingUser.id} attempted to access order ${orderId} assigned to ${order.driverId}`);
+      throw new HttpError(403, 'You are not authorized to view this order.');
+    }
+
+    return order.toObject({ virtuals: true });
+
+  } catch (error) {
+    logger.error(`[ORDER_SERVICE] Get order ${orderId} error:`, { error: error.message, stack: error.stack });
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(500, 'Failed to retrieve order due to an internal data issue.');
+  }
+};
+
 const placeOrder = async (customerId, orderData) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    logger.info(`[ORDER_PLACE_START] Customer: ${customerId}, Data: ${JSON.stringify(orderData)}`);
+    const user = await User.findOne({ id: customerId }).select('name phone walletBalance defaultAddressId role referredBy').session(session);
+    if (!user) {
+      logger.error(`[ORDER_SERVICE] User placing order not found: ${customerId}`);
+      throw new HttpError(404, 'User placing order not found.');
+    }
+    if (user.role !== 'customer') {
+      logger.warn(`[ORDER_SERVICE] Non-customer user ${customerId} attempted to place order.`);
+      throw new HttpError(403, 'Only customers can place orders.');
+    }
+
     const {
       deliveryAddressId, items, recipientName, recipientPhone, isExpress,
       useWalletBalance, promoCodeApplied, paymentMethod
     } = orderData;
-
+    
+    // START NEW FUNCTIONALITY 1: SERVICE ZONE VALIDATION
     if (!deliveryAddressId) {
-        logger.warn('[ORDER_PLACE_FAIL] Missing deliveryAddressId');
-        throw new HttpError(400, 'Delivery address ID is required.');
+      logger.warn('[ORDER_PLACE_FAIL] Missing deliveryAddressId');
+      throw new HttpError(400, 'Delivery address ID is required.');
     }
-    logger.debug('[ADDRESS_FETCH_START] Address ID: ' + deliveryAddressId);
     const deliveryAddress = await Address.findOne({ id: deliveryAddressId, userId: customerId }).session(session);
     if (!deliveryAddress || typeof deliveryAddress.longitude !== 'number' || typeof deliveryAddress.latitude !== 'number') {
       logger.warn('[ORDER_PLACE_FAIL] Invalid address or missing coords: ' + deliveryAddressId);
       throw new HttpError(400, 'Delivery address is invalid or missing location coordinates.');
     }
-    logger.info('[ADDRESS_FETCH_SUCCESS] Address: ' + deliveryAddress.fullAddress);
     const deliveryPoint = {
       type: 'Point',
       coordinates: [deliveryAddress.longitude, deliveryAddress.latitude],
     };
-    logger.debug(`[ZONE_CHECK_START] Point: ${deliveryPoint.coordinates[0]},${deliveryPoint.coordinates[1]}`);
-
     const coveringZone = await ServiceZone.findOne({
       isActive: true,
       area: { $geoIntersects: { $geometry: deliveryPoint } },
@@ -204,120 +211,142 @@ const placeOrder = async (customerId, orderData) => {
     if (!coveringZone) {
       logger.warn('[ZONE_CHECK_FAIL] Out of zone for address: ' + deliveryAddressId);
       const cfg = await Config.findOne().session(session);
-      const message =
-        cfg?.outOfZoneDefaultMessage || 'Sorry, we do not currently service this address.';
+      const message = cfg?.outOfZoneDefaultMessage || 'Sorry, we do not currently service this address.';
       throw new HttpError(400, message);
     }
-    logger.info('[ZONE_CHECK_PASS] In zone: ' + coveringZone.name);
+    // END NEW FUNCTIONALITY 1
 
-    logger.debug('[USER_FETCH_START] Customer ID: ' + customerId);
-    const user = await User.findOne({ id: customerId }).select('name phone walletBalance defaultAddressId role referredBy').session(session);
-    if (!user) {
-      logger.warn('[ORDER_PLACE_FAIL] User not found: ' + customerId);
-      throw new HttpError(404, 'User placing order not found.');
+    if (!items || items.length === 0 ) {
+      throw new HttpError(400, 'Missing delivery address or items for the order.');
     }
-    if (user.role !== 'customer') {
-      logger.warn('[ORDER_PLACE_FAIL] Non-customer role: ' + user.role);
-      throw new HttpError(403, 'Only customers can place orders.');
+    if (items.some(item => !item.cylinderId || !item.quantity || item.unitPrice == null || !item.productName)) {
+      throw new HttpError(400, 'Invalid item structure: cylinderId, quantity, unitPrice, and productName are required.');
     }
-    logger.info('[USER_FETCH_SUCCESS] User: ' + user.name);
-
-    if (!items || items.length === 0 || items.some(item => !item.cylinderId || !item.quantity || item.unitPrice == null || !item.productName)) {
-      logger.warn('[ORDER_PLACE_FAIL] Invalid items: ' + JSON.stringify(items));
-      throw new HttpError(400, 'Invalid or missing order items.');
-    }
-    logger.debug('[ITEMS_VALID] Count: ' + items.length);
 
     const effectiveRecipientName = recipientName || user.name;
     const effectiveRecipientPhone = recipientPhone || user.phone;
+
     if (!effectiveRecipientName || !effectiveRecipientPhone) {
-        logger.warn('[ORDER_PLACE_FAIL] Missing recipient info');
         throw new HttpError(400, 'Recipient name and phone are required.');
     }
 
-    const deliveryAddressSnapshot = {
-      fullAddress: deliveryAddress.fullAddress, street: deliveryAddress.street, city: deliveryAddress.city,
-      state: deliveryAddress.state, country: deliveryAddress.country, postalCode: deliveryAddress.postalCode,
-      latitude: deliveryAddress.latitude, longitude: deliveryAddress.longitude, deliveryInstructions: deliveryAddress.deliveryInstructions,
-    };
-    logger.debug('[SNAPSHOT_CREATED] Address snapshot ready');
+    if (!deliveryAddress.fullAddress || !deliveryAddress.street || !deliveryAddress.city || !deliveryAddress.state || !deliveryAddress.country) {
+        logger.error(`[ORDER_SERVICE] Delivery address ID ${deliveryAddressId} is critically incomplete (missing fullAddress, street, city, state, or country). Cannot create snapshot.`);
+        throw new HttpError(400, 'Selected delivery address details are incomplete. Please update your address.');
+    }
 
-    logger.debug('[CONFIG_FETCH_START]');
+    const deliveryAddressSnapshot = {
+      fullAddress: deliveryAddress.fullAddress,
+      street: deliveryAddress.street,
+      city: deliveryAddress.city,
+      state: deliveryAddress.state,
+      country: deliveryAddress.country,
+      postalCode: deliveryAddress.postalCode,
+      latitude: deliveryAddress.latitude,
+      longitude: deliveryAddress.longitude,
+      deliveryInstructions: deliveryAddress.deliveryInstructions,
+    };
+
     const config = await Config.findOne().session(session);
     if (!config || !config.feeSettings) {
-      logger.error('[ORDER_PLACE_FAIL] Missing config');
-      throw new HttpError(500, 'System configuration for fees is not available.');
-    }
-    logger.info('[CONFIG_FETCH_SUCCESS]');
-
-    let orderStatus = 'Pending Payment';
-    let paymentStatusCurrent = 'Pending';
-    let isPayOnPickup = false;
-
-    if (paymentMethod === 'payOnPickup') {
-      logger.debug('[PAY_ON_PICKUP_CHECK_START]');
-      const pastOrderCount = await Order.countDocuments({ customerId: customerId, status: 'Delivered' }).session(session);
-      if (pastOrderCount > 0) {
-        logger.warn('[PAY_ON_PICKUP_FAIL] Not first order');
-        throw new HttpError(403, 'Pay on Arrival is only available for your first order.');
-      }
-      orderStatus = 'Awaiting Payment on Arrival';
-      paymentStatusCurrent = 'Pending';
-      isPayOnPickup = true;
-      logger.info('[PAY_ON_PICKUP_ENABLED]');
+      logger.error(`[ORDER_SERVICE] System configuration for fees not found or incomplete. Config: ${JSON.stringify(config)}`);
+      throw new HttpError(500, 'System configuration for fees not found or incomplete.');
     }
 
     const itemsSubtotal = items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
-    logger.debug('[SUBTOTAL_CALC] ' + itemsSubtotal);
     let discountAmount = 0.0;
+    let referrerId = null;
+    if (user.referredByCode) {
+        const referral = await Referral.findOne({ referralCode: user.referredByCode }).session(session);
+        if (referral) {
+            referrerId = referral.userId; 
+            logger.info(`[ORDER_SERVICE] Order placed by referred user ${customerId}. Referrer ID ${referrerId} will be stamped on the order.`);
+        }
+    }
+
+
     if (promoCodeApplied) {
-      logger.debug('[PROMO_CHECK_START] Code: ' + promoCodeApplied);
-      const promotion = await Promotion.findOne({ promoCode: promoCodeApplied.toUpperCase(), isActive: true, validFrom: { $lte: new Date() }, validUntil: { $gte: new Date() } }).session(session);
+      const promotion = await Promotion.findOne({
+          promoCode: promoCodeApplied.toUpperCase(),
+          isActive: true,
+          validFrom: { $lte: new Date() },
+          validUntil: { $gte: new Date() }
+      }).session(session);
+
       if (promotion) {
           if (promotion.minOrderAmount != null && itemsSubtotal < promotion.minOrderAmount) {
-              logger.info(`[PROMO_NOT_APPLIED] Subtotal ${itemsSubtotal} < min ${promotion.minOrderAmount}`);
+              logger.info(`[ORDER_SERVICE] Promo ${promoCodeApplied} not applied for order: Subtotal ${itemsSubtotal} is less than minimum ${promotion.minOrderAmount}`);
           } else {
-            if (promotion.type === 'Percentage Discount') discountAmount = itemsSubtotal * (promotion.value / 100);
-            else if (promotion.type === 'Fixed Amount') discountAmount = promotion.value;
+            if (promotion.type === 'Percentage Discount') {
+              discountAmount = itemsSubtotal * (promotion.value / 100);
+            } else if (promotion.type === 'Fixed Amount') {
+              discountAmount = promotion.value;
+            }
             discountAmount = Math.min(discountAmount, itemsSubtotal);
-            logger.info('[PROMO_APPLIED] Discount: ' + discountAmount);
+            logger.info(`[ORDER_SERVICE] Promo ${promoCodeApplied} applied, discount: ${discountAmount}`);
           }
       } else {
-        logger.warn('[PROMO_INVALID] Code: ' + promoCodeApplied);
+        logger.info(`[ORDER_SERVICE] Promo code ${promoCodeApplied} is invalid, expired, or not active.`);
         throw new HttpError(400, 'Invalid or expired promo code.');
       }
     }
 
     const subtotalAfterDiscount = itemsSubtotal - discountAmount;
-    const vatAmount = subtotalAfterDiscount * (config.feeSettings.vatPercentage / 100);
-    const serviceFeeAmount = subtotalAfterDiscount * (config.feeSettings.serviceFeePercentage / 100);
+    const vatAmount = subtotalAfterDiscount > 0 ? subtotalAfterDiscount * (config.feeSettings.vatPercentage / 100) : 0;
+    const serviceFeeAmount = subtotalAfterDiscount > 0 ? subtotalAfterDiscount * (config.feeSettings.serviceFeePercentage / 100) : 0;
     const deliveryFee = (isExpress ? config.feeSettings.baseDeliveryFee + config.feeSettings.expressDeliverySurcharge : config.feeSettings.baseDeliveryFee);
-    const overallGrandTotal = subtotalAfterDiscount + vatAmount + serviceFeeAmount + deliveryFee;
-    logger.debug('[TOTALS_CALC] Grand: ' + overallGrandTotal + ' VAT: ' + vatAmount + ' Service: ' + serviceFeeAmount + ' Delivery: ' + deliveryFee);
-    let totalBeforeWallet = overallGrandTotal;
+
+    let totalBeforeWallet = subtotalAfterDiscount + vatAmount + serviceFeeAmount + deliveryFee;
     let walletAmountUsed = 0;
+
     if (useWalletBalance && user.walletBalance > 0) {
       walletAmountUsed = Math.min(user.walletBalance, totalBeforeWallet);
       totalBeforeWallet -= walletAmountUsed;
-      logger.info('[WALLET_USED] Amount: ' + walletAmountUsed);
     }
 
-    const grandTotalToPayByGateway = isPayOnPickup ? 0 : Math.max(0, totalBeforeWallet);
-    if (grandTotalToPayByGateway > 0) {
-        orderStatus = 'Pending Payment';
-    } else if (!isPayOnPickup) {
-        orderStatus = 'Order Placed';
-        paymentStatusCurrent = 'Completed';
+    const grandTotalToPayByGateway = Math.max(0, totalBeforeWallet);
+    const overallGrandTotal = subtotalAfterDiscount + vatAmount + serviceFeeAmount + deliveryFee;
+    
+    // START NEW FUNCTIONALITY 2: FIRST ORDER PAY ON DELIVERY
+    let orderStatus = 'Pending Payment';
+    let paymentStatusCurrent = 'Pending';
+    let isPayOnPickup = false;
+    if (paymentMethod === 'payOnPickup') {
+      const pastOrderCount = await Order.countDocuments({ customerId: customerId, status: 'Delivered' }).session(session);
+      if (pastOrderCount > 0) {
+        throw new HttpError(403, 'Pay on Arrival is only available for your first order.');
+      }
+      orderStatus = 'Awaiting Payment on Arrival';
+      paymentStatusCurrent = 'Pending';
+      isPayOnPickup = true;
+    } else {
+        orderStatus = grandTotalToPayByGateway > 0 ? 'Pending Payment' : 'Order Placed';
+        paymentStatusCurrent = grandTotalToPayByGateway > 0 ? 'Pending' : 'Completed';
     }
-    logger.debug('[STATUS_SET] Order: ' + orderStatus + ' Payment: ' + paymentStatusCurrent);
+    // END NEW FUNCTIONALITY 2
+
+
+    if (user.referredBy) {
+        referrerId = user.referredBy;
+    }
 
     const newOrder = new Order({
-      id: uuidv4(), customerId, deliveryAddressId, deliveryAddressSnapshot, items,
-      recipientName: effectiveRecipientName, recipientPhone: effectiveRecipientPhone,
-      isExpressDelivery: isExpress || false, itemsSubtotal, discountAmount,
-      referrerId: user.referredBy || null,
+      id: uuidv4(),
+      customerId,
+      deliveryAddressId,
+      deliveryAddressSnapshot,
+      items,
+      recipientName: effectiveRecipientName,
+      recipientPhone: effectiveRecipientPhone,
+      isExpressDelivery: isExpress || false,
+      itemsSubtotal,
+      discountAmount,
+      referrerId: referrerId,
       promoCodeApplied: discountAmount > 0 ? (promoCodeApplied ? promoCodeApplied.toUpperCase() : null) : null,
-      vatAmount, serviceFeeAmount, deliveryFee, walletAmountUsed,
+      vatAmount,
+      serviceFeeAmount,
+      deliveryFee,
+      walletAmountUsed,
       grandTotal: overallGrandTotal,
       finalAmountPaid: (paymentStatusCurrent === 'Completed') ? (overallGrandTotal - walletAmountUsed) : 0,
       status: orderStatus,
@@ -328,42 +357,42 @@ const placeOrder = async (customerId, orderData) => {
       deliveryLongitude: deliveryAddress.longitude,
       orderDate: new Date(),
     });
-    logger.debug('[ORDER_OBJ_CREATED]');
 
     if (walletAmountUsed > 0) {
       user.walletBalance -= walletAmountUsed;
       await user.save({ session });
-      logger.info('[WALLET_DEDUCT_SUCCESS] New balance: ' + user.walletBalance);
+      logger.info(`[ORDER_SERVICE] Wallet balance ${walletAmountUsed} deducted for user ${customerId}, order ${newOrder.id}. New balance: ${user.walletBalance}`);
     }
+
     const savedOrder = await newOrder.save({ session });
-    logger.info('[ORDER_SAVE_SUCCESS] ID: ' + savedOrder.id);
+
     let accessCode = null;
     if (grandTotalToPayByGateway > 0 && !isPayOnPickup) {
       try {
-        logger.debug('[PAYMENT_INIT_START] Order: ' + savedOrder.id);
         const paymentResult = await paymentService.initializePayment({ orderId: savedOrder.id, userId: customerId, session: session });
         accessCode = paymentResult.accessCode;
-        logger.info('[PAYMENT_INIT_SUCCESS] AccessCode: ' + accessCode);
       } catch (error) {
-        logger.error('[PAYMENT_INIT_FAIL] Order: ' + savedOrder.id + ' Error: ' + error.message);
+        logger.error(`[PAYMENT_INIT_FAIL] Order: ${savedOrder.id} Error: ${error.message}`);
         throw new HttpError(500, 'Order was created, but payment could not be initialized.');
       }
     }
 
     await session.commitTransaction();
-    logger.info(`[ORDER_PLACE_SUCCESS] ID: ${savedOrder.id} PaymentNeeded: ${grandTotalToPayByGateway > 0 && !isPayOnPickup}`);
+    logger.info(`[ORDER_SERVICE] Order ${savedOrder.id} placed successfully. Payment Needed: ${grandTotalToPayByGateway > 0}`);
+
     return {
       order: savedOrder.toObject(),
       accessCode: accessCode,
       paymentNeeded: grandTotalToPayByGateway > 0 && !isPayOnPickup,
       grandTotalToPay: grandTotalToPayByGateway,
-      message: 'Order placed successfully.'
+      message: 'Order created successfully.'
     };
   } catch (error) {
     await session.abortTransaction();
-    logger.error(`[ORDER_PLACE_FAIL] Customer ${customerId}: ${error.message}`, { stack: error.stack, inputData: orderData });
+    logger.error(`[ORDER_SERVICE] Place order error for customer ${customerId}:`, {error: error.message, stack: error.stack, inputOrderData: orderData});
     if (error instanceof HttpError) throw error;
-    throw new HttpError(500, `Failed to place order: ${error.message}`);
+    console.error('Full error object in placeOrder service:', error);
+    throw new HttpError(500, `Failed to place order due to an unexpected error: ${error.message}`);
   } finally {
     session.endSession();
   }
@@ -536,6 +565,61 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
   }
 }
 
+// <<< START MODIFICATION: processPayment function from O2 >>>
+const processPayment = async (orderId, paymentData, customerId, customerRole) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const user = await User.findOne({ id: customerId }).session(session);
+    if (!user) throw new HttpError(404, 'User not found for payment processing.');
+    if (customerRole !== 'customer' || user.role !== 'customer') {
+      throw new HttpError(403, 'Insufficient permissions to process this payment.');
+    }
+
+    const order = await Order.findOne({ id: orderId, customerId }).session(session);
+    if (!order) throw new HttpError(404, 'Order not found or does not belong to this user.');
+    if (order.paymentStatus === 'Completed') {
+      throw new HttpError(400, 'Payment for this order has already been completed.');
+    }
+
+    order.status = 'Order Placed';
+    order.paymentStatus = 'Completed';
+    order.finalAmountPaid = (order.finalAmountPaid || 0) + paymentData.amount;
+    order.paymentTransactionId = paymentData.transactionId;
+    order.statusHistory.push({ status: 'Order Placed', timestamp: new Date(), notes: `Payment confirmed with transaction ID: ${paymentData.transactionId}` });
+    if(!order.statusHistory.find(h => h.status === 'Payment Completed')) {
+        order.statusHistory.push({ status: 'Payment Completed', timestamp: new Date(), notes: `Ref: ${paymentData.transactionId}` });
+    }
+
+    await order.save({ session });
+
+    // NEW FUNCTIONALITY: First Purchase Check and Referrer Credit
+    if (user.referredBy) { 
+      const completedOrdersCount = await Order.countDocuments({
+        customerId: user.id,
+        status: { $in: ['Delivered', 'Completed'] },
+      }).session(session);
+
+      if (completedOrdersCount === 0) {
+        console.log(`[ORDER_SERVICE] Referee ${user.id}'s first purchase (${order.id}). Triggering credit for referrer ${user.referredBy}.`);
+        order.referrerId = user.referredBy; 
+        await referralService.creditReferrerForSuccessfulReferral(order, session); 
+      }
+    }
+
+    await session.commitTransaction();
+    return { transactionId: paymentData.transactionId, message: 'Payment processed successfully.' };
+  } catch (error) {
+    await session.abortTransaction();
+    if (error instanceof HttpError) throw error;
+    logger.error('Unexpected error in processPayment:', { error: error.message, stack: error.stack, orderId });
+    throw new HttpError(500, 'Failed to process payment due to an unexpected error.');
+  } finally {
+    session.endSession();
+  }
+};
+// <<< END MODIFICATION >>>
+
 const submitFeedback = async (orderId, feedbackData, customerId, customerRole) => {
   try {
     const user = await User.findOne({ id: customerId });
@@ -562,6 +646,7 @@ const submitFeedback = async (orderId, feedbackData, customerId, customerRole) =
     throw new HttpError(500, `Failed to submit feedback: ${error.message || 'An unexpected error occurred.'}`);
   }
 };
+
 const getLocationHistory = async (orderId, requestingUserId, requestingUserRole) => {
   try {
     const order = await Order.findOne({ id: orderId });
@@ -582,6 +667,7 @@ const getLocationHistory = async (orderId, requestingUserId, requestingUserRole)
     throw new HttpError(500, `Failed to retrieve location history: ${error.message || 'An unexpected error occurred.'}`);
   }
 };
+
 const driverUpdateOrderStatus = async (orderId, newStatus, notes, driverId, driverRole) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -609,16 +695,17 @@ const driverUpdateOrderStatus = async (orderId, newStatus, notes, driverId, driv
     session.endSession();
   }
 };
+
 const adminGetOrders = async (options) => {
   const { status, search, dateRangeStart, dateRangeEnd, page = 1, limit = 10, sortBy } = options;
   try {
     const query = {};
     if (status) {
-        if (status.includes(',')) {
-            query.status = { $in: status.split(',').map(s => s.trim()).filter(s => s.length > 0) };
-        } else if (status.trim().length > 0) {
-            query.status = status.trim();
-        }
+      if (status.includes(',')) {
+        query.status = { $in: status.split(',').map(s => s.trim()).filter(s => s.length > 0) };
+      } else if (status.trim().length > 0) {
+        query.status = status.trim();
+      }
     }
     if (search) {
       const searchRegex = new RegExp(search, 'i');
@@ -638,19 +725,17 @@ const adminGetOrders = async (options) => {
       .skip((page - 1) * limit)
       .limit(limit)
       .populate({
-        path: 'customerId',
+        path: 'customer', // FIX: Corrected from customerId to customer virtual
         select: 'id name email phone',
         model: 'User',
-        foreignField: 'id'
       })
       .populate({
-        path: 'driverId',
+        path: 'driver', // FIX: Corrected from driverId to driver virtual
         select: 'id name email phone',
         model: 'User',
-        foreignField: 'id'
       });
     return {
-      orders: orders.map(order => order.toObject()),
+      orders: orders.map(order => order.toObject({ virtuals: true })),
       currentPage: page,
       totalPages: Math.ceil(totalOrders / limit),
       totalOrders,
@@ -660,6 +745,7 @@ const adminGetOrders = async (options) => {
     throw new HttpError(500, 'Failed to retrieve orders for admin.');
   }
 };
+
 const adminUpdateOrderStatus = async (orderId, newStatus, notes, adminId, adminRole) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -678,7 +764,7 @@ const adminUpdateOrderStatus = async (orderId, newStatus, notes, adminId, adminR
     if (oldStatus !== newStatus) {
       sendOrderStatusUpdate(order.customerId, order.id, newStatus);
     }
-    return { message: `Order ${orderId} status updated to ${newStatus} by admin.`, order: order.toObject() };
+    return { message: `Order ${orderId} status updated to ${newStatus}.`, order: order.toObject() };
   } catch (error) {
     await session.abortTransaction();
     if (error instanceof HttpError) throw error;
@@ -688,6 +774,7 @@ const adminUpdateOrderStatus = async (orderId, newStatus, notes, adminId, adminR
     session.endSession();
   }
 };
+
 const adminAssignDriver = async (orderId, driverIdToAssign, adminId, adminRole) => {
     const session = await mongoose.startSession();
     session.startTransaction();
@@ -726,8 +813,12 @@ const adminAssignDriver = async (orderId, driverIdToAssign, adminId, adminRole) 
         await session.commitTransaction();
         logger.info(`Run ${newRun.id} created and driver ${driver.name} assigned to order ${orderId}.`);
 
-        const populatedOrder = await getOrder(orderId, adminId, 'admin');
-        return { message: `Driver ${driver.name} assigned to order ${orderId}.`, order: populatedOrder };
+        const populatedOrder = await Order.findOne({ id: orderId })
+            .populate('customer', 'id name email phone')
+            .populate('driver', 'id name phone vehicleType licensePlate')
+            .session(session);
+
+        return { message: `Driver ${driver.name} assigned to order ${orderId}.`, order: populatedOrder.toObject({ virtuals: true }) };
 
     } catch (error) {
             await session.abortTransaction();
@@ -778,62 +869,59 @@ const cancelOrder = async (orderId, customerId, customerRole) => {
   }
 };
 
+// <<< START NEW FUNCTIONALITY 3: getCustomerStats function from O2 >>>
 const getCustomerStats = async (customerId) => {
-  try {
-    const deliveredOrdersQuery = { customerId: customerId, status: 'Delivered' };
-    const [totalOrders, lastTwoOrders, totalGasKgResult] = await Promise.all([
-      Order.countDocuments(deliveredOrdersQuery),
-      Order.find(deliveredOrdersQuery).sort({ orderDate: -1 }).limit(2).select('orderDate items'),
-      Order.aggregate([
-        { $match: deliveredOrdersQuery },
-        { $unwind: '$items' },
-        {
-          $project: {
-            kg: {
-              $let: {
-                vars: { numericPart: { $regexFind: { input: '$items.productName', regex: /^\d+(\.\d+)?/ } } },
-                in: { $toDouble: '$$numericPart.match' }
-              }
-            },
-            quantity: '$items.quantity'
-          }
-        },
-        {
-          $group: {
-            _id: null,
-            totalKg: { $sum: { $multiply: ['$kg', '$quantity'] } }
-          }
-        }
-      ])
-    ]);
-
-    let averageDaysBetweenOrders = 0;
-    if (lastTwoOrders.length === 2) {
-      const latestDate = lastTwoOrders[0].orderDate;
-      const previousDate = lastTwoOrders[1].orderDate;
-      const diffTime = Math.abs(latestDate - previousDate);
-      averageDaysBetweenOrders = diffTime / (1000 * 60 * 60 * 24);
-    }
-
-    const totalGasKg = totalGasKgResult.length > 0 ? totalGasKgResult[0].totalKg : 0;
-
-    return {
-      totalOrders: totalOrders,
-      totalGasKg: totalGasKg.toFixed(1),
-      averageDaysBetweenOrders: averageDaysBetweenOrders.toFixed(1)
-    };
-  } catch (error) {
-    logger.error(`[ORDER_SERVICE] Error fetching stats for customer ${customerId}:`, error);
-    throw new HttpError(500, 'Failed to retrieve customer statistics.');
-  }
+  try {
+    const deliveredOrdersQuery = { customerId: customerId, status: 'Delivered' };
+    const [totalOrders, lastTwoOrders, totalGasKgResult] = await Promise.all([
+      Order.countDocuments(deliveredOrdersQuery),
+      Order.find(deliveredOrdersQuery).sort({ orderDate: -1 }).limit(2).select('orderDate items'),
+      Order.aggregate([
+        { $match: deliveredOrdersQuery },
+        { $unwind: '$items' },
+        {
+          $project: {
+            kg: {
+              $let: {
+                vars: { numericPart: { $regexFind: { input: '$items.productName', regex: /^\d+(\.\d+)?/ } } },
+                in: { $toDouble: '$$numericPart.match' }
+              }
+            },
+            quantity: '$items.quantity'
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            totalKg: { $sum: { $multiply: ['$kg', '$quantity'] } }
+          }
+        }
+      ])
+    ]);
+    let averageDaysBetweenOrders = 0;
+    if (lastTwoOrders.length === 2) {
+      const latestDate = lastTwoOrders[0].orderDate;
+      const previousDate = lastTwoOrders[1].orderDate;
+      const diffTime = Math.abs(latestDate - previousDate);
+      averageDaysBetweenOrders = diffTime / (1000 * 60 * 60 * 24);
+    }
+    const totalGasKg = totalGasKgResult.length > 0 ? totalGasKgResult[0].totalKg : 0;
+    return {
+      totalOrders: totalOrders,
+      totalGasKg: totalGasKg.toFixed(1),
+      averageDaysBetweenOrders: averageDaysBetweenOrders.toFixed(1)
+    };
+  } catch (error) {
+    logger.error(`[ORDER_SERVICE] Error fetching stats for customer ${customerId}:`, error);
+    throw new HttpError(500, 'Failed to retrieve customer statistics.');
+  }
 };
+// <<< END NEW FUNCTIONALITY 3 >>>
 
 module.exports = {
   getOrders,
   getOrder,
-  getOrderPaymentStatus,
   placeOrder,
-  updateOrderStatus, // Replaces processPayment
   submitFeedback,
   getLocationHistory,
   driverUpdateOrderStatus,
@@ -841,6 +929,8 @@ module.exports = {
   adminUpdateOrderStatus,
   adminAssignDriver,
   cancelOrder,
-  getCustomerStats,
-  mapDriverStopStatusToOrderStatus
+  updateOrderStatus,
+  getOrderPaymentStatus,
+  processPayment,
+  getCustomerStats
 };

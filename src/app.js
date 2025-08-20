@@ -2,6 +2,9 @@
 
 require('dotenv').config(); // Load environment variables from .env file
 const express = require('express');
+const bodyParser = require('body-parser'); 
+const paymentController = require('./api/v1/payments/payment.controller'); 
+
 const helmet = require('helmet'); // Security middleware
 const cors = require('cors');     // Cross-Origin Resource Sharing middleware
 const morgan = require('morgan'); // HTTP request logger middleware
@@ -60,14 +63,8 @@ app.use(morgan('combined', { stream: logger.stream }));
 // Applying to '/api' to cover both v1 and v2
 app.use('/api', rateLimiter); 
 
-// --- Step 5: Handle Special Routes (like Paystack Webhook) BEFORE general JSON parser ---
-// This must come BEFORE express.json() if you need the raw body for signature verification
-const paymentController = require('./api/v1/payments/payment.controller'); // Assuming this path
-app.post(
-  '/api/v1/payments/paystack/webhook', // Specific path for the webhook
-  express.raw({ type: 'application/json' }), // Parse as raw body for signature verification
-  paymentController.handlePaystackWebhook
-);
+app.post('/api/v1/webhooks/monnify', bodyParser.raw({ type: 'application/json' }), paymentController.handleMonnifyWebhook);
+
 
 // --- Step 6: Setup General Body Parsers ---
 // These parse JSON and URL-encoded data from incoming requests.
@@ -129,3 +126,7 @@ app.use(errorHandler);
 logger.info('[APP] Express application initialized successfully.');
 
 module.exports = app;
+
+
+
+

@@ -98,7 +98,6 @@ app.use('/api/v1/orchestration', runOrchestrationRoutesV1); // Mount existing or
 app.use('/api/v1/voice', voiceRoutesV1); // Mount existing voice route
 app.use('/api/v1/zones', zoneRoutes);
 logger.info('[APP] API v1 routes setup complete.');
-app.use(require('./middleware/logger_middleware')); // Custom logger middleware for request logging
 
 // Mount v2 API routes (for web app - new)
 app.use('/api/v2', v2ApiRoutes);

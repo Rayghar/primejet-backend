@@ -11,9 +11,10 @@ const HttpError = require('../../../utils/HttpError');
 const { firestore, admin, isFirebaseInitialized } = require('../../../config/firebase.config.js');
 const { logger } = require('../../../config/logger.config.js');
 const referralService = require('../referrals/referral.service');
+const { sendOrderStatusUpdate } = require('../../../services/fcm.service');
 
 // NEW: Added Dependencies from O2
-const paymentService = require('../payments/payment.service'); 
+// FIX: Removed the import of paymentService to break the circular dependency.
 const ServiceZone = require('../../../models/serviceZone.model');
 const dotenv = require('dotenv');
 const { sha512 } = require('js-sha512');
@@ -47,18 +48,34 @@ const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
   }
 };
 
-// =========================================================================
-// FIX: getOrder function now accepts an optional session and uses it for the query.
-// This is the key fix for the transaction-related bug.
-// =========================================================================
-const getOrder = async (orderId, requestingUser, session = null) => {
-  try {
-    const queryOptions = {};
-    if (session) {
-      queryOptions.session = session;
-    }
 
-    const order = await Order.findOne({ id: orderId }, null, queryOptions)
+// =========================================================================
+// FIX: Moved initializePayment function after getOrder and before placeOrder.
+// It is now correctly defined before it is called.
+// =========================================================================
+const initializePayment = async ({ orderId, userId, session }) => {
+  logger.info(`[Order Service][initializePayment] Initializing payment for order ${orderId} and user ${userId}.`);
+  try {
+    // FIX: Pass the transaction session to getOrder
+    const order = await getOrder(orderId, { id: userId, role: 'customer' }, session); 
+    const user = await User.findOne({ id: userId }).session(session);
+    if (!order || !user) {
+      throw new HttpError(404, 'Order or user not found for payment initialization.');
+    }
+    const dummyAccessCode = 'dummy-auth-url-' + uuidv4();
+    logger.info(`[Order Service][initializePayment] Successfully initialized dummy payment for order ${orderId}.`);
+
+    return { accessCode: dummyAccessCode };
+  } catch (error) {
+    logger.error(`[Order Service][initializePayment] Failed to initialize payment for order ${orderId}: ${error.message}`, { stack: error.stack });
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(500, 'Payment initialization failed.');
+  }
+};
+
+const getOrder = async (orderId, requestingUser) => {
+  try {
+    const order = await Order.findOne({ id: orderId })
         .populate('customer')
         .populate('driver');
 
@@ -183,31 +200,6 @@ const getOrders = async (options) => {
   }
 };
 
-
-// =========================================================================
-// FIX: Moved initializePayment function after getOrder and before placeOrder.
-// It is now correctly defined before it is called.
-// =========================================================================
-const initializePayment = async ({ orderId, userId, session }) => {
-  logger.info(`[Order Service][initializePayment] Initializing payment for order ${orderId} and user ${userId}.`);
-  try {
-    // FIX: Pass the transaction session to getOrder
-    const order = await getOrder(orderId, { id: userId, role: 'customer' }, session); 
-    // FIX: User.findOne also needs to be part of the transaction
-    const user = await User.findOne({ id: userId }).session(session);
-    if (!order || !user) {
-      throw new HttpError(404, 'Order or user not found for payment initialization.');
-    }
-    const dummyAccessCode = 'dummy-auth-url-' + uuidv4();
-    logger.info(`[Order Service][initializePayment] Successfully initialized dummy payment for order ${orderId}.`);
-
-    return { accessCode: dummyAccessCode };
-  } catch (error) {
-    logger.error(`[Order Service][initializePayment] Failed to initialize payment for order ${orderId}: ${error.message}`, { stack: error.stack });
-    if (error instanceof HttpError) throw error;
-    throw new HttpError(500, 'Payment initialization failed.');
-  }
-};
 
 // =========================================================================
 // NEW FUNCTIONALITY: Replaced O1's placeOrder with the enhanced O2 version
@@ -389,7 +381,7 @@ const placeOrder = async (customerId, orderData) => {
     if (grandTotalToPayByGateway > 0 && !isPayOnPickup) {
       try {
         logger.debug('[PAYMENT_INIT_START] Order: ' + savedOrder.id);
-        const paymentResult = await initializePayment({ orderId: savedOrder.id, userId: customerId, session: session });
+        const paymentResult = await paymentService.initializePayment({ orderId: savedOrder.id, userId: customerId, session: session });
         accessCode = paymentResult.accessCode;
         logger.info('[PAYMENT_INIT_SUCCESS] AccessCode: ' + accessCode);
       } catch (error) {
@@ -449,16 +441,19 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
     if (paymentStatus === 'Completed') {
         logger.info(`[Order Service][updateOrderStatus] Processing successful payment confirmation for order ${orderId}.`);
 
-        if (verifiedAmount !== order.grandTotal) {
-            logger.error(`[Order Service][updateOrderStatus] Amount mismatch for order ${orderId}. Expected: ${order.grandTotal}, Verified: ${verifiedAmount}. Txn Ref: ${paymentDetails.transactionId}. Aborting transaction.`);
+        // FIX: Round both numbers to a consistent precision before comparing to avoid floating-point errors
+        const roundedVerifiedAmount = Math.round(verifiedAmount);
+        const roundedOrderTotal = Math.round(order.grandTotal);
+        if (roundedVerifiedAmount !== roundedOrderTotal) {
+            logger.error(`[Order Service][updateOrderStatus] Amount mismatch for order ${orderId}. Expected: ${roundedOrderTotal}, Verified: ${roundedVerifiedAmount}. Txn Ref: ${paymentDetails.transactionId}. Aborting transaction.`);
             order.status = 'Payment Discrepancy';
             order.paymentStatus = 'Failed';
             order.finalAmountPaid = verifiedAmount;
             order.paymentDetails = {
                 ...paymentDetails,
-                notes: `Amount mismatch. Expected: ${order.grandTotal}, Verified: ${verifiedAmount}.`,
+                notes: `Amount mismatch. Expected: ${roundedOrderTotal}, Verified: ${roundedVerifiedAmount}. Txn: ${paymentDetails.transactionId}.`,
             };
-            order.statusHistory.push({ status: 'Payment Discrepancy', timestamp: new Date(), notes: `Amount mismatch. Expected: ${order.grandTotal}, Verified: ${verifiedAmount}. Txn: ${paymentDetails.transactionId}.` });
+            order.statusHistory.push({ status: 'Payment Discrepancy', timestamp: new Date(), notes: `Amount mismatch. Expected: ${roundedOrderTotal}, Verified: ${roundedVerifiedAmount}. Txn: ${paymentDetails.transactionId}.` });
 
             await order.save({ session });
             await session.commitTransaction();
@@ -484,7 +479,7 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
             order.paymentDetails = paymentDetails;
             const statusNotes = notes || `Payment failed via webhook. Txn Ref: ${paymentDetails.transactionId}. Monnify Status: ${paymentDetails.monnifyStatus}.`;
             order.statusHistory.push({ status: 'Payment Failed', timestamp: new Date(), notes: statusNotes });
-            logger.warn(`[Order Service][updateOrderStatus] Order ${orderId} payment explicitly failed via webhook. Status: '${order.status}', Payment Status: '${order.paymentStatus}'.`);
+            logger.warn(`[ORDER_SERVICE] Order ${orderId} payment explicitly failed via webhook. Status: '${order.status}', Payment Status: '${order.paymentStatus}'.`);
 
             if (order.walletAmountUsed > 0) {
                 const user = await User.findOne({ id: order.customerId }).session(session);
@@ -525,13 +520,13 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
             });
 
             if (completedOrdersCount === 1) {
-                logger.info(`[ORDER_SERVICE] Referee ${order.customerId}'s first completed purchase (${order.id}). Triggering referral credit for referrer ${order.referrerId}.`);
+                logger.info(`[ORDER_SERVICE][updateOrderStatus] Referee ${order.customerId}'s first completed purchase (${order.id}). Triggering referral credit for referrer ${order.referrerId}.`);
                 await referralService.creditReferrerForSuccessfulReferral(order);
             } else {
-                logger.debug(`[ORDER_SERVICE] Referee ${order.customerId} has more than one completed order (${completedOrdersCount}). Not crediting referrer for this order.`);
+                logger.debug(`[ORDER_SERVICE][updateOrderStatus] Referee ${order.customerId} has more than one completed order (${completedOrdersCount}). Not crediting referrer for this order.`);
             }
         } catch (referralError) {
-            logger.error(`[ORDER_SERVICE] Error processing referral for order ${orderId}: ${referralError.message}`, { stack: referralError.stack });
+            logger.error(`[ORDER_SERVICE][updateOrderStatus] Error processing referral for order ${orderId}: ${referralError.message}`, { stack: referralError.stack });
         }
     }
     return order.toObject();
@@ -553,10 +548,10 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
         try {
             await session.endSession();
         } catch (e) {
-            logger.error(`[Order Service][updateOrderStatus] Error ending session for order ${orderId}: ${e.message}`);
+            logger.error(`[ORDER_SERVICE] Error ending session for order ${orderId}: ${e.message}`);
         }
     } else {
-        logger.debug(`[Order Service][updateOrderStatus] Session ended successfully for order ${orderId}.`);
+        logger.debug(`[ORDER_SERVICE] Session ended successfully for order ${orderId}.`);
     }
   }
 }

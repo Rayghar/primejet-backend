@@ -21,6 +21,7 @@ const handleMonnifyWebhook = async (req, res, next) => {
     // FIX: Await the asynchronous processing to ensure it completes before responding
     await paymentService.processMonnifyWebhook({ signature, rawBodyString });
     
+    // FIX: Only send a 200 response after successful processing
     res.status(200).end();
     logger.info('[Payment Controller] Webhook processed successfully and acknowledged with 200.');
 
@@ -34,6 +35,7 @@ const handleMonnifyWebhook = async (req, res, next) => {
       res.status(401).end();
       logger.warn('[Payment Controller] Webhook rejected due to invalid signature.');
     } else {
+      // FIX: Send a 500 for other errors to signal a processing failure to Monnify
       res.status(500).end();
       logger.error('[Payment Controller] Webhook processing failed with a 500 error.');
     }

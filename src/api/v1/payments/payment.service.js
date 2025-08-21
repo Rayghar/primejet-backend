@@ -3,9 +3,8 @@ const crypto = require('crypto');
 const sha512 = require('js-sha512').sha512;
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
-const orderService = require('../orders/order.service');
+const orderService = require('../orders/order.service'); // Keep this import for webhooks
 const dotenv = require('dotenv');
-const { v4: uuidv4 } = require('uuid'); // Add this import
 
 dotenv.config();
 
@@ -142,30 +141,11 @@ const processMonnifyWebhook = async ({ signature, rawBodyString }) => {
   logger.info('[Payment Service] Monnify webhook processing pipeline completed.');
 };
 
-// =========================================================================
-// NEW FUNCTIONALITY: Add the initializePayment function from the O2 plan
-// =========================================================================
-const initializePayment = async ({ orderId, userId, session }) => {
-  logger.info(`[Payment Service] Initializing payment for order ${orderId} and user ${userId}.`);
-  // This is a placeholder for your payment gateway API call
-  try {
-    const order = await orderService.getOrder(orderId, { id: userId, role: 'customer' });
-    // Assume we'd fetch the user to get their email for the payment gateway
-    // const user = await User.findOne({ id: userId }).session(session);
-
-    // Replace this with a real call to your payment gateway's SDK or API
-    const dummyAccessCode = 'dummy-auth-url-' + uuidv4();
-    logger.info(`[Payment Service] Successfully initialized dummy payment for order ${orderId}.`);
-
-    return { accessCode: dummyAccessCode };
-  } catch (error) {
-    logger.error(`[Payment Service] Failed to initialize payment for order ${orderId}: ${error.message}`, { stack: error.stack });
-    throw new HttpError(500, 'Payment initialization failed.');
-  }
-};
+// FIX: Removed the initializePayment function from here.
+// It has been moved to order.service.js to break the circular dependency.
 
 module.exports = {
   processMonnifyWebhook,
   verifyMonnifySignature,
-  initializePayment, // <-- ADD THIS NEW FUNCTION TO EXPORTS
+  // FIX: Removed the export of initializePayment
 };

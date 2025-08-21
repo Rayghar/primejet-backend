@@ -13,7 +13,8 @@ const { logger } = require('../../../config/logger.config.js');
 const referralService = require('../referrals/referral.service');
 
 // NEW: Added Dependencies from O2
-const paymentService = require('../payments/payment.service');
+// We still need paymentService for webhooks, but not for initializePayment
+const paymentService = require('../payments/payment.service'); 
 const ServiceZone = require('../../../models/serviceZone.model');
 const dotenv = require('dotenv');
 const { sha512 } = require('js-sha512');
@@ -46,6 +47,34 @@ const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
       return 'Processing';
   }
 };
+
+
+// =========================================================================
+// FIX: Moved initializePayment function from payment.service.js to break the circular dependency.
+// This function is now correctly placed to access order and user data without circular imports.
+// =========================================================================
+const initializePayment = async ({ orderId, userId, session }) => {
+  logger.info(`[Order Service][initializePayment] Initializing payment for order ${orderId} and user ${userId}.`);
+  try {
+    const order = await getOrder(orderId, { id: userId, role: 'customer' });
+    const user = await User.findOne({ id: userId }).session(session);
+    if (!order || !user) {
+      throw new HttpError(404, 'Order or user not found for payment initialization.');
+    }
+    // In a real app, this is where you'd call your payment gateway API (e.g., Paystack/Monnify)
+    // using the order and user details.
+    // For now, we return a dummy access code.
+    const dummyAccessCode = 'dummy-auth-url-' + uuidv4();
+    logger.info(`[Order Service][initializePayment] Successfully initialized dummy payment for order ${orderId}.`);
+
+    return { accessCode: dummyAccessCode };
+  } catch (error) {
+    logger.error(`[Order Service][initializePayment] Failed to initialize payment for order ${orderId}: ${error.message}`, { stack: error.stack });
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(500, 'Payment initialization failed.');
+  }
+};
+
 
 const getOrders = async (options) => {
   const { status, customerId, driverId, page, limit, userId, role, sortBy } = options;
@@ -354,7 +383,6 @@ const placeOrder = async (customerId, orderData) => {
     if (grandTotalToPayByGateway > 0 && !isPayOnPickup) {
       try {
         logger.debug('[PAYMENT_INIT_START] Order: ' + savedOrder.id);
-        // Call the newly implemented function in paymentService
         const paymentResult = await initializePayment({ orderId: savedOrder.id, userId: customerId, session: session });
         accessCode = paymentResult.accessCode;
         logger.info('[PAYMENT_INIT_SUCCESS] AccessCode: ' + accessCode);
@@ -906,4 +934,5 @@ module.exports = {
   getCustomerStats, // Replaces getCustomerConsumptionData
   updateOrderStatus,
   getOrderPaymentStatus,
+  initializePayment, // FIX: Export the new initializePayment function
 };

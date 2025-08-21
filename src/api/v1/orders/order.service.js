@@ -11,9 +11,10 @@ const HttpError = require('../../../utils/HttpError');
 const { firestore, admin, isFirebaseInitialized } = require('../../../config/firebase.config.js');
 const { logger } = require('../../../config/logger.config.js');
 const referralService = require('../referrals/referral.service');
+const { sendOrderStatusUpdate } = require('../../../services/fcm.service');
 
 // NEW: Added Dependencies from O2
-// FIX: Removed the import of paymentService to break the circular dependency.
+const paymentService = require('../payments/payment.service'); 
 const ServiceZone = require('../../../models/serviceZone.model');
 const dotenv = require('dotenv');
 const { sha512 } = require('js-sha512');
@@ -55,7 +56,6 @@ const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
 const initializePayment = async ({ orderId, userId, session }) => {
   logger.info(`[Order Service][initializePayment] Initializing payment for order ${orderId} and user ${userId}.`);
   try {
-    // FIX: Pass the transaction session to getOrder
     const order = await getOrder(orderId, { id: userId, role: 'customer' }, session); 
     const user = await User.findOne({ id: userId }).session(session);
     if (!order || !user) {
@@ -594,7 +594,7 @@ const processPayment = async (orderId, paymentData, customerId, customerRole) =>
       }).session(session);
 
       if (completedOrdersCount === 0) {
-        console.log(`[ORDER_SERVICE] Referee ${user.id}'s first purchase (${order.id}). Triggering credit for referrer ${user.referredBy}.`);
+        console.log(`[ORDER_SERVICE] Referee ${user.id}'s first completed purchase (${order.id}). Triggering credit for referrer ${user.referredBy}.`);
         order.referrerId = user.referredBy;
         await referralService.creditReferrerForSuccessfulReferral(order, session);
       }
@@ -934,5 +934,4 @@ module.exports = {
   getCustomerStats, // Replaces getCustomerConsumptionData
   updateOrderStatus,
   getOrderPaymentStatus,
-  initializePayment, // FIX: Export the new initializePayment function
 };

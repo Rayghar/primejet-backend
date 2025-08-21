@@ -11,9 +11,7 @@ const HttpError = require('../../../utils/HttpError');
 const { firestore, admin, isFirebaseInitialized } = require('../../../config/firebase.config.js');
 const { logger } = require('../../../config/logger.config.js');
 const referralService = require('../referrals/referral.service');
-
 // NEW: Added Dependencies from O2
-// We still need paymentService for webhooks, but not for initializePayment
 const paymentService = require('../payments/payment.service'); 
 const ServiceZone = require('../../../models/serviceZone.model');
 const dotenv = require('dotenv');
@@ -48,33 +46,68 @@ const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
   }
 };
 
-
 // =========================================================================
-// FIX: Moved initializePayment function from payment.service.js to break the circular dependency.
-// This function is now correctly placed to access order and user data without circular imports.
+// FIX: getOrder is a dependency for other functions, so it should be defined first.
 // =========================================================================
-const initializePayment = async ({ orderId, userId, session }) => {
-  logger.info(`[Order Service][initializePayment] Initializing payment for order ${orderId} and user ${userId}.`);
+const getOrder = async (orderId, requestingUser) => {
   try {
-    const order = await getOrder(orderId, { id: userId, role: 'customer' });
-    const user = await User.findOne({ id: userId }).session(session);
-    if (!order || !user) {
-      throw new HttpError(404, 'Order or user not found for payment initialization.');
-    }
-    // In a real app, this is where you'd call your payment gateway API (e.g., Paystack/Monnify)
-    // using the order and user details.
-    // For now, we return a dummy access code.
-    const dummyAccessCode = 'dummy-auth-url-' + uuidv4();
-    logger.info(`[Order Service][initializePayment] Successfully initialized dummy payment for order ${orderId}.`);
+    const order = await Order.findOne({ id: orderId })
+        .populate('customer')
+        .populate('driver');
 
-    return { accessCode: dummyAccessCode };
+    if (!order) {
+      throw new HttpError(404, 'Order not found.');
+    }
+
+    if (!requestingUser) {
+        throw new HttpError(401, 'Authentication details are missing.');
+    }
+
+    if (requestingUser.role === 'admin') {
+        return order.toObject({ virtuals: true });
+    }
+
+    if (requestingUser.role === 'customer' && order.customerId !== requestingUser.id) {
+      logger.warn(`[ORDER_SERVICE] Unauthorized customer access: User ${requestingUser.id} attempted to access order ${orderId} belonging to ${order.customerId}`);
+      throw new HttpError(403, 'You are not authorized to view this order.');
+    }
+
+    if (requestingUser.role === 'driver' && order.driverId !== requestingUser.id) {
+      logger.warn(`[ORDER_SERVICE] Unauthorized driver access: Driver ${requestingUser.id} attempted to access order ${orderId} assigned to ${order.driverId}`);
+      throw new HttpError(403, 'You are not authorized to view this order.');
+    }
+
+    return order.toObject({ virtuals: true });
+
   } catch (error) {
-    logger.error(`[Order Service][initializePayment] Failed to initialize payment for order ${orderId}: ${error.message}`, { stack: error.stack });
+    logger.error(`[ORDER_SERVICE] Get order ${orderId} error:`, { error: error.message, stack: error.stack });
     if (error instanceof HttpError) throw error;
-    throw new HttpError(500, 'Payment initialization failed.');
+    throw new HttpError(500, 'Failed to retrieve order due to an internal data issue.');
   }
 };
 
+const getOrderPaymentStatus = async (orderId, requestingUser) => {
+  try {
+    const order = await getOrder(orderId, requestingUser);
+
+    if (!order) {
+      throw new HttpError(404, 'Order not found.');
+    }
+
+    return {
+      orderId: order.id,
+      status: order.status,
+      paymentStatus: order.paymentStatus,
+      grandTotal: order.grandTotal,
+      finalAmountPaid: order.finalAmountPaid,
+      message: 'Payment status retrieved successfully.'
+    };
+  } catch (error) {
+    logger.error(`[ORDER_SERVICE] Error fetching payment status for order ${orderId}:`, { error: error.message, stack: error.stack });
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(500, 'Failed to retrieve payment status due to an unexpected error.');
+  }
+};
 
 const getOrders = async (options) => {
   const { status, customerId, driverId, page, limit, userId, role, sortBy } = options;
@@ -143,63 +176,28 @@ const getOrders = async (options) => {
   }
 };
 
-const getOrderPaymentStatus = async (orderId, requestingUser) => {
+
+// =========================================================================
+// FIX: Moved initializePayment function after getOrder and before placeOrder.
+// It is now correctly defined before it is called.
+// =========================================================================
+const initializePayment = async ({ orderId, userId, session }) => {
+  logger.info(`[Order Service][initializePayment] Initializing payment for order ${orderId} and user ${userId}.`);
   try {
-    const order = await getOrder(orderId, requestingUser);
-
-    if (!order) {
-      throw new HttpError(404, 'Order not found.');
+    // getOrder is now defined, so this call will succeed.
+    const order = await getOrder(orderId, { id: userId, role: 'customer' }); 
+    const user = await User.findOne({ id: userId }).session(session);
+    if (!order || !user) {
+      throw new HttpError(404, 'Order or user not found for payment initialization.');
     }
+    const dummyAccessCode = 'dummy-auth-url-' + uuidv4();
+    logger.info(`[Order Service][initializePayment] Successfully initialized dummy payment for order ${orderId}.`);
 
-    return {
-      orderId: order.id,
-      status: order.status,
-      paymentStatus: order.paymentStatus,
-      grandTotal: order.grandTotal,
-      finalAmountPaid: order.finalAmountPaid,
-      message: 'Payment status retrieved successfully.'
-    };
+    return { accessCode: dummyAccessCode };
   } catch (error) {
-    logger.error(`[ORDER_SERVICE] Error fetching payment status for order ${orderId}:`, { error: error.message, stack: error.stack });
+    logger.error(`[Order Service][initializePayment] Failed to initialize payment for order ${orderId}: ${error.message}`, { stack: error.stack });
     if (error instanceof HttpError) throw error;
-    throw new HttpError(500, 'Failed to retrieve payment status due to an unexpected error.');
-  }
-};
-
-const getOrder = async (orderId, requestingUser) => {
-  try {
-    const order = await Order.findOne({ id: orderId })
-        .populate('customer')
-        .populate('driver');
-
-    if (!order) {
-      throw new HttpError(404, 'Order not found.');
-    }
-
-    if (!requestingUser) {
-        throw new HttpError(401, 'Authentication details are missing.');
-    }
-
-    if (requestingUser.role === 'admin') {
-        return order.toObject({ virtuals: true });
-    }
-
-    if (requestingUser.role === 'customer' && order.customerId !== requestingUser.id) {
-      logger.warn(`[ORDER_SERVICE] Unauthorized customer access: User ${requestingUser.id} attempted to access order ${orderId} belonging to ${order.customerId}`);
-      throw new HttpError(403, 'You are not authorized to view this order.');
-    }
-
-    if (requestingUser.role === 'driver' && order.driverId !== requestingUser.id) {
-      logger.warn(`[ORDER_SERVICE] Unauthorized driver access: Driver ${requestingUser.id} attempted to access order ${orderId} assigned to ${order.driverId}`);
-      throw new HttpError(403, 'You are not authorized to view this order.');
-    }
-
-    return order.toObject({ virtuals: true });
-
-  } catch (error) {
-    logger.error(`[ORDER_SERVICE] Get order ${orderId} error:`, { error: error.message, stack: error.stack });
-    if (error instanceof HttpError) throw error;
-    throw new HttpError(500, 'Failed to retrieve order due to an internal data issue.');
+    throw new HttpError(500, 'Payment initialization failed.');
   }
 };
 

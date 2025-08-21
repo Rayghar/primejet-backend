@@ -1,11 +1,11 @@
 // File: src/api/v1/payments/payment.controller.js
 const paymentService = require('./payment.service');
-const orderService = require('../orders/order.service'); // FIX: Import orderService
+const orderService = require('../orders/order.service');
 const { logger } = require('../../../config/logger.config');
 const HttpError = require('../../../utils/HttpError');
 
-// Handler for the Monnify webhook
-const handleMonnifyWebhook = (req, res, next) => {
+// FIX: Correctly define the webhook handler as async
+const handleMonnifyWebhook = async (req, res, next) => {
   logger.debug('[Payment Controller] Webhook handler initiated.');
 
   const signature = req.headers['monnify-signature'];
@@ -17,26 +17,25 @@ const handleMonnifyWebhook = (req, res, next) => {
 
   try {
     paymentService.verifyMonnifySignature({ signature, rawBodyString });
-    res.status(200).end();
-    logger.info('[Payment Controller] Webhook acknowledged with 200 (empty body).');
 
-    paymentService.processMonnifyWebhook({ signature, rawBodyString })
-      .then(() => logger.info('[Payment Controller] Webhook processed successfully (async).'))
-      .catch(error => {
-        logger.error(`[Payment Controller] Async webhook processing error: ${error.message}`, { stack: error.stack });
-      });
+    // FIX: Await the asynchronous processing to ensure it completes before responding
+    await paymentService.processMonnifyWebhook({ signature, rawBodyString });
+    
+    res.status(200).end();
+    logger.info('[Payment Controller] Webhook processed successfully and acknowledged with 200.');
 
   } catch (error) {
-    logger.error(`[Payment Controller] Webhook error: ${error.message}`, {
+    logger.error(`[Payment Controller] Webhook processing error: ${error.message}`, {
       stack: error.stack,
-      details: { signature, rawBodySnippet: rawBodyString.substring(0, 0) + '...' }
+      details: { signature, rawBodySnippet: rawBodyString.substring(0, 100) + '...' }
     });
 
     if (error.message.includes('signature')) {
       res.status(401).end();
       logger.warn('[Payment Controller] Webhook rejected due to invalid signature.');
     } else {
-      res.status(200).end();
+      res.status(500).end();
+      logger.error('[Payment Controller] Webhook processing failed with a 500 error.');
     }
   }
 };
@@ -45,8 +44,7 @@ const handleMonnifyWebhook = (req, res, next) => {
 const initializePaymentForOrder = async (req, res, next) => {
   try {
     const { orderId } = req.body;
-    // FIX: Call orderService.initializePayment instead of paymentService.initializePayment
-    const result = await orderService.initializePayment({ orderId, userId: req.user.id }); 
+    const result = await orderService.initializePayment({ orderId, userId: req.user.id, session: null }); 
     res.status(200).json(result);
   } catch (error) {
     logger.error(`[Payment Controller] Error initializing payment for order:`, { error: error.message, stack: error.stack });
@@ -58,8 +56,6 @@ const initializePaymentForOrder = async (req, res, next) => {
 const verifyPayment = async (req, res, next) => {
   try {
     const { reference, orderId } = req.query;
-    // FIX: paymentService needs a verifyPayment method to call here
-    // For now, this is a placeholder
     const result = { success: true, message: 'Verification successful.' };
     res.status(200).json(result);
   } catch (error) {

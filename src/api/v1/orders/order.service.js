@@ -47,10 +47,6 @@ const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
   }
 };
 
-// =========================================================================
-// FIX: getOrder function now accepts an optional session and uses it for the query.
-// This is the key fix for the transaction-related bug.
-// =========================================================================
 const getOrder = async (orderId, requestingUser, session = null) => {
   try {
     const queryOptions = {};
@@ -184,20 +180,18 @@ const getOrders = async (options) => {
 };
 
 
-// =========================================================================
-// FIX: Moved initializePayment function after getOrder and before placeOrder.
-// It is now correctly defined before it is called.
-// =========================================================================
 const initializePayment = async ({ orderId, userId, session }) => {
   logger.info(`[Order Service][initializePayment] Initializing payment for order ${orderId} and user ${userId}.`);
   try {
-    // FIX: Pass the transaction session to getOrder
     const order = await getOrder(orderId, { id: userId, role: 'customer' }, session); 
-    // FIX: User.findOne also needs to be part of the transaction
     const user = await User.findOne({ id: userId }).session(session);
     if (!order || !user) {
       throw new HttpError(404, 'Order or user not found for payment initialization.');
     }
+    // FIX: A real payment gateway call would need the user's email, so we need to ensure the user object is passed.
+    // In a real app, this is where you'd call your payment gateway API (e.g., Paystack/Monnify)
+    // using the order and user details.
+    // For now, we return a dummy access code.
     const dummyAccessCode = 'dummy-auth-url-' + uuidv4();
     logger.info(`[Order Service][initializePayment] Successfully initialized dummy payment for order ${orderId}.`);
 
@@ -209,9 +203,7 @@ const initializePayment = async ({ orderId, userId, session }) => {
   }
 };
 
-// =========================================================================
-// NEW FUNCTIONALITY: Replaced O1's placeOrder with the enhanced O2 version
-// =========================================================================
+
 const placeOrder = async (customerId, orderData) => {
   const session = await mongoose.startSession();
   session.startTransaction();

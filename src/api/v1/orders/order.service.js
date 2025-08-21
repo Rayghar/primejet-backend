@@ -11,7 +11,6 @@ const HttpError = require('../../../utils/HttpError');
 const { firestore, admin, isFirebaseInitialized } = require('../../../config/firebase.config.js');
 const { logger } = require('../../../config/logger.config.js');
 const referralService = require('../referrals/referral.service');
-const { sendOrderStatusUpdate } = require('../../../services/fcm.service');
 
 // NEW: Added Dependencies from O2
 // FIX: Removed the import of paymentService to break the circular dependency.

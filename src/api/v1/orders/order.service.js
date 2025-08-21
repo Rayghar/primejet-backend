@@ -44,7 +44,6 @@ const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
   }
 };
 
-
 const getOrders = async (options) => {
   const { status, customerId, driverId, page, limit, userId, role, sortBy } = options;
   try {
@@ -173,7 +172,7 @@ const getOrder = async (orderId, requestingUser) => {
 };
 
 // =========================================================================
-// FUNCTIONALITY FROM O2: Replaced O1's placeOrder with the enhanced O2 version
+// NEW FUNCTIONALITY: Replaced O1's placeOrder with the enhanced O2 version
 // =========================================================================
 const placeOrder = async (customerId, orderData) => {
   const session = await mongoose.startSession();
@@ -352,6 +351,7 @@ const placeOrder = async (customerId, orderData) => {
     if (grandTotalToPayByGateway > 0 && !isPayOnPickup) {
       try {
         logger.debug('[PAYMENT_INIT_START] Order: ' + savedOrder.id);
+        // Call the newly implemented function in paymentService
         const paymentResult = await paymentService.initializePayment({ orderId: savedOrder.id, userId: customerId, session: session });
         accessCode = paymentResult.accessCode;
         logger.info('[PAYMENT_INIT_SUCCESS] AccessCode: ' + accessCode);
@@ -383,17 +383,8 @@ const placeOrder = async (customerId, orderData) => {
 
 /**
  * Updates an order's status and payment details, typically from a webhook.
- * @param {object} params
- * @param {string} params.orderId - The ID of the order to update.
- * @param {string} params.status - The new *desired* primary status for the order (e.g., 'Order Placed', 'Failed').
- * @param {string} params.paymentStatus - The new *desired* payment status (e.g., 'Completed', 'Failed').
- * @param {object} params.paymentDetails - Details of the payment transaction.
- * @param {number} params.verifiedAmount - The amount paid as verified by the payment gateway (in kobo).
- * @param {string} [params.notes] - Additional notes for the status history.
- * @returns {Promise<object>} The updated order object.
- * @throws {HttpError} If order not found, amount mismatch, or other processing errors.
+ * (This function is preserved from your gold copy as requested)
  */
-// NOTE: THIS IS THE EXISTING, PRESERVED FUNCTION FROM O1
 async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetails, verifiedAmount, notes = '' }) {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -411,8 +402,6 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
 
     logger.debug(`[Order Service][updateOrderStatus] Order ${orderId} found. Current DB state: Status='${order.status}', PaymentStatus='${order.paymentStatus}', FinalAmountPaid='${order.finalAmountPaid}', PaymentDetails='${JSON.stringify(order.paymentDetails || {})}'`);
 
-    // Idempotency check: If order is already in a final 'Completed' payment state and
-    // the transactionId matches, skip to avoid duplicate processing.
     if (order.paymentStatus === 'Completed' && paymentDetails?.transactionId && order.paymentDetails?.transactionId === paymentDetails.transactionId) {
         logger.warn(`[Order Service][updateOrderStatus] Order ${orderId} already has paymentStatus 'Completed' with matching transaction ID '${paymentDetails.transactionId}'. Skipping re-update. Aborting transaction.`);
         await session.abortTransaction();
@@ -420,12 +409,9 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
     }
     logger.debug(`[Order Service][updateOrderStatus] Idempotency check passed for order ${orderId}.`);
 
-
-    // Logic for successful payment (Monnify paymentStatus 'PAID' mapping to 'Completed')
     if (paymentStatus === 'Completed') {
         logger.info(`[Order Service][updateOrderStatus] Processing successful payment confirmation for order ${orderId}.`);
 
-        // Crucial validation: Ensure the verified amount from Monnify matches the order's expected total.
         if (verifiedAmount !== order.grandTotal) {
             logger.error(`[Order Service][updateOrderStatus] Amount mismatch for order ${orderId}. Expected: ${order.grandTotal}, Verified: ${verifiedAmount}. Txn Ref: ${paymentDetails.transactionId}. Aborting transaction.`);
             order.status = 'Payment Discrepancy';
@@ -443,9 +429,6 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
             throw new HttpError(400, 'Verified payment amount does not match order total.');
         }
         logger.debug(`[Order Service][updateOrderStatus] Amount verification passed for order ${orderId}.`);
-
-        // Apply wallet refund logic here if needed based on your business rules (e.g., if wallet was used but now gateway covered everything)
-        // Ensure this logic is sound and doesn't double-charge or double-refund.
 
         order.finalAmountPaid = verifiedAmount;
         order.status = 'Order Placed';
@@ -498,7 +481,6 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
     if (order.referrerId && paymentStatus === 'Completed') {
         logger.debug(`[Order Service][updateOrderStatus] Checking referral for order ${orderId} (referrerId: ${order.referrerId}) after webhook confirmation.`);
         try {
-            // Check if this is the referee's FIRST completed order.
             const completedOrdersCount = await Order.countDocuments({
                 customerId: order.customerId,
                 paymentStatus: 'Completed',
@@ -507,36 +489,29 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
 
             if (completedOrdersCount === 1) {
                 logger.info(`[ORDER_SERVICE][updateOrderStatus] Referee ${order.customerId}'s first completed purchase (${order.id}). Triggering referral credit for referrer ${order.referrerId}.`);
-                // This function will handle the reward logic.
                 await referralService.creditReferrerForSuccessfulReferral(order);
             } else {
                 logger.debug(`[ORDER_SERVICE][updateOrderStatus] Referee ${order.customerId} has more than one completed order (${completedOrdersCount}). Not crediting referrer for this order.`);
             }
         } catch (referralError) {
             logger.error(`[ORDER_SERVICE][updateOrderStatus] Error processing referral for order ${orderId}: ${referralError.message}`, { stack: referralError.stack });
-            // We don't throw an error here because the main order update was successful.
         }
     }
-
     return order.toObject();
   } catch (error) {
-    // This catch block handles errors occurring within the transaction.
     await session.abortTransaction();
     logger.error(`[Order Service][updateOrderStatus] Transaction aborted for order ${orderId} due to error. Original error: ${error.message}`, { stack: error.stack, errorObject: error });
 
-    // Ensure HttpError is re-thrown with a valid integer status code.
     if (error instanceof HttpError) {
         const statusCode = Number.isInteger(error.statusCode) ? error.statusCode : 500;
         logger.error(`[Order Service][updateOrderStatus] Propagating HttpError: ${statusCode} - ${error.message}.`);
         throw new HttpError(statusCode, error.message);
     } else {
-        // For unexpected non-HttpError errors, wrap and re-throw as HttpError 500.
         logger.error(`[Order Service][updateOrderStatus] Propagating unexpected non-HttpError as HttpError 500: ${error.message}.`);
         throw new HttpError(500, `Failed to update order status due to an unexpected error: ${error.message}`);
     }
   } finally {
-    // Ensure the session is always ended, regardless of success or failure.
-    if (session.inTransaction()) { // Check if session is still active (e.g., if commit/abort failed for some reason)
+    if (session.inTransaction()) {
         logger.warn(`[Order Service][updateOrderStatus] Session still active in finally block for order ${orderId}. Attempting to end session.`);
         try {
             await session.endSession();
@@ -548,10 +523,10 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
     }
   }
 }
-// =========================================================================
 
 // =========================================================================
-// FUNCTIONALITY FROM O2: New processPayment for first-time referral logic
+// NEW FUNCTIONALITY: Add a processPayment function for first-time referral logic
+// This function is distinct from updateOrderStatus (which handles webhooks).
 // =========================================================================
 const processPayment = async (orderId, paymentData, customerId, customerRole) => {
   const session = await mongoose.startSession();
@@ -608,7 +583,7 @@ const processPayment = async (orderId, paymentData, customerId, customerRole) =>
 };
 // =========================================================================
 
-
+// --- The rest of the functions from your Gold Copy follow ---
 const submitFeedback = async (orderId, feedbackData, customerId, customerRole) => {
   try {
     const user = await User.findOne({ id: customerId });
@@ -714,7 +689,7 @@ const adminGetOrders = async (options) => {
       .skip((page - 1) * limit)
       .limit(limit)
       .populate({
-        path: 'customer', 
+        path: 'customer',
         select: 'id name email phone',
         model: 'User',
       })
@@ -859,7 +834,7 @@ const cancelOrder = async (orderId, customerId, customerRole) => {
 };
 
 // =========================================================================
-// FUNCTIONALITY FROM O2: Replaced O1's getCustomerConsumptionData
+// NEW FUNCTIONALITY: Replaced getCustomerConsumptionData with getCustomerStats
 // =========================================================================
 const getCustomerStats = async (customerId) => {
   try {
@@ -917,6 +892,7 @@ module.exports = {
   getOrders,
   getOrder,
   placeOrder,
+  processPayment, // Add this new function to the exports
   submitFeedback,
   getLocationHistory,
   driverUpdateOrderStatus,
@@ -924,8 +900,7 @@ module.exports = {
   adminUpdateOrderStatus,
   adminAssignDriver,
   cancelOrder,
-  getCustomerStats,
+  getCustomerStats, // Replaces getCustomerConsumptionData
   updateOrderStatus,
   getOrderPaymentStatus,
-  processPayment,
 };

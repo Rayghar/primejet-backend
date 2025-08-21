@@ -1,14 +1,37 @@
 // File: src/api/v1/payments/payment.routes.js
 const express = require('express');
-const bodyParser = require('body-parser'); // Added import for raw body parsing
+const bodyParser = require('body-parser');
 const paymentController = require('./payment.controller');
+const validate = require('../../../middleware/validate.middleware');
+const { initializePaymentSchema, verifyPaymentSchema } = require('./payment.validation');
 const router = express.Router();
 
-// Webhook route with raw body parsing middleware
+console.log('[PAYMENT_ROUTES] Registering payment routes...');
+
+// Route for the Monnify webhook (server-to-server communication)
+// This must use bodyParser.raw to get the raw body string for signature verification.
 router.post(
-  '/monnify/webhook',
-  bodyParser.raw({ type: 'application/json' }), // Added: Parses raw body as Buffer for signature verification
+  '/webhooks/monnify',
+  bodyParser.raw({ type: 'application/json' }),
   paymentController.handleMonnifyWebhook
 );
+
+// New Route: For the frontend to initiate a payment session
+// This route is called by your client-side app to start a payment.
+router.post(
+  '/initialize',
+  validate(initializePaymentSchema),
+  paymentController.initializePaymentForOrder
+);
+
+// New Route: For the frontend to verify a payment after completion
+// This is an optional client-side verification route.
+router.get(
+  '/verify',
+  validate(verifyPaymentSchema),
+  paymentController.verifyPayment
+);
+
+console.log('[PAYMENT_ROUTES] Payment routes registered.');
 
 module.exports = router;

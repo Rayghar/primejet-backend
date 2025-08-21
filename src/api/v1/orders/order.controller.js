@@ -1,6 +1,4 @@
 // File: src/api/v1/orders/order.controller.js
-// << UPDATED FILE >>
-
 const orderService = require('./order.service');
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config.js');
@@ -12,8 +10,10 @@ const placeOrder = async (req, res, next) => {
         logger.error('[ORDER_CONTROLLER] customerId (req.user.id) is invalid:', req.user.id);
         return next(new HttpError(400, 'Invalid user identifier for placing order.'));
     }
+
     const result = await orderService.placeOrder(req.user.id, req.body); 
     res.status(201).json(result);
+
   } catch (error) {
     logger.error(`[ORDER_CONTROLLER] Error in placeOrder for user ${req.user.id}:`, { message: error.message, stack: error.stack });
     next(error);
@@ -30,18 +30,34 @@ const getOrders = async (req, res, next) => {
 
 const getOrder = async (req, res, next) => {
   try {
-    // << MODIFIED: Pass the full user object for authorization checks in the service >>
-    const order = await orderService.getOrder(req.params.orderId, req.user);
+    const order = await orderService.getOrder(req.params.orderId, req.user); // Use full user object as per new service function
     res.status(200).json(order);
   } catch (error) { next(error); }
 };
 
-const processOrderPayment = async (req, res, next) => {
+const getOrderPaymentStatus = async (req, res, next) => {
+  try {
+    const { orderId } = req.params;
+    const requestingUser = req.user;
+    logger.info(`[ORDER_CONTROLLER] Fetching payment status for order ${orderId} by user ${requestingUser.id}`);
+    const paymentStatusData = await orderService.getOrderPaymentStatus(orderId, requestingUser);
+    res.status(200).json(paymentStatusData);
+  } catch (error) {
+    logger.error(`[ORDER_CONTROLLER] Error fetching payment status for order ${req.params.orderId}:`, { message: error.message, stack: error.stack });
+    next(error);
+  }
+};
+
+// =========================================================================
+// NEW FUNCTIONALITY: New controller method to call the new service function
+// =========================================================================
+const processPayment = async (req, res, next) => {
   try {
     const result = await orderService.processPayment(req.params.orderId, req.body, req.user.id, req.user.role);
     res.status(200).json(result);
   } catch (error) { next(error); }
 };
+// =========================================================================
 
 const submitFeedback = async (req, res, next) => {
   try {
@@ -96,7 +112,9 @@ const cancelOrder = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-// << NEW: Controller for the new stats endpoint >>
+// =========================================================================
+// NEW FUNCTIONALITY: New controller method to call the new service function
+// =========================================================================
 const getCustomerStats = async (req, res, next) => {
   try {
     const customerId = req.user.id;
@@ -106,13 +124,13 @@ const getCustomerStats = async (req, res, next) => {
     next(error);
   }
 };
+// =========================================================================
 
-// << MODIFIED: The exports block is updated >>
 module.exports = {
   getOrders,
   getOrder,
   placeOrder,
-  processOrderPayment,
+  processPayment, // Add the new processPayment controller here
   submitFeedback,
   getLocationHistory,
   driverUpdateOrderStatus,
@@ -120,5 +138,6 @@ module.exports = {
   adminUpdateOrderStatus,
   adminAssignDriver,
   cancelOrder,
-  getCustomerStats, // << ADDED this export
+  getCustomerStats, // Export the new function
+  getOrderPaymentStatus
 };

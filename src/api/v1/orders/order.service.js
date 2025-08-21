@@ -15,6 +15,9 @@ const referralService = require('../referrals/referral.service');
 // NEW: Added Dependencies from O2
 const paymentService = require('../payments/payment.service');
 const ServiceZone = require('../../../models/serviceZone.model');
+const dotenv = require('dotenv');
+const { sha512 } = require('js-sha512');
+dotenv.config();
 
 // IMPORTANT: This helper function maps granular driver stop statuses (from Run.Stop enum)
 // to high-level customer-facing order statuses (from Order enum).
@@ -352,7 +355,7 @@ const placeOrder = async (customerId, orderData) => {
       try {
         logger.debug('[PAYMENT_INIT_START] Order: ' + savedOrder.id);
         // Call the newly implemented function in paymentService
-        const paymentResult = await paymentService.initializePayment({ orderId: savedOrder.id, userId: customerId, session: session });
+        const paymentResult = await initializePayment({ orderId: savedOrder.id, userId: customerId, session: session });
         accessCode = paymentResult.accessCode;
         logger.info('[PAYMENT_INIT_SUCCESS] AccessCode: ' + accessCode);
       } catch (error) {

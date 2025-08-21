@@ -48,6 +48,7 @@ const v2ApiRoutes = require('./api/v2/index');
 const app = express();
 logger.info('[APP] Initializing Express application...');
 
+app.set('trust proxy', 1);
 // --- Step 4: Setup Global Middleware ---
 app.use(helmet());
 app.use(cors());

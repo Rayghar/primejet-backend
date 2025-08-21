@@ -54,10 +54,10 @@ router.post(
 );
 
 // =========================================================================
-// NEW FUNCTIONALITY: New route for getCustomerStats
+// FIX: Corrected the endpoint path to match what the front-end is calling.
 // =========================================================================
 router.get(
-  '/me/consumption-stats',
+  '/me/stats', // FIX: Changed from '/me/consumption-stats' to '/me/stats'
   authMiddleware('customer'),
   orderController.getCustomerStats
 );

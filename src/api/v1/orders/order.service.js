@@ -48,11 +48,17 @@ const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
 };
 
 // =========================================================================
-// FIX: getOrder is a dependency for other functions, so it should be defined first.
+// FIX: getOrder function now accepts an optional session and uses it for the query.
+// This is the key fix for the transaction-related bug.
 // =========================================================================
-const getOrder = async (orderId, requestingUser) => {
+const getOrder = async (orderId, requestingUser, session = null) => {
   try {
-    const order = await Order.findOne({ id: orderId })
+    const queryOptions = {};
+    if (session) {
+      queryOptions.session = session;
+    }
+
+    const order = await Order.findOne({ id: orderId }, null, queryOptions)
         .populate('customer')
         .populate('driver');
 
@@ -185,8 +191,9 @@ const getOrders = async (options) => {
 const initializePayment = async ({ orderId, userId, session }) => {
   logger.info(`[Order Service][initializePayment] Initializing payment for order ${orderId} and user ${userId}.`);
   try {
-    // getOrder is now defined, so this call will succeed.
-    const order = await getOrder(orderId, { id: userId, role: 'customer' }); 
+    // FIX: Pass the transaction session to getOrder
+    const order = await getOrder(orderId, { id: userId, role: 'customer' }, session); 
+    // FIX: User.findOne also needs to be part of the transaction
     const user = await User.findOne({ id: userId }).session(session);
     if (!order || !user) {
       throw new HttpError(404, 'Order or user not found for payment initialization.');
@@ -518,13 +525,13 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
             });
 
             if (completedOrdersCount === 1) {
-                logger.info(`[ORDER_SERVICE][updateOrderStatus] Referee ${order.customerId}'s first completed purchase (${order.id}). Triggering referral credit for referrer ${order.referrerId}.`);
+                logger.info(`[ORDER_SERVICE] Referee ${order.customerId}'s first completed purchase (${order.id}). Triggering referral credit for referrer ${order.referrerId}.`);
                 await referralService.creditReferrerForSuccessfulReferral(order);
             } else {
-                logger.debug(`[ORDER_SERVICE][updateOrderStatus] Referee ${order.customerId} has more than one completed order (${completedOrdersCount}). Not crediting referrer for this order.`);
+                logger.debug(`[ORDER_SERVICE] Referee ${order.customerId} has more than one completed order (${completedOrdersCount}). Not crediting referrer for this order.`);
             }
         } catch (referralError) {
-            logger.error(`[ORDER_SERVICE][updateOrderStatus] Error processing referral for order ${orderId}: ${referralError.message}`, { stack: referralError.stack });
+            logger.error(`[ORDER_SERVICE] Error processing referral for order ${orderId}: ${referralError.message}`, { stack: referralError.stack });
         }
     }
     return order.toObject();

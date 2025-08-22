@@ -5,40 +5,40 @@ const { logger } = require('../../../config/logger.config');
 const HttpError = require('../../../utils/HttpError');
 
 // FIX: Correctly define the webhook handler as async
-const handleMonnifyWebhook = async (req, res, next) => {
+const handleMonnifyWebhook = (req, res, next) => { // Can be non-async now
   logger.debug('[Payment Controller] Webhook handler initiated.');
 
   const signature = req.headers['monnify-signature'];
   const rawBody = req.body;
   const rawBodyString = Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : '';
 
-  logger.debug('[Payment Controller] Webhook received. Signature:', signature);
-  logger.debug('[Payment Controller] Raw Body Snippet:', rawBodyString.substring(0, 100) + '...');
-
   try {
+    // 1. First, verify the signature to ensure it's a valid request.
     paymentService.verifyMonnifySignature({ signature, rawBodyString });
 
-    // FIX: Await the asynchronous processing to ensure it completes before responding
-    await paymentService.processMonnifyWebhook({ signature, rawBodyString });
-    
-    // FIX: Only send a 200 response after successful processing
-    res.status(200).end();
-    logger.info('[Payment Controller] Webhook processed successfully and acknowledged with 200.');
+    // 2. Immediately send a 200 OK to Monnify.
+    // This acknowledges receipt and prevents timeouts and retries.
+    res.status(200).send('Webhook Acknowledged');
+    logger.info('[Payment Controller] Webhook signature verified and acknowledged with 200.');
+
+    // 3. Process the logic asynchronously in the background.
+    // We don't await this promise. The response is already sent.
+    paymentService.processMonnifyWebhook({ signature, rawBodyString })
+      .then(() => {
+        logger.info('[Payment Controller] Background webhook processing completed successfully.');
+      })
+      .catch((processingError) => {
+        // Log errors from the background task thoroughly.
+        logger.error(`[Payment Controller] Background webhook processing failed: ${processingError.message}`, {
+          stack: processingError.stack,
+          details: { signature, rawBodySnippet: rawBodyString.substring(0, 100) + '...' }
+        });
+      });
 
   } catch (error) {
-    logger.error(`[Payment Controller] Webhook processing error: ${error.message}`, {
-      stack: error.stack,
-      details: { signature, rawBodySnippet: rawBodyString.substring(0, 100) + '...' }
-    });
-
-    if (error.message.includes('signature')) {
-      res.status(401).end();
-      logger.warn('[Payment Controller] Webhook rejected due to invalid signature.');
-    } else {
-      // FIX: Send a 500 for other errors to signal a processing failure to Monnify
-      res.status(500).end();
-      logger.error('[Payment Controller] Webhook processing failed with a 500 error.');
-    }
+    // This catch block now only handles signature verification errors.
+    logger.error(`[Payment Controller] Webhook signature verification failed: ${error.message}`);
+    res.status(401).send('Invalid Signature');
   }
 };
 

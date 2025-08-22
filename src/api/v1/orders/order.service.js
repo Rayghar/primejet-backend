@@ -379,7 +379,7 @@ const placeOrder = async (customerId, orderData) => {
     if (grandTotalToPayByGateway > 0 && !isPayOnPickup) {
       try {
         logger.debug('[PAYMENT_INIT_START] Order: ' + savedOrder.id);
-        const paymentResult = await paymentService.initializePayment({ orderId: savedOrder.id, userId: customerId, session: session });
+        const paymentResult = await initializePayment({ orderId: savedOrder.id, userId: customerId, session: session });
         accessCode = paymentResult.accessCode;
         logger.info('[PAYMENT_INIT_SUCCESS] AccessCode: ' + accessCode);
       } catch (error) {

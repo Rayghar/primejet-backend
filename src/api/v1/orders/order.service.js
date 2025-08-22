@@ -71,9 +71,10 @@ const initializePayment = async ({ orderId, userId, session }) => {
   }
 };
 
-const getOrder = async (orderId, requestingUser) => {
+const getOrder = async (orderId, requestingUser, session) => {
   try {
     const order = await Order.findOne({ id: orderId })
+        .session(session)
         .populate('customer')
         .populate('driver');
 

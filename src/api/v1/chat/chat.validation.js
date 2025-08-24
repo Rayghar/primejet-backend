@@ -2,16 +2,20 @@
 const Joi = require('joi');
 
 const initiateChatSchema = Joi.object({
-  orderId: Joi.string().required().messages({ // Assuming chat is often related to an order
+  orderId: Joi.string().required().messages({
     'any.required': 'Order ID is required to initiate chat.',
     'string.empty': 'Order ID cannot be empty.',
   }),
-  recipientId: Joi.string().required().messages({ // The ID of the user to chat with
+  // <<< ADD THIS SECTION >>>
+  senderId: Joi.string().required().messages({
+    'any.required': 'Sender ID is required to initiate chat.',
+    'string.empty': 'Sender ID cannot be empty.',
+  }),
+  // <<< END OF ADDITION >>>
+  recipientId: Joi.string().required().messages({
     'any.required': 'Recipient ID is required to initiate chat.',
     'string.empty': 'Recipient ID cannot be empty.',
   }),
-  // You might add other optional fields, e.g., initialMessage
-  // initialMessage: Joi.string().optional().max(1000),
 });
 
 module.exports = {

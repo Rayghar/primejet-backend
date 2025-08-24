@@ -10,8 +10,8 @@ const cors = require('cors');
 const morgan = require('morgan');
 
 const { logger } = require('./config/logger.config');
-require('./config/firebase.config');
-
+const { initializeFirebase } = require('./services/firebase.service'); // Adjust path if needed
+initializeFirebase(); // Initialize Firebase at app startup
 const { errorHandler } = require('./middleware/error.handler');
 const { rateLimiter } = require('./middleware/rateLimit.middleware');
 const { setupMetrics } = require('./utils/metrics');
@@ -40,6 +40,7 @@ const dataEntryRoutes = require('./api/v2/data-entry/data-entry.routes');
 const financialsRoutes = require('./api/v2/financials/financials.routes');
 const financeRoutes = require('./api/v2/finance/finanace.routes');
 const zoneRoutes = require('./api/v1/zones/zone.routes');
+const fcmRoutes = require('./api/v1/fcm/fcm.routes');
 
 // --- Step 2: Import All v2 Route Handlers ---
 const v2ApiRoutes = require('./api/v2/index');
@@ -88,6 +89,8 @@ app.use('/api/v1/agents', agentRoutesV1);
 app.use('/api/v1/orchestration', runOrchestrationRoutesV1);
 app.use('/api/v1/voice', voiceRoutesV1);
 app.use('/api/v1/zones', zoneRoutes);
+app.use('/api/v1/fcm', fcmRoutes);
+
 logger.info('[APP] API v1 routes setup complete.');
 
 // Mount v2 API routes

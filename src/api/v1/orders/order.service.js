@@ -11,6 +11,7 @@ const HttpError = require('../../../utils/HttpError');
 const { firestore, admin, isFirebaseInitialized } = require('../../../config/firebase.config.js');
 const { logger } = require('../../../config/logger.config.js');
 const referralService = require('../referrals/referral.service');
+const firebaseService = require('../../../services/firebase.service');
 
 // NEW: Added Dependencies from O2
 const paymentService = require('../payments/payment.service'); 
@@ -614,31 +615,78 @@ const processPayment = async (orderId, paymentData, customerId, customerRole) =>
 };
 // =========================================================================
 
-// --- The rest of the functions from your Gold Copy follow ---
-const submitFeedback = async (orderId, feedbackData, customerId, customerRole) => {
+/**
+ * Submits feedback for a given order and updates the driver's rating.
+ * @param {string} orderId - The ID of the order.
+ * @param {object} feedbackData - The feedback data containing rating and comment.
+ * @param {string} userId - The ID of the customer submitting feedback.
+ * @returns {Promise<Order>} The updated order object.
+ */
+const submitFeedback = async (orderId, feedbackData, userId) => {
+  // <<< FIX: Get the initialized Firestore instance >>>
+  const firestore = firebaseService.getFirestore();
+
+  const session = await Order.startSession();
+  session.startTransaction();
+
   try {
-    const user = await User.findOne({ id: customerId });
-    if (!user) throw new HttpError(404, 'User not found for submitting feedback.');
-    if (customerRole !== 'customer' || user.role !== 'customer') {
-      throw new HttpError(403, 'Insufficient permissions to submit feedback.');
+    const order = await Order.findOne({ id: orderId, customerId: userId }).session(session);
+
+    if (!order) {
+      throw new HttpError(404, 'Order not found or you are not authorized to submit feedback.');
     }
-    const order = await Order.findOne({ id: orderId, customerId });
-    if (!order) throw new HttpError(404, 'Order not found or does not belong to this user.');
+    if (order.feedback) {
+      throw new HttpError(400, 'Feedback has already been submitted for this order.');
+    }
     if (order.status !== 'Delivered') {
-      throw new HttpError(400, 'Feedback can only be submitted for delivered orders.');
+        throw new HttpError(400, 'Feedback can only be submitted for delivered orders.');
     }
-    const feedbackRef = firestore.collection('feedback').doc(`${orderId}_${customerId}`);
-    await feedbackRef.set({
-      orderId, customerId, driverId: order.driverId || null,
-      rating: feedbackData.rating, comment: feedbackData.comment,
-      createdAt: new Date(), userName: user.name,
+
+    // Save feedback to the Order model in MongoDB
+    order.feedback = {
+      rating: feedbackData.rating,
+      comment: feedbackData.comment,
+      date: new Date(),
+    };
+    await order.save({ session });
+
+    // If there's a driver, update their average rating
+    if (order.driverId) {
+      const driver = await User.findOne({ id: order.driverId }).session(session);
+      if (driver) {
+        const currentTotalRating = driver.driverProfile.averageRating * driver.driverProfile.ratingCount;
+        const newRatingCount = driver.driverProfile.ratingCount + 1;
+        const newAverageRating = (currentTotalRating + feedbackData.rating) / newRatingCount;
+
+        driver.driverProfile.averageRating = parseFloat(newAverageRating.toFixed(2));
+        driver.driverProfile.ratingCount = newRatingCount;
+        await driver.save({ session });
+      }
+    }
+
+    // Save a copy of the feedback to the Firestore 'feedback' collection
+    // This will now work correctly
+    await firestore.collection('feedback').add({
+      orderId: order.id,
+      customerId: userId,
+      driverId: order.driverId,
+      rating: feedbackData.rating,
+      comment: feedbackData.comment,
+      createdAt: new Date(),
     });
-    return { message: 'Feedback submitted successfully.' };
+
+    await session.commitTransaction();
+    session.endSession();
+
+    logger.info(`Feedback submitted successfully for order ${orderId} by user ${userId}.`);
+    return order.toObject();
+
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    logger.error(`Error submitting feedback for order ${orderId}:`, error);
     if (error instanceof HttpError) throw error;
-    logger.error('Unexpected error in submitFeedback:', { error: error.message, stack: error.stack, orderId});
-    if (error.code) { throw new HttpError(500, `Failed to submit feedback (Firebase error: ${error.code})`);}
-    throw new HttpError(500, `Failed to submit feedback: ${error.message || 'An unexpected error occurred.'}`);
+    throw new HttpError(500, `Failed to submit feedback: ${error.message}`);
   }
 };
 

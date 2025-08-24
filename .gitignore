@@ -38,3 +38,6 @@ firebase-credentials.json # CRITICAL: Do not commit this!
 
 # Test coverage
 /coverage
+
+# Ignore Firebase service account key
+serviceAccountKey.json

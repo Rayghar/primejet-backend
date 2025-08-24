@@ -8,7 +8,7 @@ const { logger } = require('../config/logger.config.js');
 // 1. Replace this path with the actual path to your service account key file.
 // 2. DO NOT commit the 'serviceAccountKey.json' file to your Git repository.
 // 3. In production, it's best to load this path from an environment variable.
-const serviceAccount = require('../../serviceAccountKey.json'); // Assumes key is in the project root
+//const serviceAccount = require('../../serviceAccountKey.json'); // Assumes key is in the project root
 
 let firestore;
 
@@ -21,7 +21,7 @@ const initializeFirebase = () => {
     return;
   }
 
-  // <<< UPDATED LOGIC TO HANDLE PRODUCTION AND LOCAL ENVIRONMENTS >>>
+  // <<< THIS LOGIC HANDLES BOTH PRODUCTION AND LOCAL ENVIRONMENTS >>>
   let serviceAccount;
   const isProduction = process.env.NODE_ENV === 'production';
 
@@ -66,6 +66,8 @@ const getFirestore = () => {
   }
   return firestore;
 };
+
+
 
 
 /**

@@ -16,14 +16,44 @@ let firestore;
  * Initializes the Firebase Admin SDK. This should be called once when your server starts.
  */
 const initializeFirebase = () => {
-  // Check if the app is already initialized to prevent errors
-  if (!admin.apps.length) {
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-    });
-    firestore = admin.firestore();
-    logger.info('Firebase Admin SDK Initialized.');
+  if (admin.apps.length) {
+    logger.info('Firebase Admin SDK already initialized.');
+    return;
   }
+
+  // <<< UPDATED LOGIC TO HANDLE PRODUCTION AND LOCAL ENVIRONMENTS >>>
+  let serviceAccount;
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  if (isProduction && process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+    // On Render (production), parse the key from the environment variable.
+    try {
+      serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+      logger.info('Initializing Firebase Admin SDK using environment variable.');
+    } catch (error) {
+      logger.error('Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY environment variable.', error);
+      throw new Error('Firebase configuration error.');
+    }
+  } else if (!isProduction) {
+    // On your local machine, load the key from the file.
+    try {
+      serviceAccount = require('../../serviceAccountKey.json');
+      logger.info('Initializing Firebase Admin SDK using local file.');
+    } catch (error) {
+      logger.error('Cannot find local serviceAccountKey.json file.', error);
+      throw new Error('Local Firebase credentials file not found.');
+    }
+  } else {
+    logger.error('FIREBASE_SERVICE_ACCOUNT_KEY environment variable not set for production.');
+    throw new Error('Firebase configuration is missing for production environment.');
+  }
+
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
+
+  firestore = admin.firestore();
+  logger.info('Firebase Admin SDK Initialized Successfully.');
 };
 
 /**
@@ -32,10 +62,11 @@ const initializeFirebase = () => {
  */
 const getFirestore = () => {
   if (!firestore) {
-    throw new HttpError(503, 'Firebase (Firestore) has not been initialized. Call initializeFirebase() first.');
+    throw new HttpError(503, 'Firebase (Firestore) has not been initialized.');
   }
   return firestore;
 };
+
 
 /**
  * Initiates a chat session in Firestore between two users for a given order.

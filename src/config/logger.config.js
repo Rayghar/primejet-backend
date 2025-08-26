@@ -10,7 +10,8 @@ const consoleFormat = printf(({ level, message, timestamp, stack }) => {
 });
 
 const logger = winston.createLogger({
-  level: globalConfig.logLevel || 'info', // Overall logger level
+  level: process.env.NODE_ENV === 'production' ? 'info' : 'debug', // Change 'info' to 'debug' in development
+ //globalConfig.logLevel || 'info', // Overall logger level
   format: combine( // Format for file transports (if any) and default exception handlers
     timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
     json() // Use JSON format for file logs for easier parsing by log management tools

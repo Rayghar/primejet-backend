@@ -56,6 +56,7 @@ app.use(cors());
 app.use(morgan('combined', { stream: logger.stream }));
 app.use('/api', rateLimiter);
 app.use(require('./middleware/logger_middleware')); // CORRECT: Moved to a proper position to log all requests.
+app.post('/api/v1/webhooks/monnify', bodyParser.raw({ type: 'application/json' }), paymentController.handleMonnifyWebhook);
 
 // --- Step 5: Setup Body Parsers ---
 // Correctly places body parsers after security and logging middleware.

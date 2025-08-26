@@ -63,6 +63,7 @@ const orderSchema = new mongoose.Schema(
             'Pending Payment', 
             'Order Placed', 
             'Awaiting Payment on Arrival', 
+            'Awaiting Driver Arrival', // << NEW: More descriptive status
             'Processing', 
             'Driver Assigned', 
             'Out for Delivery', 

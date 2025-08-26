@@ -299,7 +299,7 @@ const placeOrder = async (customerId, orderData) => {
         logger.warn('[PAY_ON_PICKUP_FAIL] Not first order');
         throw new HttpError(403, 'Pay on Arrival is only available for your first order.');
       }
-      orderStatus = 'Awaiting Payment on Arrival';
+      orderStatus = 'Awaiting Driver Arrival';
       paymentStatusCurrent = 'Pending';
       isPayOnPickup = true;
       logger.info('[PAY_ON_PICKUP_ENABLED]');
@@ -407,6 +407,34 @@ const placeOrder = async (customerId, orderData) => {
   } finally {
     session.endSession();
   }
+};
+
+// << NEW FUNCTION >>
+const driverArrivedForPickup = async (orderId, driverId) => {
+  const order = await Order.findOne({ id: orderId, driverId: driverId });
+  if (!order) {
+    throw new HttpError(404, 'Order not found or not assigned to this driver.');
+  }
+  if (order.status !== 'Awaiting Driver Arrival') {
+    throw new HttpError(400, `Order is not awaiting arrival. Current status: ${order.status}`);
+  }
+
+  // This is the key transition to enable customer payment:
+  order.status = 'Pending Payment';
+  order.statusHistory.push({
+    status: 'Pending Payment',
+    timestamp: new Date(),
+    notes: 'Driver has arrived at the pickup location. Awaiting customer payment.',
+    updatedBy: driverId,
+    updaterRole: 'driver'
+  });
+
+  await order.save();
+
+  // In a full implementation, you would trigger a push notification to the customer here.
+  // Example: firebaseService.sendPushNotification(customer.fcmToken, "Your Driver Has Arrived!", "Please complete your payment in the app to proceed.");
+
+  return order.toObject();
 };
 // =========================================================================
 
@@ -982,4 +1010,5 @@ module.exports = {
   getCustomerStats, // Replaces getCustomerConsumptionData
   updateOrderStatus,
   getOrderPaymentStatus,
+  driverArrivedForPickup, // Export the new function
 };

@@ -111,6 +111,13 @@ router.get(
   orderController.getLocationHistory
 );
 
+// << NEW ROUTE for the driver to trigger payment >>
+router.put(
+  '/:orderId/driver-arrived',
+  authMiddleware('driver'),
+  orderController.driverArrivedForPickup
+);
+
 console.log('[ORDER_ROUTES] Order routes registered.');
 
 module.exports = router;

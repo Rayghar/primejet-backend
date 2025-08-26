@@ -22,7 +22,7 @@ const endOfDay = (date) => {
 };
 
 // --- Main Service Functions ---
-
+// (createOrGetDailySummary, updateSummaryMeters, createSaleEntry, createExpenseEntry, etc. remain unchanged)
 const createOrGetDailySummary = async (branchId, cashierName, pricePerKg, userId) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -36,11 +36,12 @@ const createOrGetDailySummary = async (branchId, cashierName, pricePerKg, userId
     if (dailySummary) {
         console.debug('[DEBUG] Service: Found existing daily summary:', dailySummary._id);
         dailySummary.cashierName = cashierName;
-        dailySummary.pricePerKg = pricePerKg; // Update price in case it changed
+        dailySummary.pricePerKg = pricePerKg;
         await dailySummary.save();
     } else {
         console.debug('[DEBUG] Service: No active summary found. Creating new daily summary.');
         dailySummary = new DailySummary({
+            summaryId: uuidv4(),
             date: new Date(),
             branchId,
             cashierName,
@@ -48,8 +49,8 @@ const createOrGetDailySummary = async (branchId, cashierName, pricePerKg, userId
             status: 'in_progress',
             openingMeters: { meterA: 0, meterB: 0 },
             closingMeters: { meterA: 0, meterB: 0 },
-            sales: { totalRevenue: 0, totalKgSold: 0, posAmount: 0, cashAmount: 0, transferAmount: 0 },
-            expenses: { totalAmount: 0, items: [] },
+            sales: { totalRevenue: 0, totalKgSold: 0, posAmount: 0, cashAmount: 0, transferAmount: 0, items: [] },
+            expenses: { total: 0, items: [] },
             reconciliation: { calculatedRevenue: 0, discrepancy: 0 },
             managerApproval: {},
         });
@@ -84,15 +85,14 @@ const createSaleEntry = async (saleData) => {
     const newSale = new SaleTransaction({ ...saleData });
     await newSale.save();
 
-    // Update daily summary totals
     summary.sales.totalRevenue = (summary.sales.totalRevenue || 0) + newSale.amount;
     summary.sales.totalKgSold = (summary.sales.totalKgSold || 0) + newSale.kgSold;
     
     if (newSale.transactionType === 'POS') {
         summary.sales.posAmount = (summary.sales.posAmount || 0) + newSale.amount;
-    } else if (newSale.transactionType === 'CASH') {
+    } else if (newSale.transactionType === 'CASH' || newSale.transactionType === 'Cash') {
         summary.sales.cashAmount = (summary.sales.cashAmount || 0) + newSale.amount;
-    } else if (newSale.transactionType === 'TRANSFER') {
+    } else if (newSale.transactionType === 'TRANSFER' || newSale.transactionType === 'Transfer') {
         summary.sales.transferAmount = (summary.sales.transferAmount || 0) + newSale.amount;
     }
 
@@ -109,7 +109,6 @@ const createExpenseEntry = async (expenseData) => {
     const newExpense = new ExpenseTransaction({ ...expenseData });
     await newExpense.save();
 
-    // Update daily summary totals
     summary.expenses.total = (summary.expenses.total || 0) + newExpense.amount;
     summary.expenses.items.push(newExpense._id);
     await summary.save();
@@ -187,10 +186,12 @@ const getTransactionHistory = async (filters = {}) => {
     const { startDate, endDate, branchId } = filters;
     const query = {};
 
-    if (startDate) query.createdAt = { $gte: startOfDay(startDate) };
+    // Note: This query correctly uses the 'date' field. 
+    // All new and migrated data should have this field.
+    if (startDate) query.date = { $gte: startOfDay(startDate) };
     if (endDate) {
-        if (!query.createdAt) query.createdAt = {};
-        query.createdAt.$lte = endOfDay(endDate);
+        if (!query.date) query.date = {};
+        query.date.$lte = endOfDay(endDate);
     }
     if (branchId) query.branchId = branchId;
 
@@ -198,7 +199,14 @@ const getTransactionHistory = async (filters = {}) => {
     const expenses = await ExpenseTransaction.find(query).populate('branchId').lean();
 
     const history = [...sales.map(s => ({...s, type: 'Sale'})), ...expenses.map(e => ({...e, type: 'Expense'}))];
-    history.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    
+    // FIX: Updated sorting logic to use 'date' first, and fall back to 'createdAt'.
+    history.sort((a, b) => {
+        const dateA = new Date(a.date || a.createdAt);
+        const dateB = new Date(b.date || b.createdAt);
+        return dateB - dateA;
+    });
+
     return history;
 };
 
@@ -207,23 +215,19 @@ const bulkAddDailySummaries = async (summaries) => {
         throw new HttpError(400, 'Invalid or empty array of summaries provided.');
     }
     console.debug(`[DEBUG] Service: Starting bulk migration for ${summaries.length} daily summaries.`);
-    const validatedSummaries = await Promise.all(summaries.map(async summary => {
+    
+    // REMEDIATION: Removed the faulty branch lookup. Mongoose will cast the string ObjectId correctly.
+    const validatedSummaries = summaries.map(summary => {
         if (!summary.summaryId) {
-            summary.summaryId = uuidv4();
+            // In the log, the field was `dailySummaryId`, let's stick to that for consistency
+            summary.summaryId = summary.dailySummaryId || uuidv4();
+            delete summary.dailySummaryId;
         }
         if (!summary.status) {
             summary.status = 'approved';
         }
-        if (summary.branchId) {
-            const branch = await Plant.findOne({ plantId: summary.branchId });
-            if (branch) {
-                summary.branchId = branch._id;
-            } else {
-                throw new HttpError(404, `Branch with UUID ${summary.branchId} not found.`);
-            }
-        }
         return summary;
-    }));
+    });
 
     const result = await DailySummary.insertMany(validatedSummaries);
     console.debug(`[DEBUG] Service: Successfully migrated ${result.length} daily summaries.`);
@@ -235,27 +239,29 @@ const bulkAddExpenseTransactions = async (expenses) => {
         throw new HttpError(400, 'Invalid or empty array of expenses provided.');
     }
     console.debug(`[DEBUG] Service: Starting bulk migration for ${expenses.length} expense transactions.`);
+    
     const validatedExpenses = await Promise.all(expenses.map(async expense => {
-        if (expense.branchId) {
-            const branch = await Plant.findOne({ plantId: expense.branchId });
-            if (branch) {
-                expense.branchId = branch._id;
-            } else {
-                throw new HttpError(404, `Branch with UUID ${expense.branchId} not found.`);
-            }
+        if (!expense.date) {
+            // Ensure a date is provided for migration
+            throw new HttpError(400, `Missing 'date' field for expense: ${expense.description}`);
         }
+
         if (expense.dailySummaryId) {
-            expense.dailySummaryId = mongoose.Types.ObjectId(expense.dailySummaryId);
+            const summary = await DailySummary.findOne({ summaryId: expense.dailySummaryId });
+            if (!summary) {
+                throw new HttpError(404, `Daily summary with UUID ${expense.dailySummaryId} not found.`);
+            }
+            expense.dailySummaryId = summary._id;
         }
-        if (expense.cashierId) {
-            expense.cashierId = mongoose.Types.ObjectId(expense.cashierId);
-        }
+        
         return expense;
     }));
+    
     const result = await ExpenseTransaction.insertMany(validatedExpenses);
     console.debug(`[DEBUG] Service: Successfully migrated ${result.length} expense transactions.`);
     return result;
 };
+
 
 module.exports = {
     createOrGetDailySummary,

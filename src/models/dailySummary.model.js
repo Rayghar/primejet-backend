@@ -3,8 +3,8 @@ const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
 
 const dailySummarySchema = new mongoose.Schema({
-    // The default _id field is sufficient. We will use `summaryId` for human-readable ID.
-    summaryId: { 
+    // The default _id field is sufficient. We will use `dailySummaryId` for human-readable ID.
+    dailySummaryId: { 
         type: String, 
         unique: true, 
         required: true, 
@@ -87,7 +87,7 @@ const dailySummarySchema = new mongoose.Schema({
 
 // We should handle the case where 'id_1' index exists and drops it.
 // This is a one-time migration step.
-dailySummarySchema.index({ summaryId: 1 }, { unique: true });
+dailySummarySchema.index({ dailySummaryId: 1 }, { unique: true });
 
 const DailySummary = mongoose.model('DailySummary', dailySummarySchema);
 module.exports = DailySummary;

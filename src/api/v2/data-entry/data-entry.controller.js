@@ -287,13 +287,14 @@ const migrateExpenseTransactions = async (req, res, next) => {
         if (!Array.isArray(expenses) || expenses.length === 0) {
             throw new HttpError(400, 'Expenses must be a non-empty array');
         }
+
+        // REMEDIATION: Removed the strict ObjectId validation for dailySummaryId
+        // to allow UUIDs from the migration data to pass to the service layer.
         for (const expense of expenses) {
             if (!mongoose.Types.ObjectId.isValid(expense.branchId)) {
                 throw new HttpError(400, `Invalid branchId in expense: ${expense.branchId}`);
             }
-            if (expense.dailySummaryId && !mongoose.Types.ObjectId.isValid(expense.dailySummaryId)) {
-                throw new HttpError(400, `Invalid dailySummaryId in expense: ${expense.dailySummaryId}`);
-            }
+            // The dailySummaryId will be a UUID string, so we no longer check for ObjectId validity here.
             if (expense.cashierId && !mongoose.Types.ObjectId.isValid(expense.cashierId)) {
                 throw new HttpError(400, `Invalid cashierId in expense: ${expense.cashierId}`);
             }
@@ -307,6 +308,7 @@ const migrateExpenseTransactions = async (req, res, next) => {
                 throw new HttpError(400, 'Description must be a non-empty string');
             }
         }
+
         const result = await dataEntryService.bulkAddExpenseTransactions(expenses);
         res.status(201).json({ message: 'Expense transactions migrated successfully.', count: result.length });
     } catch (error) {

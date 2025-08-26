@@ -17,12 +17,11 @@ const getFinancialStatements = async (req, res, next) => {
       branchMatchQuery.branchId = branchId;
     }
 
-    // --- NEW: Fetch data from all relevant sources ---
     const orders = await Order.find({
         paymentStatus: 'Completed',
         status: 'Delivered',
         ...branchMatchQuery
-    }).lean(); // Use .lean() for faster aggregation
+    }).lean();
     const dailySummaries = await DailySummary.find({
         status: 'approved',
         ...branchMatchQuery
@@ -35,12 +34,10 @@ const getFinancialStatements = async (req, res, next) => {
     const config = await Config.findOne({});
     const stockIns = await StockIn.find({});
 
-    // --- Income Statement Calculations ---
     const monthlyTotals = {};
     const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const COGS_MARGIN = 0.773;
 
-    // Aggregate revenue and expenses from Orders
     orders.forEach(order => {
         const date = order.orderDate;
         if (!date) return;
@@ -51,7 +48,6 @@ const getFinancialStatements = async (req, res, next) => {
         monthlyTotals[monthKey].revenue += order.grandTotal;
     });
 
-    // Aggregate revenue and expenses from approved DailySummaries
     dailySummaries.forEach(summary => {
         const date = summary.date;
         if (!date) return;
@@ -63,10 +59,10 @@ const getFinancialStatements = async (req, res, next) => {
         monthlyTotals[monthKey].opCosts += summary.expenses.total || 0;
     });
 
-    // Also include individual expense transactions not linked to a summary (if any)
     expenses.forEach(expense => {
-        if (expense.dailySummaryId) return; // Skip if it's already part of a summary
-        const date = expense.createdAt; // Assuming expenses have a createdAt date
+        if (expense.dailySummaryId) return;
+        // FIX: Use the historical 'date' field instead of 'createdAt'.
+        const date = expense.date; 
         if (!date) return;
         const monthKey = `${date.getFullYear()}-${date.getMonth()}`;
         if (!monthlyTotals[monthKey]) {
@@ -88,7 +84,6 @@ const getFinancialStatements = async (req, res, next) => {
         return acc;
     }, { revenue: 0, cogs: 0, grossProfit: 0, opCosts: 0, netProfit: 0 });
 
-    // --- Balance Sheet Calculations ---
     const grossFixedAssets = assets.reduce((sum, asset) => sum + asset.cost, 0);
     const totalDepreciation = grossFixedAssets * 0.10;
     const netFixedAssets = grossFixedAssets - totalDepreciation;
@@ -98,7 +93,6 @@ const getFinancialStatements = async (req, res, next) => {
     const retainedEarnings = incomeTotals.netProfit;
     const totalEquity = shareCapital + retainedEarnings;
 
-    // --- NEW: Calculate total kg sold from both sources ---
     const totalKgSoldFromOrders = orders.reduce((sum, order) => sum + order.items.reduce((itemSum, item) => itemSum + (item.quantity || 0), 0), 0);
     const totalKgSoldFromSummaries = dailySummaries.reduce((sum, summary) => sum + (summary.sales.totalKgSold || 0), 0);
     const totalKgSold = totalKgSoldFromOrders + totalKgSoldFromSummaries;
@@ -110,7 +104,6 @@ const getFinancialStatements = async (req, res, next) => {
     const averageCostPerKg = totalKgStocked > 0 ? totalCostOfStockedLPG / totalKgStocked : 850;
     const currentInventoryValue = remainingKg * averageCostPerKg;
 
-    // --- Cash Flow Statement Calculations ---
     const cashFromFinancing = totalLoans + shareCapital;
     const cashForInvesting = grossFixedAssets;
     const cashFromOps = incomeTotals.netProfit + totalDepreciation;

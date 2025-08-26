@@ -1,3 +1,4 @@
+// src/models/expenseTransaction.model.js
 const mongoose = require('mongoose');
 
 const expenseTransactionSchema = new mongoose.Schema({
@@ -7,6 +8,8 @@ const expenseTransactionSchema = new mongoose.Schema({
     description: { type: String, required: true },
     amount: { type: Number, required: true, min: 0 },
     isReconciled: { type: Boolean, default: false },
+    // FIX: Add a date field to store the historical transaction date.
+    date: { type: Date, required: true, default: Date.now },
 }, { timestamps: true });
 
 const ExpenseTransaction = mongoose.model('ExpenseTransaction', expenseTransactionSchema);

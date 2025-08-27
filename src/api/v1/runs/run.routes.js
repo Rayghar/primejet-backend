@@ -65,11 +65,11 @@ router.get(
   runController.getAssignedRuns
 );
 
-router.post(
+/*router.post(
   '/driver/runs/:runId/accept',
   authMiddleware('driver'),
   runController.acceptRun
-);
+);*/
 
 // <<< FIX: Added the missing route to handle ending a run >>>
 router.post(

@@ -303,7 +303,7 @@ const getAssignedRuns = async (driverId) => {
 };
 
 
-const acceptRun = async (batchOrRunId, driverId) => { 
+/*const acceptRun = async (batchOrRunId, driverId) => { 
   try {
     const existingActiveRun = await Run.findOne({ 
       driverId: driverId, 
@@ -360,7 +360,7 @@ const acceptRun = async (batchOrRunId, driverId) => {
     throw new HttpError(500, 'Failed to accept the run due to a server error.');
   }
 };
-
+*/
 const endRun = async (runId, driverId) => {
     const run = await Run.findOne({ id: runId, driverId: driverId });
     if (!run) {
@@ -478,7 +478,6 @@ module.exports = {
   getUnassignedOrders,
   getRun,
   getAssignedRuns,
-  acceptRun,
   driverUpdateStopStatus,
   createRunFromBatch,
   assignDriverToRun,

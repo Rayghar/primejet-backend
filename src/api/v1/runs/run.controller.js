@@ -1,4 +1,4 @@
-// src/api/v1/runs/run.controller.js
+// File: src/api/v1/runs/run.controller.js
 const runService = require('./run.service');
 const HttpError = require('../../../utils/HttpError');
 
@@ -91,24 +91,14 @@ const getAssignedRuns = async (req, res, next) => {
   }
 };
 
-const acceptRun = async (req, res, next) => {
-  try {
-    const { runId } = req.params;
-    console.log(`[RUN_CONTROLLER] Driver ${req.user.id} accepting run ${runId}`);
-    const acceptedRun = await runService.acceptRun(runId, req.user.id);
-    res.status(200).json({ message: `Run ${runId} accepted successfully.`, run: acceptedRun });
-  } catch (error) {
-    console.error('[RUN_CONTROLLER] Error in acceptRun:', error);
-    next(error);
-  }
-};
+// Removed the buggy 'acceptRun' controller function
 
 const driverUpdateStopStatus = async (req, res, next) => {
   try {
     const { runId, stopId } = req.params;
     const { status, notes } = req.body;
     console.log(`[RUN_CONTROLLER] Driver ${req.user.id} updating stop ${stopId} in run ${runId} to status ${status}`);
-    const result = await runService.driverUpdateStopStatus(runId, stopId, status, notes, req.user.id);
+    const result = await runService.driverUpdateStopStatus(req.user.id, runId, stopId, status, notes);
     res.status(200).json(result);
   } catch (error) {
     console.error('[RUN_CONTROLLER] Error updating stop status:', error);
@@ -116,7 +106,6 @@ const driverUpdateStopStatus = async (req, res, next) => {
   }
 };
 
-// ========================== FIX IS HERE ==========================
 // The new controller function for handling history requests.
 const getRunHistory = async (req, res, next) => {
   try {
@@ -131,20 +120,18 @@ const getRunHistory = async (req, res, next) => {
   }
 };
 
-// << NEW CODE TO ADD >>
 const driverAcceptRun = async (req, res, next) => {
   try {
     const { runId } = req.params;
+    console.log(`[RUN_CONTROLLER] Driver ${req.user.id} accepting run ${runId}`);
     const result = await runService.driverAcceptRun(req.user.id, runId);
     res.status(200).json(result);
   } catch (error) {
+    console.error('[RUN_CONTROLLER] Error in driverAcceptRun:', error);
     next(error);
   }
 };
-//
 
-// ========================== FIX IS HERE ==========================
-// The new controller function to handle the logic for ending a run.
 const endRun = async (req, res, next) => {
     try {
         const { runId } = req.params;
@@ -157,7 +144,6 @@ const endRun = async (req, res, next) => {
         next(error);
     }
 };
-// ===============================================================
 
 module.exports = {
   getPendingBatches,
@@ -165,11 +151,10 @@ module.exports = {
   getUnassignedOrders,
   getRun,
   getAssignedRuns,
-  acceptRun,
   createRunFromBatch,
   driverUpdateStopStatus,
   assignDriverToRun,
-  endRun, // Added to exports
-  getRunHistory, // Added to exports
-  driverAcceptRun, // Export the new function
+  endRun, 
+  getRunHistory, 
+  driverAcceptRun, 
 };

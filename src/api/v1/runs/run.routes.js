@@ -1,4 +1,4 @@
-// src/api/v1/runs/run.routes.js
+// File: src/api/v1/runs/run.routes.js
 const express = require('express');
 const runController = require('./run.controller');
 const authMiddleware = require('../../../middleware/auth.middleware');
@@ -8,7 +8,7 @@ const {
   paginationSchema,
   updateStopStatusSchema,
 } = require('./run.validation');
-const runOrchestrationController = require('../run_orchestration/run_orchestration.controller'); // New import
+const runOrchestrationController = require('../run_orchestration/run_orchestration.controller'); 
 
 const router = express.Router();
 
@@ -39,10 +39,9 @@ router.post(
   '/admin/create-batch',
   authMiddleware('admin'),
   // validate(createBatchRunSchema), // Validation now handled by orchestration controller
-  runOrchestrationController.adminCreateRunFromOrders // Point to the new controller
+  runOrchestrationController.adminCreateRunFromOrders 
 );
 
-// << NEW CODE TO ADD >>
 router.put(
   '/driver/runs/:runId/accept',
   authMiddleware('driver'),
@@ -65,19 +64,7 @@ router.get(
   runController.getAssignedRuns
 );
 
-/*router.post(
-  '/driver/runs/:runId/accept',
-  authMiddleware('driver'),
-  runController.acceptRun
-);*/
-
-// <<< FIX: Added the missing route to handle ending a run >>>
-router.post(
-  '/driver/runs/:runId/end',
-  authMiddleware('driver'),
-  runController.endRun // This now correctly points to the existing controller function
-);
-
+// This is the correct route for updating stop status
 router.post(
   '/driver/runs/:runId/stops/:stopId/update-status',
   authMiddleware('driver'),
@@ -85,16 +72,11 @@ router.post(
   runController.driverUpdateStopStatus
 );
 
-// FIX: Add the new route for fetching driver run history
+// This route for fetching driver run history is now deduplicated
 router.get(
   '/driver/history',
   authMiddleware('driver'),
-  validate(paginationSchema, 'query'), // Ensure pagination parameters are validated
-  runController.getRunHistory
-);
-router.get(
-  '/driver/history',
-  authMiddleware('driver'),
+  validate(paginationSchema, 'query'), 
   runController.getRunHistory
 );
 

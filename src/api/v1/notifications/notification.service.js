@@ -2,7 +2,7 @@
 const Notification = require('../../../models/notification.model');
 const User = require('../../../models/user.model');
 const HttpError = require('../../../utils/HttpError');
-//const firebaseService = require('../../../services/firebase.service');
+const firebaseService = require('../../../services/firebase.service'); 
 
 /**
  * Admin sends a notification to target users (broadcast or specific).
@@ -14,7 +14,6 @@ const HttpError = require('../../../utils/HttpError');
  * @param {object} [notificationData.data] - Optional data payload for FCM.
  */
 const adminSendNotification = async (notificationData) => {
-  // --- FIX: Destructure directly from notificationData, matching frontend payload ---
   const { title, body, targetType, targetUserId, data } = notificationData;
 
   const notificationBase = {
@@ -22,8 +21,8 @@ const adminSendNotification = async (notificationData) => {
     body,
     sentAt: new Date(),
     read: false,
-    type: 'admin_broadcast', // Default type, can be more specific based on targetType
-    data: data || {}, // Ensure data is an object, even if empty
+    type: 'admin_broadcast', 
+    data: data || {}, 
   };
 
   let userQuery = {};
@@ -33,11 +32,10 @@ const adminSendNotification = async (notificationData) => {
     userQuery.role = 'driver';
   } else if (targetType === 'singleUser' && targetUserId) {
     userQuery.id = targetUserId;
-  } else if (targetType !== 'allUsers') { // 'allUsers' means no specific role filter
+  } else if (targetType !== 'allUsers') {
     throw new HttpError(400, 'Invalid notification target type or missing targetUserId.');
   }
 
-  // Find users that match the target, explicitly select fcmTokens
   const targetedUsers = await User.find(userQuery).select('id fcmTokens');
   if (targetedUsers.length === 0) {
     throw new HttpError(404, 'No users found for the specified target.');
@@ -50,29 +48,45 @@ const adminSendNotification = async (notificationData) => {
 
   await Notification.insertMany(notificationsToInsert);
 
-  // Send Push Notification via FCM
-  /*const allTokens = targetedUsers.flatMap(user => user.fcmTokens).filter(token => token);
-
+  const allTokens = targetedUsers.flatMap(user => user.fcmTokens).filter(token => token);
   if (allTokens.length > 0) {
-    // This is an async call, but we don't need to wait for it to complete
-    // to send the response to the admin. This is "fire and forget".
     firebaseService.sendPushNotifications(allTokens, title, body, {
-      screen: 'notification_screen', // Example data payload for app navigation
-      // You might add specific orderId, chatThreadId etc. here depending on notification type
-      ...data, // Merge any custom data provided by admin
+      screen: 'notification_screen',
+      ...data,
     });
   }
 
   return { message: `Notification successfully sent to ${targetedUsers.length} user(s).` };
-});*/
 };
 
-// Customer-facing service to get their notifications
+
+/**
+ * This function sends a push notification via FCM and saves it to the database.
+ */
+const createAndSendNotification = async ({ userId, title, body, type, data }) => {
+  const user = await User.findOne({ id: userId }).select('fcmTokens');
+  if (!user || user.fcmTokens.length === 0) {
+    return console.warn(`[NOTIFICATION_SERVICE] No FCM tokens found for user ${userId}. Skipping push notification.`);
+  }
+
+  const notification = new Notification({
+    userId,
+    title,
+    body,
+    type,
+    data: data || {},
+  });
+  await notification.save();
+
+  // Assuming firebaseService has a sendPushNotifications function
+  firebaseService.sendPushNotifications(user.fcmTokens, title, body, data);
+};
+
 const getMyNotifications = async (userId, { page = 1, limit = 10 }) => {
   const query = { userId };
   const totalNotifications = await Notification.countDocuments(query);
   const notifications = await Notification.find(query)
-    .sort({ sentAt: -1 }) // Newest first
+    .sort({ sentAt: -1 }) 
     .skip((page - 1) * limit)
     .limit(limit);
 
@@ -115,6 +129,7 @@ const clearAllNotifications = async (userId) => {
   return { message: 'All notifications cleared successfully.' };
 };
 
+
 module.exports = {
   adminSendNotification,
   getMyNotifications,
@@ -122,4 +137,5 @@ module.exports = {
   markAllNotificationsAsRead,
   deleteNotification,
   clearAllNotifications,
+  createAndSendNotification,
 };

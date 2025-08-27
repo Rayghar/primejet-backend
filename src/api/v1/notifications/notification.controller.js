@@ -4,7 +4,6 @@ const HttpError = require('../../../utils/HttpError');
 
 const adminSendNotification = async (req, res, next) => {
   try {
-    // req.body is already validated by Joi (sendNotificationSchema)
     const result = await notificationService.adminSendNotification(req.body);
     res.status(200).json(result);
   } catch(error) {

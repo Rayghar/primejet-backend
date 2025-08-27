@@ -6,7 +6,7 @@ const User = require('../../../models/user.model');
 const HttpError = require('../../../utils/HttpError');
 const mongoose = require('mongoose');
 const { logger } = require('../../../config/logger.config.js');
-const notificationService = require('../notifications/notification.service');
+const { createAndSendNotification } = require('../notifications/notification.service');
 
 // Helper function to translate driver statuses to customer-facing order statuses
 const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
@@ -67,7 +67,7 @@ const driverUpdateStopStatus = async (driverId, runId, stopId, newStatus, notes)
         await order.save({ session });
         
         // Trigger push notification to customer
-        notificationService.createAndSendNotification({
+        createAndSendNotification({
             userId: order.customerId,
             title: `Your Order is now ${newOrderStatus}`,
             body: `Your order #${order.shortOrderId} has been updated.`,
@@ -310,64 +310,6 @@ const getAssignedRuns = async (driverId) => {
 };
 
 
-/*const acceptRun = async (batchOrRunId, driverId) => { 
-  try {
-    const existingActiveRun = await Run.findOne({ 
-      driverId: driverId, 
-      overallStatus: 'In Progress' 
-    });
-
-    if (existingActiveRun) {
-      throw new HttpError(400, 'You cannot accept a new run while another is already in progress. Please complete your active run first.');
-    }
-
-    const run = await Run.findOne({
-      id: batchOrRunId,
-      driverId: driverId
-    });
-
-    if (!run) {
-      throw new HttpError(404, 'Run not found or not assigned to you.');
-    }
-
-    if (run.overallStatus !== 'Assigned') {
-      throw new HttpError(400, `This run cannot be accepted as its status is already '${run.overallStatus}'.`);
-    }
-
-    const driver = await User.findOne({ id: driverId, role: 'driver' });
-    if (!driver) {
-      throw new HttpError(404, 'Driver profile not found.');
-    }
-
-    run.overallStatus = 'In Progress'; 
-    run.actualStartDate = new Date();
-    await run.save();
-
-    for (const stop of run.stops) {
-      await Order.updateOne(
-        { id: stop.orderId },
-        {
-          $set: { status: 'Out for delivery' },
-          $push: {
-            statusHistory: {
-              status: 'Out for delivery',
-              timestamp: new Date(),
-              notes: `Run accepted by driver ${driver.name}.`,
-            }
-          }
-        }
-      );
-    }
-
-    return run.toObject();
-
-  } catch (error) {
-    if (error instanceof HttpError) throw error;
-    logger.error('Unexpected error in acceptRun:', error);
-    throw new HttpError(500, 'Failed to accept the run due to a server error.');
-  }
-};
-*/
 const endRun = async (runId, driverId) => {
     const run = await Run.findOne({ id: runId, driverId: driverId });
     if (!run) {
@@ -390,25 +332,38 @@ const endRun = async (runId, driverId) => {
     return { message: 'Run successfully marked as completed.' };
 };
 
-// << NEW CODE TO ADD >>
 const driverAcceptRun = async (driverId, runId) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const run = await Run.findOne({ id: runId, driverId: driverId }).session(session);
+    const run = await Run.findOne({ id: runId }).session(session); // FIX IS HERE
     if (!run) {
       throw new HttpError(404, 'Run not found or not assigned to this driver.');
     }
+
+    if (run.driverId !== driverId) { // FIX IS HERE
+      throw new HttpError(403, 'Not assigned to this driver.');
+    }
     
-    // Change run status to 'Accepted'
-    run.status = 'Accepted';
+    // Check if run is already accepted
+    if (run.overallStatus !== 'Assigned') {
+      throw new HttpError(400, `This run is already '${run.overallStatus}'.`);
+    }
+
+    // Change run status to 'In Progress'
+    run.overallStatus = 'In Progress';
     run.statusHistory.push({
-      status: 'Accepted',
+      status: 'In Progress',
       timestamp: new Date(),
       notes: 'Driver accepted the run.',
       updatedBy: driverId,
       updaterRole: 'driver'
     });
+
+    const driver = await User.findOne({ id: driverId }).session(session);
+    if (!driver) {
+      throw new HttpError(404, 'Driver profile not found.');
+    }
     
     // Iterate through all stops in the run to update the associated orders
     for (const stop of run.stops) {
@@ -420,14 +375,14 @@ const driverAcceptRun = async (driverId, runId) => {
         order.statusHistory.push({
           status: 'Driver Assigned',
           timestamp: new Date(),
-          notes: 'Order assigned to driver.',
+          notes: `Order assigned to driver ${driver.name}.`,
           updatedBy: driverId,
           updaterRole: 'driver'
         });
         await order.save({ session });
         
         // Trigger push notification to the customer
-        notificationService.createAndSendNotification({
+        createAndSendNotification({
             userId: order.customerId,
             title: "Your Order is on its way!",
             body: `Your order has been assigned to a driver.`,

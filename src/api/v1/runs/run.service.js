@@ -37,7 +37,7 @@ const driverUpdateStopStatus = async (driverId, runId, stopId, newStatus, notes)
       throw new HttpError(403, 'Not assigned to this driver.'); // Driver is not authorized
     }
     
-    const stop = run.stops.find(s => s.id === stopId);
+    const stop = run.stops.find(s => s.stopId === stopId);
     if (!stop) {
       throw new HttpError(404, 'Stop not found in this run.');
     }

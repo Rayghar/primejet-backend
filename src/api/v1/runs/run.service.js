@@ -375,26 +375,30 @@ const driverAcceptRun = async (driverId, runId) => {
     for (const stop of run.stops) {
       const order = await Order.findOne({ id: stop.orderId }).session(session);
       if (order) {
-        // THIS IS THE CRITICAL FIX:
-        // Change the order status to 'Driver Assigned'
-        order.status = 'Driver Assigned'; 
-        order.statusHistory.push({
-          status: 'Driver Assigned',
-          timestamp: new Date(),
-          notes: `Order assigned to driver ${driver.name}.`,
-          updatedBy: driverId,
-          updaterRole: 'driver'
-        });
-        await order.save({ session });
-        
-        // Trigger push notification to the customer
-        createAndSendNotification({
-            userId: order.customerId,
-            title: "Your Order is on its way!",
-            body: `Your order has been assigned to a driver.`,
-            type: 'ORDER_UPDATE',
-            data: { orderId: order.id, screen: 'order_details' }
-        });
+        // === SURGICAL UPDATE FOR PAY ON ARRIVAL START ===
+        // Only update the order status if it is NOT a "Pay on Arrival" order.
+        // POA orders must remain in the 'Awaiting Driver Arrival' state.
+        if (order.paymentMethod !== 'payOnPickup') {
+          order.status = 'Driver Assigned'; 
+          order.statusHistory.push({
+            status: 'Driver Assigned',
+            timestamp: new Date(),
+            notes: `Order assigned to driver ${driver.name}.`,
+            updatedBy: driverId,
+            updaterRole: 'driver'
+          });
+          await order.save({ session });
+          
+          createAndSendNotification({
+              userId: order.customerId,
+              title: "Your Order is on its way!",
+              body: `Your order has been assigned to a driver.`,
+              type: 'ORDER_UPDATE',
+              data: { orderId: order.id, screen: 'order_details' }
+          });
+        }
+        // For POA orders, we do nothing to the status here. It remains 'Awaiting Driver Arrival'.
+        // === SURGICAL UPDATE FOR PAY ON ARRIVAL END ===
       }
     }
     

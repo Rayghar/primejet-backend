@@ -25,11 +25,18 @@ const driverUpdateStopStatus = async (driverId, runId, stopId, newStatus, notes)
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const run = await Run.findOne({ id: runId, driverId: driverId }).session(session);
+    // THIS IS THE FIX: Find the run by ID first
+    const run = await Run.findOne({ id: runId }).session(session);
+
     if (!run) {
-      throw new HttpError(404, 'Run not found or not assigned to this driver.');
+      throw new HttpError(404, 'Run not found.'); // Run not found by ID, so it's a 404
     }
 
+    // Now, explicitly check if the driverId matches
+    if (run.driverId !== driverId) {
+      throw new HttpError(403, 'Not assigned to this driver.'); // Driver is not authorized
+    }
+    
     const stop = run.stops.find(s => s.id === stopId);
     if (!stop) {
       throw new HttpError(404, 'Stop not found in this run.');

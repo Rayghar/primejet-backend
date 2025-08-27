@@ -130,6 +130,17 @@ const getRunHistory = async (req, res, next) => {
     next(error);
   }
 };
+
+// << NEW CODE TO ADD >>
+const driverAcceptRun = async (req, res, next) => {
+  try {
+    const { runId } = req.params;
+    const result = await runService.driverAcceptRun(req.user.id, runId);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
 //
 
 // ========================== FIX IS HERE ==========================
@@ -160,4 +171,5 @@ module.exports = {
   assignDriverToRun,
   endRun, // Added to exports
   getRunHistory, // Added to exports
+  driverAcceptRun, // Export the new function
 };

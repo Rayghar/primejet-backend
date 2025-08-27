@@ -42,6 +42,13 @@ router.post(
   runOrchestrationController.adminCreateRunFromOrders // Point to the new controller
 );
 
+// << NEW CODE TO ADD >>
+router.put(
+  '/driver/runs/:runId/accept',
+  authMiddleware('driver'),
+  runController.driverAcceptRun
+);
+
 router.get('/:runId', authMiddleware(), runController.getRun);
 
 router.put(

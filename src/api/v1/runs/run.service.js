@@ -383,6 +383,65 @@ const endRun = async (runId, driverId) => {
     return { message: 'Run successfully marked as completed.' };
 };
 
+// << NEW CODE TO ADD >>
+const driverAcceptRun = async (driverId, runId) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const run = await Run.findOne({ id: runId, driverId: driverId }).session(session);
+    if (!run) {
+      throw new HttpError(404, 'Run not found or not assigned to this driver.');
+    }
+    
+    // Change run status to 'Accepted'
+    run.status = 'Accepted';
+    run.statusHistory.push({
+      status: 'Accepted',
+      timestamp: new Date(),
+      notes: 'Driver accepted the run.',
+      updatedBy: driverId,
+      updaterRole: 'driver'
+    });
+    
+    // Iterate through all stops in the run to update the associated orders
+    for (const stop of run.stops) {
+      const order = await Order.findOne({ id: stop.orderId }).session(session);
+      if (order) {
+        // THIS IS THE CRITICAL FIX:
+        // Change the order status to 'Driver Assigned'
+        order.status = 'Driver Assigned'; 
+        order.statusHistory.push({
+          status: 'Driver Assigned',
+          timestamp: new Date(),
+          notes: 'Order assigned to driver.',
+          updatedBy: driverId,
+          updaterRole: 'driver'
+        });
+        await order.save({ session });
+        
+        // Trigger push notification to the customer
+        notificationService.createAndSendNotification({
+            userId: order.customerId,
+            title: "Your Order is on its way!",
+            body: `Your order has been assigned to a driver.`,
+            type: 'ORDER_UPDATE',
+            data: { orderId: order.id, screen: 'order_details' }
+        });
+      }
+    }
+    
+    await run.save({ session });
+    await session.commitTransaction();
+    return { message: 'Run accepted and order status updated successfully.' };
+
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+};
+
 const getRunHistory = async (driverId, options) => {
   try {
     const { page = 1, limit = 15 } = options;
@@ -424,5 +483,6 @@ module.exports = {
   createRunFromBatch,
   assignDriverToRun,
   endRun,
-  getRunHistory
+  getRunHistory,
+  driverAcceptRun
 };

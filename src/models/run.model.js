@@ -22,13 +22,13 @@ const stopSchema = new mongoose.Schema(
       type: String,
       required: [true, 'Stop status is required.'],
       enum: [
-            'Pending',
-            'DRIVER_ENROUTE_PICKUP',
-            'PICKED_UP_ENROUTE_STATION',
-            'CYLINDER_REFILLING',
-            'OUT_FOR_DELIVERY',
-            'DELIVERED',
-            'CUSTOMER_UNAVAILABLE'
+        'Pending',
+        'DRIVER_ENROUTE_PICKUP',
+        'PICKED_UP_ENROUTE_STATION',
+        'CYLINDER_REFILLING',
+        'OUT_FOR_DELIVERY',
+        'DELIVERED',
+        'CUSTOMER_UNAVAILABLE'
       ],
       default: 'Pending',
     },
@@ -88,6 +88,18 @@ const runSchema = new mongoose.Schema(
       default: 'Pending',
       index: true,
     },
+    // <<<< NEW CODE: ADDED statusHistory to the runSchema >>>>
+    statusHistory: {
+        type: [new mongoose.Schema({
+            status: { type: String, required: true },
+            timestamp: { type: Date, default: Date.now },
+            notes: String,
+            updatedBy: String,
+            updaterRole: String
+        })],
+        default: [] // <-- ADDED THIS LINE
+    },
+    // <<<< END NEW CODE >>>>
     totalStops: {
       type: Number,
       required: [true, 'Total number of stops is required.'],

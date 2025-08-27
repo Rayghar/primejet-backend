@@ -31,15 +31,15 @@ const orderSchema = new mongoose.Schema(
     driverId: { type: String, ref: 'User', index: true, sparse: true },
     items: [itemSchema],
     deliveryAddressSnapshot: { 
-         fullAddress: { type: String, required: true },
-         street: { type: String },
-         city: { type: String },
-         state: { type: String },
-         country: { type: String },
-         postalCode: { type: String },
-         latitude: { type: Number },
-         longitude: { type: Number },
-         deliveryInstructions: { type: String },
+      fullAddress: { type: String, required: true },
+      street: { type: String },
+      city: { type: String },
+      state: { type: String },
+      country: { type: String },
+      postalCode: { type: String },
+      latitude: { type: Number },
+      longitude: { type: Number },
+      deliveryInstructions: { type: String },
     },
     recipientName: { type: String, required: true },
     recipientPhone: { type: String, required: true },
@@ -96,7 +96,12 @@ const orderSchema = new mongoose.Schema(
     deliveryLongitude: { type: Number, min: -180, max: 180 },
     estimatedDeliveryTime: { type: Date },
     actualDeliveryTime: { type: Date },
-    statusHistory: [statusHistorySchema],
+    // <<<< NEW CODE: ADDED default value to statusHistory >>>>
+    statusHistory: {
+        type: [statusHistorySchema],
+        default: [] // <-- ADDED THIS LINE
+    },
+    // <<<< END NEW CODE >>>>
     adminNotes: [{ note: String, adminId: String, timestamp: {type: Date, default: Date.now}, _id: false }],
     orderDate: { type: Date, required: true, default: Date.now, index: true },
   },
@@ -110,7 +115,7 @@ const orderSchema = new mongoose.Schema(
 
 // Virtual for the customer
 orderSchema.virtual('customer', {
-  ref: 'User',             // The model to use
+  ref: 'User',               // The model to use
   localField: 'customerId',  // Find in this schema where localField
   foreignField: 'id',        // is equal to foreignField in the 'User' model
   justOne: true              // We only expect one User

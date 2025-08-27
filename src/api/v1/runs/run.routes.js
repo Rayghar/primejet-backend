@@ -80,6 +80,16 @@ router.get(
   runController.getRunHistory
 );
 
+// ======================= FIX STARTS HERE =======================
+// Add this new route to handle the "end run" action from the driver app.
+// It should be a POST or PUT request since it changes the state of the run.
+router.post(
+  '/driver/runs/:runId/end',
+  authMiddleware('driver'),
+  runController.endRun
+);
+// ======================== FIX ENDS HERE ========================
+
 console.log('[RUN_ROUTES] Run/batch routes registered.');
 
 module.exports = router;

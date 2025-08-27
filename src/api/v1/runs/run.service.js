@@ -33,12 +33,12 @@ const driverUpdateStopStatus = async (driverId, runId, stopId, newStatus, notes)
     if (run.driverId !== driverId) {
       throw new HttpError(403, 'Not assigned to this driver.');
     }
-
+    
     const stop = run.stops.find(s => s.stopId === stopId);
     if (!stop) {
       throw new HttpError(404, 'Stop not found in this run.');
     }
-
+    
     stop.status = newStatus;
     stop.statusHistory.push({
       status: newStatus,
@@ -49,15 +49,14 @@ const driverUpdateStopStatus = async (driverId, runId, stopId, newStatus, notes)
     });
 
     // ======================= FIX STARTS HERE =======================
-
     // 1. Define what statuses mean a stop is "finished".
-    const terminalStopStatuses = ['DELIVERED', 'CUSTOMER_UNAVAILABLE'];
+    // These should include all possible terminal states for a stop.
+    const terminalStopStatuses = ['DELIVERED', 'CUSTOMER_UNAVAILABLE', 'ISSUE_REPORTED'];
 
     // 2. Recalculate the number of completed stops for the entire run.
     run.completedStops = run.stops.filter(s => terminalStopStatuses.includes(s.status)).length;
-
+    
     logger.info(`[RUN_SERVICE] Recalculated completed stops for run ${runId}. New count: ${run.completedStops}`);
-
     // ======================== FIX ENDS HERE ========================
 
     const newOrderStatus = mapDriverStopStatusToOrderStatus(newStatus);
@@ -68,13 +67,12 @@ const driverUpdateStopStatus = async (driverId, runId, stopId, newStatus, notes)
         order.statusHistory.push({
           status: newOrderStatus,
           timestamp: new Date(),
-          notes: notes,
+          notes: `Driver update: ${notes || newStatus}`,
           updatedBy: driverId,
           updaterRole: 'driver'
         });
         await order.save({ session });
         
-        // Trigger push notification to customer
         createAndSendNotification({
             userId: order.customerId,
             title: `Your Order is now ${newOrderStatus}`,
@@ -85,7 +83,7 @@ const driverUpdateStopStatus = async (driverId, runId, stopId, newStatus, notes)
       }
     }
 
-    await run.save({ session });
+    await run.save({ session }); // This now saves the updated completedStops count
     await session.commitTransaction();
     return { message: 'Stop status updated successfully.' };
 

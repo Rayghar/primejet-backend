@@ -1,6 +1,14 @@
-// src/models/run.model.js
+// File: src/models/run.model.js
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
+
+const statusHistorySchema = new mongoose.Schema({
+  status: { type: String, required: true },
+  timestamp: { type: Date, default: Date.now },
+  notes: String,
+  updatedBy: String,
+  updaterRole: String,
+}, { _id: false });
 
 const stopSchema = new mongoose.Schema(
   {
@@ -11,7 +19,6 @@ const stopSchema = new mongoose.Schema(
     orderId: {
       type: String,
       required: [true, 'Order ID for stop is required.'],
-      // REMOVED: ref: 'Order' -> This was causing the CastError.
     },
     sequence: {
       type: Number,
@@ -38,28 +45,26 @@ const stopSchema = new mongoose.Schema(
     notes: { type: String, trim: true },
     latitude: { type: Number, min: -90, max: 90 },
     longitude: { type: Number, min: -180, max: 180 },
+    // <<<< NEW CODE: ADDED statusHistory to the stopSchema >>>>
+    statusHistory: {
+        type: [statusHistorySchema],
+        default: []
+    }
+    // <<<< END NEW CODE >>>>
   },
   { 
     _id: true,
-    // ========================== FIX IS HERE ==========================
-    // Enable virtuals for toJSON and toObject transformations.
     toJSON: { virtuals: true },
     toObject: { virtuals: true }
-    // ===============================================================
   }
 );
 
-// ========================== FIX IS HERE ==========================
-// Added a virtual field 'order' to the stopSchema to handle the population
-// of an Order document based on the string 'orderId'. This is the correct
-// way to handle relationships with non-ObjectId keys.
 stopSchema.virtual('order', {
   ref: 'Order',
   localField: 'orderId',
   foreignField: 'id',
   justOne: true
 });
-// ===============================================================
 
 const runSchema = new mongoose.Schema(
   {
@@ -88,18 +93,10 @@ const runSchema = new mongoose.Schema(
       default: 'Pending',
       index: true,
     },
-    // <<<< NEW CODE: ADDED statusHistory to the runSchema >>>>
     statusHistory: {
-        type: [new mongoose.Schema({
-            status: { type: String, required: true },
-            timestamp: { type: Date, default: Date.now },
-            notes: String,
-            updatedBy: String,
-            updaterRole: String
-        })],
-        default: [] // <-- ADDED THIS LINE
+        type: [statusHistorySchema],
+        default: []
     },
-    // <<<< END NEW CODE >>>>
     totalStops: {
       type: Number,
       required: [true, 'Total number of stops is required.'],

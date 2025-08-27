@@ -25,23 +25,20 @@ const driverUpdateStopStatus = async (driverId, runId, stopId, newStatus, notes)
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    // THIS IS THE FIX: Find the run by ID first
     const run = await Run.findOne({ id: runId }).session(session);
 
     if (!run) {
-      throw new HttpError(404, 'Run not found.'); // Run not found by ID, so it's a 404
+      throw new HttpError(404, 'Run not found.');
+    }
+    if (run.driverId !== driverId) {
+      throw new HttpError(403, 'Not assigned to this driver.');
     }
 
-    // Now, explicitly check if the driverId matches
-    if (run.driverId !== driverId) {
-      throw new HttpError(403, 'Not assigned to this driver.'); // Driver is not authorized
-    }
-    
     const stop = run.stops.find(s => s.stopId === stopId);
     if (!stop) {
       throw new HttpError(404, 'Stop not found in this run.');
     }
-    
+
     stop.status = newStatus;
     stop.statusHistory.push({
       status: newStatus,
@@ -51,7 +48,18 @@ const driverUpdateStopStatus = async (driverId, runId, stopId, newStatus, notes)
       updaterRole: 'driver'
     });
 
-    // Translate the driver status to the customer-facing order status
+    // ======================= FIX STARTS HERE =======================
+
+    // 1. Define what statuses mean a stop is "finished".
+    const terminalStopStatuses = ['DELIVERED', 'CUSTOMER_UNAVAILABLE'];
+
+    // 2. Recalculate the number of completed stops for the entire run.
+    run.completedStops = run.stops.filter(s => terminalStopStatuses.includes(s.status)).length;
+
+    logger.info(`[RUN_SERVICE] Recalculated completed stops for run ${runId}. New count: ${run.completedStops}`);
+
+    // ======================== FIX ENDS HERE ========================
+
     const newOrderStatus = mapDriverStopStatusToOrderStatus(newStatus);
     if (newOrderStatus) {
       const order = await Order.findOne({ id: stop.orderId }).session(session);

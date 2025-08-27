@@ -83,8 +83,9 @@ router.get(
 // ======================= FIX STARTS HERE =======================
 // Add this new route to handle the "end run" action from the driver app.
 // It should be a POST or PUT request since it changes the state of the run.
+// Driver ends a run
 router.post(
-  '/driver/runs/:runId/end',
+  '/:runId/end', // Use this simplified and consistent path
   authMiddleware('driver'),
   runController.endRun
 );

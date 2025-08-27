@@ -12,41 +12,14 @@ const { firestore, admin, isFirebaseInitialized } = require('../../../config/fir
 const { logger } = require('../../../config/logger.config.js');
 const referralService = require('../referrals/referral.service');
 const firebaseService = require('../../../services/firebase.service');
-
+const notificationService = require('../notifications/notification.service');
+const orderService = require('./order.service');
 // NEW: Added Dependencies from O2
 const paymentService = require('../payments/payment.service'); 
 const ServiceZone = require('../../../models/serviceZone.model');
 const dotenv = require('dotenv');
 const { sha512 } = require('js-sha512');
 dotenv.config();
-
-// IMPORTANT: This helper function maps granular driver stop statuses (from Run.Stop enum)
-// to high-level customer-facing order statuses (from Order enum).
-// This function is ALSO defined in run.service.js. Ensure consistency.
-const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
-  switch (driverStopStatus) {
-    case 'DRIVER_ENROUTE_PICKUP':
-      return 'Driver Assigned';
-    case 'PICKED_UP_ENROUTE_STATION':
-       return 'Processing'; 
-    case 'CYLINDER_REFILLING':
-      return 'Processing';
-    case 'OUT_FOR_DELIVERY':
-      return 'Out for delivery';
-    case 'DELIVERED':
-      return 'Delivered';
-    case 'CUSTOMER_UNAVAILABLE':
-      return 'Customer Unavailable';
-    case 'ISSUE_REPORTED':
-      return 'Issue Reported';
-    case 'Pending':
-    case 'Assigned':
-      return 'Processing';
-    default:
-      logger.warn(`[mapDriverStopStatusToOrderStatus] Unhandled driverStopStatus: ${driverStopStatus}. Defaulting to 'Processing'.`);
-      return 'Processing';
-  }
-};
 
 
 // =========================================================================
@@ -306,6 +279,7 @@ const placeOrder = async (customerId, orderData) => {
     }
     // END O2: Conditional logic for Pay on Arrival feature
 
+
     const itemsSubtotal = items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
     logger.debug('[SUBTOTAL_CALC] ' + itemsSubtotal);
     let discountAmount = 0.0;
@@ -409,7 +383,6 @@ const placeOrder = async (customerId, orderData) => {
   }
 };
 
-// << NEW FUNCTION >>
 const driverArrivedForPickup = async (orderId, driverId) => {
   const order = await Order.findOne({ id: orderId, driverId: driverId });
   if (!order) {
@@ -419,24 +392,26 @@ const driverArrivedForPickup = async (orderId, driverId) => {
     throw new HttpError(400, `Order is not awaiting arrival. Current status: ${order.status}`);
   }
 
-  // This is the key transition to enable customer payment:
   order.status = 'Pending Payment';
   order.statusHistory.push({
     status: 'Pending Payment',
     timestamp: new Date(),
-    notes: 'Driver has arrived at the pickup location. Awaiting customer payment.',
+    notes: 'Driver has arrived. Awaiting customer payment.',
     updatedBy: driverId,
     updaterRole: 'driver'
   });
-
   await order.save();
 
-  // In a full implementation, you would trigger a push notification to the customer here.
-  // Example: firebaseService.sendPushNotification(customer.fcmToken, "Your Driver Has Arrived!", "Please complete your payment in the app to proceed.");
+  notificationService.createAndSendNotification({
+    userId: order.customerId,
+    title: "Your Driver Has Arrived!",
+    body: "Please complete your payment in the app to proceed with your order.",
+    type: 'ORDER_UPDATE',
+    data: { orderId: order.id, screen: 'order_details' }
+  });
 
   return order.toObject();
 };
-// =========================================================================
 
 /**
  * Updates an order's status and payment details, typically from a webhook.

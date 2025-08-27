@@ -23,17 +23,12 @@ const stopSchema = new mongoose.Schema(
       required: [true, 'Stop status is required.'],
       enum: [
             'Pending',
-            'Skipped',
-            'Reached',
-            'Completed',
-            'FailedAttempt',
-            'Driver enroute to pickup',
-            'Driver enroute to gas station',
-            'Cylinder Refilling',
-            'Out for delivery',
-            'Delivered',
-            'Customer not available',
-            'Issue Reported'
+            'DRIVER_ENROUTE_PICKUP',
+            'PICKED_UP_ENROUTE_STATION',
+            'CYLINDER_REFILLING',
+            'OUT_FOR_DELIVERY',
+            'DELIVERED',
+            'CUSTOMER_UNAVAILABLE'
       ],
       default: 'Pending',
     },

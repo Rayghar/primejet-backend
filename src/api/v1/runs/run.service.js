@@ -6,6 +6,81 @@ const User = require('../../../models/user.model');
 const HttpError = require('../../../utils/HttpError');
 const mongoose = require('mongoose');
 const { logger } = require('../../../config/logger.config.js');
+const notificationService = require('../notifications/notification.service');
+
+// Helper function to translate driver statuses to customer-facing order statuses
+const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
+  const mapping = {
+    'DRIVER_ENROUTE_PICKUP': 'Processing',
+    'PICKED_UP_ENROUTE_STATION': 'Processing',
+    'CYLINDER_REFILLING': 'Processing',
+    'OUT_FOR_DELIVERY': 'Out for Delivery',
+    'DELIVERED': 'Delivered',
+    'CUSTOMER_UNAVAILABLE': 'Customer Unavailable'
+  };
+  return mapping[driverStopStatus] || null;
+};
+
+const driverUpdateStopStatus = async (driverId, runId, stopId, newStatus, notes) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const run = await Run.findOne({ id: runId, driverId: driverId }).session(session);
+    if (!run) {
+      throw new HttpError(404, 'Run not found or not assigned to this driver.');
+    }
+
+    const stop = run.stops.find(s => s.id === stopId);
+    if (!stop) {
+      throw new HttpError(404, 'Stop not found in this run.');
+    }
+    
+    stop.status = newStatus;
+    stop.statusHistory.push({
+      status: newStatus,
+      timestamp: new Date(),
+      notes: notes,
+      updatedBy: driverId,
+      updaterRole: 'driver'
+    });
+
+    // Translate the driver status to the customer-facing order status
+    const newOrderStatus = mapDriverStopStatusToOrderStatus(newStatus);
+    if (newOrderStatus) {
+      const order = await Order.findOne({ id: stop.orderId }).session(session);
+      if (order) {
+        order.status = newOrderStatus;
+        order.statusHistory.push({
+          status: newOrderStatus,
+          timestamp: new Date(),
+          notes: notes,
+          updatedBy: driverId,
+          updaterRole: 'driver'
+        });
+        await order.save({ session });
+        
+        // Trigger push notification to customer
+        notificationService.createAndSendNotification({
+            userId: order.customerId,
+            title: `Your Order is now ${newOrderStatus}`,
+            body: `Your order #${order.shortOrderId} has been updated.`,
+            type: 'ORDER_UPDATE',
+            data: { orderId: order.id, screen: 'order_details' }
+        });
+      }
+    }
+
+    await run.save({ session });
+    await session.commitTransaction();
+    return { message: 'Stop status updated successfully.' };
+
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+};
 
 // --- Admin Focused Services ---
 
@@ -19,6 +94,8 @@ const getPendingBatches = async () => {
     throw new HttpError(500, 'Failed to retrieve pending batches.');
   }
 };
+
+
 
 const createRunFromBatch = async (orderIds, adminId) => {
   const session = await mongoose.startSession();
@@ -281,74 +358,6 @@ const acceptRun = async (batchOrRunId, driverId) => {
     if (error instanceof HttpError) throw error;
     logger.error('Unexpected error in acceptRun:', error);
     throw new HttpError(500, 'Failed to accept the run due to a server error.');
-  }
-};
-
-const driverUpdateStopStatus = async (runId, stopId, newStatus, notes, driverId) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  try {
-    const run = await Run.findOne({ id: runId, driverId: driverId }).session(session);
-    if (!run) {
-      throw new HttpError(404, 'Active run not found or not assigned to this driver.');
-    }
-
-    const stop = run.stops.find(s => s.stopId.toString() === stopId);
-    if (!stop) {
-      throw new HttpError(404, 'Stop not found in this run.');
-    }
-
-    const order = await Order.findOne({ id: stop.orderId }).session(session);
-    if (!order) {
-      throw new HttpError(404, `Order ${stop.orderId} not found for this stop.`);
-    }
-    
-    if (order.driverId !== driverId) {
-      throw new HttpError(403, `Order ${stop.orderId} is not assigned to this driver.`);
-    }
-
-    stop.status = newStatus;
-    stop.actualArrivalTime = new Date();
-
-    order.status = newStatus;
-    order.statusHistory.push({
-      status: newStatus,
-      timestamp: new Date(),
-      notes: notes || `Status updated by driver.`,
-      updatedBy: driverId,
-      updaterRole: 'driver'
-    });
-    if (newStatus === 'Delivered') {
-        order.actualDeliveryTime = new Date();
-    }
-    await order.save({ session });
-
-    const completedStops = run.stops.filter(s => 
-        ['Delivered', 'Failed', 'Issue Reported', 'Customer not available'].includes(s.status)
-    ).length;
-
-    run.completedStops = completedStops;
-
-    if (completedStops === run.totalStops) {
-      run.overallStatus = 'Completed';
-      run.actualCompletionDate = new Date();
-    } else {
-      run.overallStatus = 'In Progress';
-    }
-
-    await run.save({ session });
-    await session.commitTransaction();
-    
-    return {
-      message: 'Stop status updated successfully.',
-      run: run.toObject(),
-    };
-  } catch (error) {
-    await session.abortTransaction();
-    logger.error(`Error updating stop status for run ${runId}, stop ${stopId}:`, error);
-    throw error instanceof HttpError ? error : new HttpError(500, 'Failed to update stop status.');
-  } finally {
-    session.endSession();
   }
 };
 

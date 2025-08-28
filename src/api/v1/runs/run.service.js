@@ -114,7 +114,13 @@ const createRunFromBatch = async (orderIds, adminId) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const ordersToBatch = await Order.find({ id: { $in: orderIds }, status: 'Order Placed' }).session(session);
+    // ======================= FIX IS HERE =======================
+    // The query now accepts orders that are either 'Order Placed' OR 'Awaiting Driver Arrival'.
+    const ordersToBatch = await Order.find({ 
+      id: { $in: orderIds }, 
+      status: { $in: ['Order Placed', 'Awaiting Driver Arrival'] } 
+    }).session(session);
+    // ===========================================================
 
     if (ordersToBatch.length !== orderIds.length) {
       throw new HttpError(400, 'One or more orders are not available for batching or do not exist.');
@@ -139,11 +145,18 @@ const createRunFromBatch = async (orderIds, adminId) => {
 
     await newRun.save({ session });
 
-    await Order.updateMany(
-      { id: { $in: orderIds } },
-      { $set: { status: 'Processing' } },
-      { session }
-    );
+    // Only update the status of 'Order Placed' orders. POA orders should remain as they are.
+    const orderIdsToUpdate = ordersToBatch
+      .filter(order => order.status === 'Order Placed')
+      .map(order => order.id);
+
+    if (orderIdsToUpdate.length > 0) {
+      await Order.updateMany(
+        { id: { $in: orderIdsToUpdate } },
+        { $set: { status: 'Processing' } },
+        { session }
+      );
+    }
 
     await session.commitTransaction();
     return newRun.toObject();

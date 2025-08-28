@@ -272,28 +272,33 @@ const assignDriverToRun = async (runId, newDriverId, adminPerformingActionId) =>
     run.driverId = newDriverId;
     run.overallStatus = 'Assigned';
 
+    // ======================= INTELLIGENT LOGIC START =======================
+    // Instead of a blind update, we now check each order individually.
     for (const stop of run.stops) {
-      await Order.updateOne(
-        { id: stop.orderId },
-        {
-          $set: {
-            driverId: newDriverId,
-            runId: runId,
+      const order = await Order.findOne({ id: stop.orderId }).session(session);
+      
+      if (order) {
+        // Step 1: Always assign the driver's ID to the order.
+        order.driverId = newDriverId;
+
+        // Step 2: Only change the status if it's NOT a "Pay on Arrival" order.
+        if (order.status !== 'Awaiting Driver Arrival') {
+          order.status = 'Driver Assigned';
+          order.statusHistory.push({
             status: 'Driver Assigned',
-          },
-          $push: {
-            statusHistory: {
-              status: 'Driver Assigned',
-              timestamp: new Date(),
-              notes: `Assigned to driver ${newDriver.name} (ID: ${newDriverId}) by admin.`,
-              updatedBy: adminPerformingActionId,
-              updaterRole: 'admin'
-            }
-          }
-        },
-        { session }
-      );
+            timestamp: new Date(),
+            notes: `Assigned to driver ${newDriver.name} (ID: ${newDriverId}) by admin.`,
+            updatedBy: adminPerformingActionId,
+            updaterRole: 'admin'
+          });
+        }
+        // If the status IS 'Awaiting Driver Arrival', we do nothing to it.
+        // It correctly remains in that special state for the driver to handle.
+        
+        await order.save({ session });
+      }
     }
+    // ======================== INTELLIGENT LOGIC END ========================
     
     await run.save({ session });
     await session.commitTransaction();

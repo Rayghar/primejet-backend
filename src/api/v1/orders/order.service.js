@@ -900,7 +900,7 @@ const cancelOrder = async (orderId, customerId, customerRole) => {
             throw new HttpError(500, "Error processing cancellation refund: User not found.");
         }
     }
-    order.status = 'Canceled by Customer';
+    order.status = 'Canceled';
     order.statusHistory.push({ status: order.status, timestamp: new Date(), notes: 'Order canceled by customer.', updatedBy: customerId, updaterRole: 'customer' });
     await order.save({ session });
     await session.commitTransaction();

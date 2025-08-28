@@ -39,7 +39,7 @@ router.post(
   '/admin/create-batch',
   authMiddleware('admin'),
   // validate(createBatchRunSchema), // Validation now handled by orchestration controller
-  runController.adminCreateRunFromOrders 
+  runOrchestrationController.adminCreateRunFromOrders
 );
 
 router.post(

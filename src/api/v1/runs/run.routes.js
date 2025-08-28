@@ -34,14 +34,6 @@ router.get(
   runController.getUnassignedOrders
 );
 
-// MODIFIED: This route now points to the new orchestration controller for batch creation
-router.post(
-  '/admin/create-batch',
-  authMiddleware('admin'),
-  // validate(createBatchRunSchema), // Validation now handled by orchestration controller
-  runOrchestrationController.adminCreateRunFromOrders
-);
-
 router.post(
   '/admin/create-batch',
   authMiddleware('admin'),

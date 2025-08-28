@@ -46,6 +46,7 @@ const placeOrderSchema = Joi.object({
   deliveryLatitude: Joi.number().min(-90).max(90).optional(), // Assuming these might be optional at placement
   deliveryLongitude: Joi.number().min(-180).max(180).optional(),
   deliveryAddressSnapshot: Joi.object().optional(), // Can be complex, or just a placeholder if always generated server-side
+  paymentMethod: Joi.string().valid('payOnPickup', 'paystack').optional(),
 });
 
 const processOrderPaymentSchema = Joi.object({
@@ -103,5 +104,6 @@ module.exports = {
   submitFeedbackSchema,
   orderStatusUpdateSchema,
   adminAssignDriverSchema,
-  orderIdParamSchema, // Export if you want to validate params separately in routes
+  orderIdParamSchema, 
+  // Export if you want to validate params separately in routes
 };

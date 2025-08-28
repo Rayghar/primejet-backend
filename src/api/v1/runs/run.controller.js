@@ -60,7 +60,7 @@ const createRunFromBatch = async (req, res, next) => {
       throw new HttpError(400, 'An array of orderIds is required.');
     }
     const newRun = await runService.createRunFromBatch(orderIds, req.user.id);
-    res.status(200).json(newRun);
+    res.status(201).json(newRun);
   } catch (error) {
     console.error('[RUN_CONTROLLER] Error creating run from batch:', error);
     next(error);

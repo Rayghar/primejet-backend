@@ -31,16 +31,26 @@ const getZones = async () => {
 const updateZone = async (zoneId, updateData) => {
   logger.info('[ZONE_UPDATE_START] ID: ' + zoneId + ' Data: ' + JSON.stringify(updateData));
   try {
-    const { name, isActive, outOfZoneMessage } = updateData;
     const zone = await ServiceZone.findOne({ id: zoneId });
     if (!zone) {
       logger.warn('[ZONE_UPDATE_FAIL] Not found: ' + zoneId);
       throw new HttpError(404, 'Service zone not found.');
     }
 
-    if (name) zone.name = name;
-    if (typeof isActive === 'boolean') zone.isActive = isActive;
-    if (outOfZoneMessage) zone.outOfZoneMessage = outOfZoneMessage;
+    // Update existing fields
+    if (updateData.name) zone.name = updateData.name;
+    if (typeof updateData.isActive === 'boolean') zone.isActive = updateData.isActive;
+    if (updateData.outOfZoneMessage) zone.outOfZoneMessage = updateData.outOfZoneMessage;
+
+    // ======================= NEW LOGIC START HERE =======================
+    // Update the new fee fields if they are provided as valid numbers
+    if (typeof updateData.deliveryFee === 'number') {
+      zone.deliveryFee = updateData.deliveryFee;
+    }
+    if (typeof updateData.expressSurcharge === 'number') {
+      zone.expressSurcharge = updateData.expressSurcharge;
+    }
+    // ======================== NEW LOGIC END HERE ========================
 
     await zone.save();
     logger.info('[ZONE_UPDATE_SUCCESS] ID: ' + zoneId);

@@ -915,6 +915,20 @@ const cancelOrder = async (orderId, customerId, customerRole) => {
   }
 };
 
+const markAsVerifyingPayment = async (orderId, customerId) => {
+  const order = await Order.findOne({ id: orderId, customerId: customerId });
+  if (!order) {
+    throw new HttpError(404, 'Order not found or you are not authorized.');
+  }
+  // Only update if the order is in a state where payment is expected.
+  if (order.status === 'Pending Payment') {
+    order.status = 'Verifying Payment';
+    order.statusHistory.push({ status: 'Verifying Payment', notes: 'Customer payment initiated, awaiting gateway confirmation.' });
+    await order.save();
+  }
+  return order.toObject();
+};
+
 // =========================================================================
 // NEW FUNCTIONALITY: Replaced getCustomerConsumptionData with getCustomerStats
 // =========================================================================
@@ -985,5 +999,5 @@ module.exports = {
   getCustomerStats, // Replaces getCustomerConsumptionData
   updateOrderStatus,
   getOrderPaymentStatus,
-  driverArrivedForPickup, // Export the new function
+  markAsVerifyingPayment,
 };

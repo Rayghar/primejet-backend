@@ -62,6 +62,7 @@ const orderSchema = new mongoose.Schema(
         enum: [ // << MODIFIED: Added new status >>
             'Pending Payment',
             'Awaiting Driver Arrival',
+            'Verifying Payment',
             'Order Placed',
             'Driver Assigned',
             'Processing',

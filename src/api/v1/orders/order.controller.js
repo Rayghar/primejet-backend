@@ -31,6 +31,16 @@ const driverArrivedForPickup = async (req, res, next) => {
   }
 };
 
+const markAsVerifyingPayment = async (req, res, next) => {
+  try {
+    const { orderId } = req.params;
+    const result = await orderService.markAsVerifyingPayment(orderId, req.user.id);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
 const getOrders = async (req, res, next) => {
   try {
     const { status, customerId, driverId, page = 1, limit = 10, sortBy } = req.query;
@@ -151,5 +161,6 @@ module.exports = {
   cancelOrder,
   getCustomerStats, // Export the new function
   getOrderPaymentStatus,
-  driverArrivedForPickup
+  driverArrivedForPickup,
+  markAsVerifyingPayment,
 };

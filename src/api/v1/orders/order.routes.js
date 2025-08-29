@@ -118,6 +118,12 @@ router.put(
   orderController.driverArrivedForPickup
 );
 
+router.put(
+  '/:orderId/mark-as-verifying',
+  authMiddleware('customer'),
+  orderController.markAsVerifyingPayment
+);
+
 console.log('[ORDER_ROUTES] Order routes registered.');
 
 module.exports = router;

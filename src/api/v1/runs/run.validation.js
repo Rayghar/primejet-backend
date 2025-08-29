@@ -19,9 +19,18 @@ const runIdParamSchema = Joi.object({
   runId: Joi.string().uuid({ version: 'uuidv4' }).required(),
 });
 
+// ======================= FIX STARTS HERE =======================
+// Add this new schema to validate the incoming array of order IDs.
+const createBatchRunSchema = Joi.object({
+  orderIds: Joi.array().items(Joi.string()).min(1).required(),
+});
+// ======================== FIX ENDS HERE ========================
+
+
 module.exports = {
   reassignDriverSchema,
   paginationSchema,
   updateStopStatusSchema,
   runIdParamSchema,
+  createBatchRunSchema, // <-- And export the new schema
 };

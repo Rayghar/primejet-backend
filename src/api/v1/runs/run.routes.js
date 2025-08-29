@@ -7,6 +7,8 @@ const {
   reassignDriverSchema,
   paginationSchema,
   updateStopStatusSchema,
+  createBatchRunSchema,
+  
 } = require('./run.validation');
 const runOrchestrationController = require('../run_orchestration/run_orchestration.controller'); 
 
@@ -37,6 +39,7 @@ router.get(
 router.post(
   '/admin/create-batch',
   authMiddleware('admin'),
+  validate(createBatchRunSchema), // <-- 2. Apply the validation middleware
   runController.createRunFromBatch 
 );
 

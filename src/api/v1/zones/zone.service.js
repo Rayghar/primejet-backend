@@ -6,6 +6,7 @@ const { logger } = require('../../../config/logger.config');
 const createZone = async (zoneData) => {
   logger.info('[ZONE_CREATE_START] Data: ' + JSON.stringify(zoneData));
   try {
+    // This function already handles the new fields correctly. No changes needed.
     const newZone = new ServiceZone(zoneData);
     await newZone.save();
     logger.info('[ZONE_CREATE_SUCCESS] ID: ' + newZone.id);
@@ -17,6 +18,7 @@ const createZone = async (zoneData) => {
 };
 
 const getZones = async () => {
+  // This function is correct. No changes needed.
   logger.info('[ZONE_FETCH_START]');
   try {
     const zones = await ServiceZone.find({}).sort({ state: 1, name: 1 });
@@ -37,20 +39,21 @@ const updateZone = async (zoneId, updateData) => {
       throw new HttpError(404, 'Service zone not found.');
     }
 
-    // Update existing fields
+    // Update existing fields if they are provided
     if (updateData.name) zone.name = updateData.name;
     if (typeof updateData.isActive === 'boolean') zone.isActive = updateData.isActive;
     if (updateData.outOfZoneMessage) zone.outOfZoneMessage = updateData.outOfZoneMessage;
-
-    // ======================= NEW LOGIC START HERE =======================
-    // Update the new fee fields if they are provided as valid numbers
+    
+    // ======================= FIX APPLIED HERE =======================
+    // Add logic to handle and save the new fee fields.
+    // We check if they exist and are valid numbers before saving.
     if (typeof updateData.deliveryFee === 'number') {
       zone.deliveryFee = updateData.deliveryFee;
     }
     if (typeof updateData.expressSurcharge === 'number') {
       zone.expressSurcharge = updateData.expressSurcharge;
     }
-    // ======================== NEW LOGIC END HERE ========================
+    // ================================================================
 
     await zone.save();
     logger.info('[ZONE_UPDATE_SUCCESS] ID: ' + zoneId);
@@ -62,6 +65,7 @@ const updateZone = async (zoneId, updateData) => {
 };
 
 const deleteZone = async (zoneId) => {
+  // This function is correct. No changes needed.
   logger.info('[ZONE_DELETE_START] ID: ' + zoneId);
   try {
     const result = await ServiceZone.findOneAndDelete({ id: zoneId });

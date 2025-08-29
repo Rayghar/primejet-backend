@@ -1000,4 +1000,6 @@ module.exports = {
   updateOrderStatus,
   getOrderPaymentStatus,
   markAsVerifyingPayment,
+  getCustomerStats,
+  driverArrivedForPickup,
 };

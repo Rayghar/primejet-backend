@@ -1,4 +1,4 @@
-// File: functions/index.js (Corrected for line length)
+// File: functions/index.js (Corrected and Enhanced)
 
 const {onDocumentCreated} = require("firebase-functions/v2/firestore");
 const {logger} = require("firebase-functions");
@@ -7,7 +7,6 @@ const axios = require("axios");
 
 admin.initializeApp();
 
-// <<< LINE 11 BROKEN FOR READABILITY >>>
 exports.onNewChatMessage = onDocumentCreated(
     "chats/{chatId}/messages/{messageId}",
     async (event) => {
@@ -17,9 +16,10 @@ exports.onNewChatMessage = onDocumentCreated(
 
         const chatRef = db.collection("chats").doc(chatId);
         try {
+            // This part is excellent, no changes needed here.
             await chatRef.update({
                 lastMessage: {
-                    text: messageData.text,
+                    text: messageData.message, // FIX: Field is 'message', not 'text'
                     senderId: messageData.senderId,
                 },
                 lastMessageTimestamp: messageData.timestamp,
@@ -36,7 +36,8 @@ exports.onNewChatMessage = onDocumentCreated(
             return;
         }
 
-        const participants = chatDoc.data().participants;
+        const chatData = chatDoc.data();
+        const participants = chatData.participants;
         const senderId = messageData.senderId;
         const recipientId = participants.find((p) => p !== senderId);
 
@@ -45,7 +46,10 @@ exports.onNewChatMessage = onDocumentCreated(
             return;
         }
 
-        const NOTIFICATION_ENDPOINT = process.env.API_URL;
+        // <<-- MODIFIED: Securely get sender's name from the chat thread -->>
+        const senderName = chatData.participantInfo?.[senderId]?.name || "Someone";
+
+        const NOTIFICATION_ENDPOINT = process.env.API_URL + "/api/v1/fcm/send-notification";
         const API_SECRET_KEY = process.env.API_SECRET;
 
         if (!NOTIFICATION_ENDPOINT || !API_SECRET_KEY) {
@@ -58,15 +62,15 @@ exports.onNewChatMessage = onDocumentCreated(
                 NOTIFICATION_ENDPOINT,
                 {
                     userId: recipientId,
-                    title: `New message from ${messageData.senderName}`,
-                    body: messageData.text,
-                    data: {type: "chat_message", chatId: chatId, senderId: senderId},
+                    // <<-- REPLACED: Use the securely fetched senderName -->>
+                    title: `New message from ${senderName}`,
+                    body: messageData.message, // FIX: Field is 'message', not 'text'
+                    data: {type: "chat_message", orderId: chatId, senderId: senderId},
                 },
                 {headers: {Authorization: `Bearer ${API_SECRET_KEY}`}},
             );
             logger.info(`Successfully triggered push notification to ${recipientId}.`);
         } catch (error) {
-            // <<< LINE 53 BROKEN FOR READABILITY >>>
             logger.error(
                 "Error calling backend for push notification:",
                 error.response ? error.response.data : error.message,

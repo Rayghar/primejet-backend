@@ -1,39 +1,27 @@
-// src/api/v1/chat/chat.routes.js
 const express = require('express');
-const chatController = require('./chat.controller'); // Path to co-located controller
-const authMiddleware = require('../../../middleware/auth.middleware'); // Path to global auth middleware
-const validate = require('../../../middleware/validate.middleware'); // Path to global validate middleware
-const {
-  initiateChatSchema,
-} = require('./chat.validation'); // Path to co-located validation schemas
+const chatController = require('./chat.controller');
+const authMiddleware = require('../../../middleware/auth.middleware');
+const validate = require('../../../middleware/validate.middleware');
+const { initiateChatSchema } = require('./chat.validation');
 
 const router = express.Router();
 
-console.log('[CHAT_ROUTES] Registering chat routes...');
-
-// All routes in this file are for chat functionalities.
-// They will be mounted under a base path like /api/v1/chat in app.js.
-
+// Route to securely find or create a chat thread for a specific order.
 router.post(
   '/initiate',
-  authMiddleware(), // Requires any authenticated user to initiate a chat
-  validate(initiateChatSchema), // Validate request body (orderId, recipientId)
+  authMiddleware(),
+  validate(initiateChatSchema),
   chatController.initiateChat
 );
 
-console.log('[CHAT_ROUTES] Registering chat routes...');
+// Route to fetch a list of all chat threads a user is a part of.
+router.get(
+  '/my-threads',
+  authMiddleware(),
+  chatController.getMyThreads
+);
 
-router.get('/my-threads', authMiddleware, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    console.log(`[CHAT] Fetching chat threads for userId: ${userId}`);
-    const threads = []; // Mock or query database
-    res.status(200).json(threads);
-  } catch (error) {
-    console.error(`[CHAT] Error fetching chat threads: ${error}`);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
+module.exports = router;
 
 console.log('[CHAT_ROUTES] Chat routes registered.');
 // You might add other chat-related routes here in the future, e.g.,

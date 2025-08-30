@@ -1,4 +1,3 @@
-// File: src/models/serviceZone.model.js
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
 
@@ -26,7 +25,7 @@ const serviceZoneSchema = new mongoose.Schema({
       required: true
     },
     coordinates: {
-      type: [[[Number]]],
+      type: [[[Number]]], // Standard GeoJSON format
       required: true
     }
   },
@@ -38,6 +37,19 @@ const serviceZoneSchema = new mongoose.Schema({
     type: String,
     required: true,
     trim: true
+  },
+  // <<-- NEW: Add pricing fields to each zone -->>
+  deliveryFee: {
+    type: Number, // Stored in the smallest currency unit (e.g., kobo)
+    required: true,
+    min: 0,
+    default: 50000 // e.g., ₦500.00
+  },
+  expressSurcharge: {
+    type: Number, // Stored in kobo
+    required: true,
+    min: 0,
+    default: 20000 // e.g., ₦200.00
   }
 }, {
   timestamps: true

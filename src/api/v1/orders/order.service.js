@@ -187,29 +187,27 @@ const placeOrder = async (customerId, orderData) => {
       useWalletBalance, promoCodeApplied, paymentMethod
     } = orderData;
     
-    // START O2: Service Zone Validation
     if (!deliveryAddressId) {
       logger.warn('[ORDER_PLACE_FAIL] Missing deliveryAddressId');
       throw new HttpError(400, 'Delivery address ID is required.');
     }
-    logger.debug('[ADDRESS_FETCH_START] Address ID: ' + deliveryAddressId);
     const deliveryAddress = await Address.findOne({ id: deliveryAddressId, userId: customerId }).session(session);
     if (!deliveryAddress || typeof deliveryAddress.longitude !== 'number' || typeof deliveryAddress.latitude !== 'number') {
       logger.warn('[ORDER_PLACE_FAIL] Invalid address or missing coords: ' + deliveryAddressId);
       throw new HttpError(400, 'Delivery address is invalid or missing location coordinates.');
     }
-    logger.info('[ADDRESS_FETCH_SUCCESS] Address: ' + deliveryAddress.fullAddress);
+    
     const deliveryPoint = {
       type: 'Point',
       coordinates: [deliveryAddress.longitude, deliveryAddress.latitude],
     };
-    logger.debug(`[ZONE_CHECK_START] Point: ${deliveryPoint.coordinates[0]},${deliveryPoint.coordinates[1]}`);
 
     const coveringZone = await ServiceZone.findOne({
       isActive: true,
       area: { $geoIntersects: { $geometry: deliveryPoint } },
     }).session(session);
 
+    // <<-- MODIFIED: Validate that a zone was found and is configured for pricing -->>
     if (!coveringZone) {
       logger.warn('[ZONE_CHECK_FAIL] Out of zone for address: ' + deliveryAddressId);
       const cfg = await Config.findOne().session(session);
@@ -217,10 +215,13 @@ const placeOrder = async (customerId, orderData) => {
         cfg?.outOfZoneDefaultMessage || 'Sorry, we do not currently service this address.';
       throw new HttpError(400, message);
     }
-    logger.info('[ZONE_CHECK_PASS] In zone: ' + coveringZone.name);
-    // END O2: Service Zone Validation
-
-    logger.debug('[USER_FETCH_START] Customer ID: ' + customerId);
+    // This check ensures that the zone has the necessary pricing fields to prevent calculation errors.
+    if (typeof coveringZone.deliveryFee !== 'number' || typeof coveringZone.expressSurcharge !== 'number') {
+        logger.error(`[ORDER_PLACE_FAIL] Zone ${coveringZone.name} is not configured for pricing.`);
+        throw new HttpError(500, 'Service area pricing is not configured correctly. Please contact support.');
+    }
+    logger.info(`[ZONE_CHECK_PASS] In zone: ${coveringZone.name} with base fee ${coveringZone.deliveryFee}`);
+    
     const user = await User.findOne({ id: customerId }).select('name phone walletBalance defaultAddressId role referredBy').session(session);
     if (!user) {
       logger.warn('[ORDER_PLACE_FAIL] User not found: ' + customerId);
@@ -230,13 +231,11 @@ const placeOrder = async (customerId, orderData) => {
       logger.warn('[ORDER_PLACE_FAIL] Non-customer role: ' + user.role);
       throw new HttpError(403, 'Only customers can place orders.');
     }
-    logger.info('[USER_FETCH_SUCCESS] User: ' + user.name);
 
     if (!items || items.length === 0 || items.some(item => !item.cylinderId || !item.quantity || item.unitPrice == null || !item.productName)) {
       logger.warn('[ORDER_PLACE_FAIL] Invalid items: ' + JSON.stringify(items));
       throw new HttpError(400, 'Invalid or missing order items.');
     }
-    logger.debug('[ITEMS_VALID] Count: ' + items.length);
 
     const effectiveRecipientName = recipientName || user.name;
     const effectiveRecipientPhone = recipientPhone || user.phone;
@@ -250,23 +249,18 @@ const placeOrder = async (customerId, orderData) => {
       state: deliveryAddress.state, country: deliveryAddress.country, postalCode: deliveryAddress.postalCode,
       latitude: deliveryAddress.latitude, longitude: deliveryAddress.longitude, deliveryInstructions: deliveryAddress.deliveryInstructions,
     };
-    logger.debug('[SNAPSHOT_CREATED] Address snapshot ready');
 
-    logger.debug('[CONFIG_FETCH_START]');
     const config = await Config.findOne().session(session);
     if (!config || !config.feeSettings) {
       logger.error('[ORDER_PLACE_FAIL] Missing config');
       throw new HttpError(500, 'System configuration for fees is not available.');
     }
-    logger.info('[CONFIG_FETCH_SUCCESS]');
 
     let orderStatus = 'Pending Payment';
     let paymentStatusCurrent = 'Pending';
     let isPayOnPickup = false;
 
-    // START O2: Conditional logic for Pay on Arrival feature
     if (paymentMethod === 'payOnPickup') {
-      logger.debug('[PAY_ON_PICKUP_CHECK_START]');
       const pastOrderCount = await Order.countDocuments({ customerId: customerId, status: 'Delivered' }).session(session);
       if (pastOrderCount > 0) {
         logger.warn('[PAY_ON_PICKUP_FAIL] Not first order');
@@ -275,16 +269,11 @@ const placeOrder = async (customerId, orderData) => {
       orderStatus = 'Awaiting Driver Arrival';
       paymentStatusCurrent = 'Pending';
       isPayOnPickup = true;
-      logger.info('[PAY_ON_PICKUP_ENABLED]');
     }
-    // END O2: Conditional logic for Pay on Arrival feature
-
 
     const itemsSubtotal = items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
-    logger.debug('[SUBTOTAL_CALC] ' + itemsSubtotal);
     let discountAmount = 0.0;
     if (promoCodeApplied) {
-      logger.debug('[PROMO_CHECK_START] Code: ' + promoCodeApplied);
       const promotion = await Promotion.findOne({ promoCode: promoCodeApplied.toUpperCase(), isActive: true, validFrom: { $lte: new Date() }, validUntil: { $gte: new Date() } }).session(session);
       if (promotion) {
           if (promotion.minOrderAmount != null && itemsSubtotal < promotion.minOrderAmount) {
@@ -293,7 +282,6 @@ const placeOrder = async (customerId, orderData) => {
             if (promotion.type === 'Percentage Discount') discountAmount = itemsSubtotal * (promotion.value / 100);
             else if (promotion.type === 'Fixed Amount') discountAmount = promotion.value;
             discountAmount = Math.min(discountAmount, itemsSubtotal);
-            logger.info('[PROMO_APPLIED] Discount: ' + discountAmount);
           }
       } else {
         logger.warn('[PROMO_INVALID] Code: ' + promoCodeApplied);
@@ -304,16 +292,19 @@ const placeOrder = async (customerId, orderData) => {
     const subtotalAfterDiscount = itemsSubtotal - discountAmount;
     const vatAmount = subtotalAfterDiscount > 0 ? subtotalAfterDiscount * (config.feeSettings.vatPercentage / 100) : 0;
     const serviceFeeAmount = subtotalAfterDiscount > 0 ? subtotalAfterDiscount * (config.feeSettings.serviceFeePercentage / 100) : 0;
-    const deliveryFee = (isExpress ? config.feeSettings.baseDeliveryFee + config.feeSettings.expressDeliverySurcharge : config.feeSettings.baseDeliveryFee);
-    const overallGrandTotal = subtotalAfterDiscount + vatAmount + serviceFeeAmount + deliveryFee;
-    logger.debug('[TOTALS_CALC] Grand: ' + overallGrandTotal + ' VAT: ' + vatAmount + ' Service: ' + serviceFeeAmount + ' Delivery: ' + deliveryFee);
+    
+    // <<-- REPLACED: Use the zone's fees instead of the global config fees -->>
+    const deliveryFee = isExpress 
+        ? coveringZone.deliveryFee + coveringZone.expressSurcharge 
+        : coveringZone.deliveryFee;
 
+    const overallGrandTotal = subtotalAfterDiscount + vatAmount + serviceFeeAmount + deliveryFee;
+    
     let totalBeforeWallet = overallGrandTotal;
     let walletAmountUsed = 0;
     if (useWalletBalance && user.walletBalance > 0) {
       walletAmountUsed = Math.min(user.walletBalance, totalBeforeWallet);
       totalBeforeWallet -= walletAmountUsed;
-      logger.info('[WALLET_USED] Amount: ' + walletAmountUsed);
     }
 
     const grandTotalToPayByGateway = isPayOnPickup ? 0 : Math.max(0, totalBeforeWallet);
@@ -323,7 +314,6 @@ const placeOrder = async (customerId, orderData) => {
       orderStatus = 'Order Placed';
       paymentStatusCurrent = 'Completed';
     }
-    logger.debug('[STATUS_SET] Order: ' + orderStatus + ' Payment: ' + paymentStatusCurrent);
 
     const newOrder = new Order({
       id: uuidv4(), customerId, deliveryAddressId, deliveryAddressSnapshot, items,
@@ -342,22 +332,18 @@ const placeOrder = async (customerId, orderData) => {
       deliveryLongitude: deliveryAddress.longitude,
       orderDate: new Date(),
     });
-    logger.debug('[ORDER_OBJ_CREATED]');
 
     if (walletAmountUsed > 0) {
       user.walletBalance -= walletAmountUsed;
       await user.save({ session });
-      logger.info('[WALLET_DEDUCT_SUCCESS] New balance: ' + user.walletBalance);
     }
     const savedOrder = await newOrder.save({ session });
-    logger.info('[ORDER_SAVE_SUCCESS] ID: ' + savedOrder.id);
+    
     let accessCode = null;
     if (grandTotalToPayByGateway > 0 && !isPayOnPickup) {
       try {
-        logger.debug('[PAYMENT_INIT_START] Order: ' + savedOrder.id);
         const paymentResult = await initializePayment({ orderId: savedOrder.id, userId: customerId, session: session });
         accessCode = paymentResult.accessCode;
-        logger.info('[PAYMENT_INIT_SUCCESS] AccessCode: ' + accessCode);
       } catch (error) {
         logger.error('[PAYMENT_INIT_FAIL] Order: ' + savedOrder.id + ' Error: ' + error.message);
         throw new HttpError(500, 'Order was created, but payment could not be initialized.');

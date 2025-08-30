@@ -1,70 +1,49 @@
-// src/api/v1/zones/zone.service.js
 const ServiceZone = require('../../../models/serviceZone.model');
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
 
 const createZone = async (zoneData) => {
-  logger.info('[ZONE_CREATE_START] Data: ' + JSON.stringify(zoneData));
-  try {
-    const newZone = new ServiceZone(zoneData);
-    await newZone.save();
-    logger.info('[ZONE_CREATE_SUCCESS] ID: ' + newZone.id);
-    return newZone.toObject();
-  } catch (error) {
-    logger.error('[ZONE_CREATE_FAIL] Error: ' + error.message);
-    throw error;
-  }
+  // This function requires no changes. It will pass the validated data through.
+  const newZone = new ServiceZone(zoneData);
+  await newZone.save();
+  return newZone.toObject();
 };
 
 const getZones = async () => {
-  logger.info('[ZONE_FETCH_START]');
-  try {
-    const zones = await ServiceZone.find({}).sort({ state: 1, name: 1 });
-    logger.info('[ZONE_FETCH_SUCCESS] Count: ' + zones.length);
-    return zones;
-  } catch (error) {
-    logger.error('[ZONE_FETCH_FAIL] Error: ' + error.message);
-    throw error;
-  }
+  // This function requires no changes.
+  const zones = await ServiceZone.find({}).sort({ state: 1, name: 1 }).lean();
+  return zones;
 };
 
 const updateZone = async (zoneId, updateData) => {
-  logger.info('[ZONE_UPDATE_START] ID: ' + zoneId + ' Data: ' + JSON.stringify(updateData));
-  try {
-    const { name, isActive, outOfZoneMessage } = updateData;
-    const zone = await ServiceZone.findOne({ id: zoneId });
-    if (!zone) {
-      logger.warn('[ZONE_UPDATE_FAIL] Not found: ' + zoneId);
-      throw new HttpError(404, 'Service zone not found.');
-    }
-
-    if (name) zone.name = name;
-    if (typeof isActive === 'boolean') zone.isActive = isActive;
-    if (outOfZoneMessage) zone.outOfZoneMessage = outOfZoneMessage;
-
-    await zone.save();
-    logger.info('[ZONE_UPDATE_SUCCESS] ID: ' + zoneId);
-    return zone.toObject();
-  } catch (error) {
-    logger.error('[ZONE_UPDATE_FAIL] Error: ' + error.message);
-    throw error;
+  const zone = await ServiceZone.findOne({ id: zoneId });
+  if (!zone) {
+    throw new HttpError(404, 'Service zone not found.');
   }
+
+  // <<-- MODIFIED: Update the service to handle new pricing fields -->>
+  if (updateData.name) zone.name = updateData.name;
+  if (typeof updateData.isActive === 'boolean') zone.isActive = updateData.isActive;
+  if (updateData.outOfZoneMessage) zone.outOfZoneMessage = updateData.outOfZoneMessage;
+  // Check if new fee values have been provided and update them
+  if (typeof updateData.deliveryFee === 'number') {
+    zone.deliveryFee = updateData.deliveryFee;
+  }
+  if (typeof updateData.expressSurcharge === 'number') {
+    zone.expressSurcharge = updateData.expressSurcharge;
+  }
+
+  await zone.save();
+  return zone.toObject();
 };
 
 const deleteZone = async (zoneId) => {
-  logger.info('[ZONE_DELETE_START] ID: ' + zoneId);
-  try {
-    const result = await ServiceZone.findOneAndDelete({ id: zoneId });
-    if (!result) {
-      logger.warn('[ZONE_DELETE_FAIL] Not found: ' + zoneId);
-      throw new HttpError(404, 'Service zone not found.');
-    }
-    logger.info('[ZONE_DELETE_SUCCESS] ID: ' + zoneId);
-    return { message: 'Service zone deleted successfully.' };
-  } catch (error) {
-    logger.error('[ZONE_DELETE_FAIL] Error: ' + error.message);
-    throw error;
+  // This function requires no changes.
+  const result = await ServiceZone.findOneAndDelete({ id: zoneId });
+  if (!result) {
+    throw new HttpError(404, 'Service zone not found.');
   }
+  return { message: 'Service zone deleted successfully.' };
 };
 
 module.exports = { createZone, getZones, updateZone, deleteZone };

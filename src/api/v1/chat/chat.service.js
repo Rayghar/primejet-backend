@@ -45,18 +45,22 @@ const initiateChatSession = async (orderId, senderId, recipientId) => {
       throw new HttpError(403, 'These users are not authorized to chat in the context of this order.');
     }
 
-    // Delegate the Firestore interaction to the firebaseService.
-    const chatDetails = await firebaseService.initiateChat(orderId, senderId, recipientId);
+    // <<-- MODIFIED: Delegate to firebaseService and ensure it uses the orderId -->>
+    // This now creates the chat document in Firestore using the orderId as the ID.
+    await firebaseService.findOrCreateChatThread(orderId, {
+        orderId: orderId,
+        participants: [senderId, recipientId],
+        participantInfo: {
+            [senderId]: { name: sender.name },
+            [recipientId]: { name: recipient.name }
+        },
+    });
 
-    logger.info(`[CHAT_SERVICE] Chat initiated successfully for order ${orderId}. ChatId: ${chatDetails.chatId}`);
+    logger.info(`[CHAT_SERVICE] Chat session ready for order ${orderId}.`);
     
+    // Return the orderId as the chatId to match the Flutter app's expectation
     return {
-      ...chatDetails,
-      message: `Chat session initiated with ${recipient.name}.`,
-      participants: [
-        { userId: sender.id, name: sender.name, role: sender.role },
-        { userId: recipient.id, name: recipient.name, role: recipient.role }
-      ]
+      chatId: orderId, 
     };
 
   } catch (error) {

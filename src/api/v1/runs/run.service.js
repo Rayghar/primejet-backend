@@ -211,32 +211,25 @@ const getUnassignedOrders = async (options) => {
 
 const getRun = async (runId, requestingUser) => {
   try {
-    // ========================== FIX IS HERE ==========================
-    // The .populate() method now correctly uses the 'stops.order' virtual path,
-    // which correctly joins the string-based UUIDs. The nested populate
-    // to get the customer of each order within the run is also preserved.
     const run = await Run.findOne({ id: runId })
       .populate({
         path: 'driver',
         select: 'id name phone' 
       })
       .populate({
-        path: 'stops.order', // <-- Use the new virtual field 'order' on the stop
+        path: 'stops.order', // <-- It correctly uses the new virtual field 'order'
         model: 'Order',
-        select: 'id customerId recipientName status items deliveryAddressSnapshot deliveryLatitude deliveryLongitude',
         populate: { 
-          path: 'customer', 
+          path: 'customer', // <-- This now works, getting the customer from the order
           model: 'User', 
           select: 'id name phone' 
         }
       });
-    // ===============================================================
 
     if (!run) {
       throw new HttpError(404, 'Run not found.');
     }
 
-    // Authorization check
     if (requestingUser.role === 'driver' && run.driver?.id !== requestingUser.id) {
       throw new HttpError(403, 'You are not authorized to access this run.');
     }
@@ -248,7 +241,6 @@ const getRun = async (runId, requestingUser) => {
     throw new HttpError(500, 'Failed to retrieve run details.');
   }
 };
-
 
 
 const assignDriverToRun = async (runId, newDriverId, adminPerformingActionId) => {

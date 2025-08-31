@@ -19,10 +19,11 @@ const adminSendNotification = async (notificationData) => {
   const notificationBase = {
     title,
     body,
-    sentAt: new Date(),
-    read: false,
-    type: 'admin_broadcast', 
-    data: data || {}, 
+    // <<-- FIX: Corrected field names to match the schema -->>
+    timestamp: new Date(), // Changed from 'sentAt'
+    isRead: false,         // Changed from 'read'
+    type: 'ADMIN_BROADCAST',
+    data: data || {},
   };
 
   let userQuery = {};

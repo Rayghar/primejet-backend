@@ -21,16 +21,17 @@ const updateZone = async (zoneId, updateData) => {
     throw new HttpError(404, 'Service zone not found.');
   }
 
-  // <<-- MODIFIED: Update the service to handle new pricing fields -->>
+  // Update standard fields if they exist
   if (updateData.name) zone.name = updateData.name;
   if (typeof updateData.isActive === 'boolean') zone.isActive = updateData.isActive;
   if (updateData.outOfZoneMessage) zone.outOfZoneMessage = updateData.outOfZoneMessage;
-  // Check if new fee values have been provided and update them
-  if (typeof updateData.deliveryFee === 'number') {
-    zone.deliveryFee = updateData.deliveryFee;
-  }
-  if (typeof updateData.expressSurcharge === 'number') {
-    zone.expressSurcharge = updateData.expressSurcharge;
+  if (typeof updateData.deliveryFee === 'number') zone.deliveryFee = updateData.deliveryFee;
+  if (typeof updateData.expressSurcharge === 'number') zone.expressSurcharge = updateData.expressSurcharge;
+  
+  // <<-- NEW: Add the logic to update the price overrides -->>
+  // This checks if a priceOverrides array was sent and updates it.
+  if (Array.isArray(updateData.priceOverrides)) {
+    zone.priceOverrides = updateData.priceOverrides;
   }
 
   await zone.save();

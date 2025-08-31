@@ -980,4 +980,4 @@ module.exports = {
   markAsVerifyingPayment,
   getCustomerStats,
   driverArrivedForPickup,
-};
+}

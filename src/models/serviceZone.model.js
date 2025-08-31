@@ -1,6 +1,13 @@
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
 
+// <<-- NEW: Define the schema for a single price override -->>
+const priceOverrideSchema = new mongoose.Schema({
+  cylinderId: { type: String, required: true }, // e.g., 'gc_5kg'
+  newPrice: { type: Number, required: true, min: 0 } // Price in kobo
+}, { _id: false });
+
+
 const serviceZoneSchema = new mongoose.Schema({
   id: {
     type: String,
@@ -38,19 +45,23 @@ const serviceZoneSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
-  // <<-- NEW: Add pricing fields to each zone -->>
   deliveryFee: {
-    type: Number, // Stored in the smallest currency unit (e.g., kobo)
+    type: Number, 
     required: true,
     min: 0,
-    default: 50000 // e.g., ₦500.00
+    default: 50000
   },
   expressSurcharge: {
-    type: Number, // Stored in kobo
+    type: Number,
     required: true,
     min: 0,
-    default: 20000 // e.g., ₦200.00
-  }
+    default: 20000
+  },
+  // <<-- NEW: Add the priceOverrides array to the main schema -->>
+  priceOverrides: {
+    type: [priceOverrideSchema],
+    default: []
+  },
 }, {
   timestamps: true
 });

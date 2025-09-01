@@ -47,7 +47,7 @@ const login = async (email, password) => {
 
 // Admin: Create a new agent
 const createAgent = async (agentData) => {
-  const { name, email, phone, agentCode: providedAgentCode, isActive } = agentData;
+  const { name, email, phone, password, agentCode: providedAgentCode, isActive } = agentData;
 
   // Check for uniqueness of email, phone, and agentCode
   const existingAgentByPhone = await Agent.findOne({ phone });
@@ -74,6 +74,7 @@ const createAgent = async (agentData) => {
     name,
     email,
     phone,
+    password, // In a real app, ensure this is hashed before saving
     agentCode: agentCodeToUse,
     referralLink,
     isActive,

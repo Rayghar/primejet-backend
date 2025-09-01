@@ -13,17 +13,24 @@ const agentSchemaBase = {
 
 const createAgentSchema = Joi.object({
   name: agentSchemaBase.name.required(),
-  email: agentSchemaBase.email.optional(), // Email can be optional if phone is primary
+  email: agentSchemaBase.email.optional(),
   phone: agentSchemaBase.phone.required(),
-  agentCode: agentSchemaBase.agentCode.required(),
+  // agentCode is now optional in the schema; service will generate if not provided
+  agentCode: agentSchemaBase.agentCode.optional(), 
+  // ================== ADD THIS LINE ==================
+  password: Joi.string().min(6).required(),
+  // ===================================================
   isActive: agentSchemaBase.isActive.default(true),
 });
+
+
 
 const updateAgentSchema = Joi.object({
   name: agentSchemaBase.name.optional(),
   email: agentSchemaBase.email.optional(),
   phone: agentSchemaBase.phone.optional(),
   agentCode: agentSchemaBase.agentCode.optional(), // Can update code, but uniqueness is checked in service
+  password: Joi.string().min(6).optional(),
   isActive: agentSchemaBase.isActive.optional(),
 }).min(1).messages({
   'object.min': 'At least one field must be provided for update.',

@@ -3,7 +3,7 @@ const express = require('express');
 const agentController = require('./agent.controller');
 const authMiddleware = require('../../../middleware/auth.middleware');
 const validate = require('../../../middleware/validate.middleware');
-const { createAgentSchema, updateAgentSchema, getAgentsQuerySchema } = require('./agent.validation');
+const { createAgentSchema, updateAgentSchema, getAgentsQuerySchema, agentLoginSchema } = require('./agent.validation');
 
 const router = express.Router();
 

@@ -1,5 +1,7 @@
 // File: src/api/v1/agents/agent.service.js
 const { v4: uuidv4 } = require('uuid');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const Agent = require('../../../models/agent.model');
 const AgentReferralEvent = require('../../../models/agentReferralEvent.model');

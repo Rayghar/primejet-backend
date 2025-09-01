@@ -24,6 +24,12 @@ router.post(
 );
 
 router.get(
+  '/referred-customers',
+  authMiddleware('admin'), // Secure this endpoint for admins
+  agentController.getAllReferredCustomers
+);
+
+router.get(
   '/',
   authMiddleware('admin'),
   validate(getAgentsQuerySchema, 'query'), // Validate query parameters for list

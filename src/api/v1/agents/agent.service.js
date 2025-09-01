@@ -130,6 +130,43 @@ const getAgentById = async (agentId) => {
   return agent.toObject();
 };
 
+const getAllReferredCustomers = async ({ page = 1, limit = 15, search = '' }) => {
+  const query = {
+    // Find users who have the referredByAgentId field populated
+    referredByAgentId: { $exists: true, $ne: null }
+  };
+
+  if (search) {
+    const searchRegex = new RegExp(search, 'i');
+    // Find agents that match the search query to filter users by them
+    const matchingAgents = await Agent.find({
+      $or: [{ name: searchRegex }, { agentCode: searchRegex }]
+    }).select('id');
+    const matchingAgentIds = matchingAgents.map(agent => agent.id);
+
+    query.$or = [
+      { name: searchRegex },
+      { email: searchRegex },
+      { phone: searchRegex },
+      { referredByAgentId: { $in: matchingAgentIds } } // Find users referred by the matched agents
+    ];
+  }
+
+  const totalCustomers = await User.countDocuments(query);
+  const customers = await User.find(query)
+    .populate('referredByAgentId', 'name agentCode') // Populate agent details
+    .sort({ createdAt: -1 })
+    .skip((page - 1) * limit)
+    .limit(limit);
+
+  return {
+    customers: customers.map(user => user.toObject()),
+    currentPage: page,
+    totalPages: Math.ceil(totalCustomers / limit),
+    totalCustomers,
+  };
+};
+
 // Admin: Update an agent
 const updateAgent = async (agentId, updateData) => {
   const agent = await Agent.findOne({ id: agentId });
@@ -269,4 +306,6 @@ module.exports = {
   markCustomerRegisteredByAgent,
   getAgentPerformance,
   login,
+  getAllReferredCustomers,
+  
 };

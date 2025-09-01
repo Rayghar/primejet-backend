@@ -68,6 +68,20 @@ const deleteAgent = async (req, res, next) => {
   }
 };
 
+const getAllReferredCustomers = async (req, res, next) => {
+  try {
+    const { page, limit, search } = req.query;
+    const result = await agentService.getAllReferredCustomers({
+      page: parseInt(page, 10) || 1,
+      limit: parseInt(limit, 10) || 15,
+      search,
+    });
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
 // Public: Track Agent Referral Link Click
 const trackAgentLink = async (req, res, next) => {
   try {
@@ -100,4 +114,5 @@ module.exports = {
   deleteAgent,
   trackAgentLink,
   login,
+  getAllReferredCustomers,
 };

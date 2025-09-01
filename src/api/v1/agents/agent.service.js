@@ -29,7 +29,9 @@ const generateUniqueAgentCode = async (length = 6) => {
 };
 
 const login = async (email, password) => {
-  const agent = await Agent.findOne({ email: email.toLowerCase() });
+  // Add .select('+password') to explicitly fetch the hidden password field
+  const agent = await Agent.findOne({ email: email.toLowerCase() }).select('+password');
+  
   if (!agent) {
     throw new HttpError(401, 'Invalid email or password.');
   }

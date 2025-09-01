@@ -8,7 +8,6 @@ const AgentReferralEvent = require('../../../models/agentReferralEvent.model');
 const User = require('../../../models/user.model'); // To update user's referredByAgentId
 const HttpError = require('../../../utils/HttpError');
 const JWT_SECRET = process.env.JWT_SECRET || 'your-default-super-secret-key-for-dev';
-const Admin = require('../../../models/admin.model');
 
 // Base URL for your app's deep links (e.g., from Firebase Dynamic Links or custom scheme)
 // This should be configured in your .env file.

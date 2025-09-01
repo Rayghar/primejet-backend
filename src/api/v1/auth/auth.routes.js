@@ -1,4 +1,6 @@
 // File: src/api/v1/auth/auth.routes.js
+// ADVISORY: This version fixes the server crash by importing the missing schema.
+
 const express = require('express');
 const authController = require('./auth.controller');
 const validate = require('../../../middleware/validate.middleware');
@@ -9,7 +11,8 @@ const {
   loginSchema,
   requestPasswordResetSchema,
   resetPasswordSchema,
-  verifyOtpSchema // Import the new validation schema
+  verifyOtpSchema,
+  verifyPasswordTokenSchema // MODIFIED: Added the missing schema to the import list
 } = require('./auth.validation');
 
 const router = express.Router();
@@ -25,6 +28,7 @@ router.post('/verify-otp', validate(verifyOtpSchema), authController.verifyEmail
 
 // --- Password Reset ---
 router.post('/request-password-reset', validate(requestPasswordResetSchema), authController.requestPasswordReset);
+router.post('/verify-password-token', validate(verifyPasswordTokenSchema), authController.verifyPasswordResetToken);
 router.post('/reset-password', validate(resetPasswordSchema), authController.resetPassword);
 
 // --- NEW ROUTE FOR MOBILE SOCIAL LOGIN ---

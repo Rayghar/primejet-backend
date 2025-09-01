@@ -6,13 +6,11 @@ const crypto = require('crypto');
 const User = require('../../../models/user.model');
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
-
-// ========================== FIX IS HERE (1 of 3) ==========================
-// Correctly import the OAuth2Client from the google-auth-library package.
+const referralService = require('../referrals/referral.service');
 const { OAuth2Client } = require('google-auth-library');
-// The email service should be in the utils folder.
 const { sendEmail } = require('../../../services/email.service'); 
-// ========================================================================
+const Agent = require('../../../models/agent.model');
+const agentService = require('../agents/agent.service');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-default-super-secret-key-for-dev';
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -25,22 +23,32 @@ const generateJwtForUser = (user, isNewUser = false) => {
     userId: user.id, 
     role: user.role, 
     name: user.name,
-    isNewUser, // Signal to the frontend if this is a first-time social login
+    isNewUser,
     message: 'Login successful.' 
   };
 };
+
 const registerCustomer = async (userData) => {
-    // This function is correct from your file, included for completeness.
-    const { email, password, name, phone } = userData;
+    const { email, password, name, phone, referralCode } = userData;
     const existingUser = await User.findOne({ email: email.toLowerCase() }).select('+isVerified');
     if (existingUser && existingUser.isVerified) {
         throw new HttpError(409, 'An account with this email already exists.');
     }
-    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // ============================= FIX IS HERE =============================
+    // The password is now passed directly to the user model.
+    // The pre-save hook in user.model.js will handle hashing it ONCE before saving.
+    // This prevents the double-hashing bug.
+    // const hashedPassword = await bcrypt.hash(password, 10); // REMOVED
+    // =====================================================================
+
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
     const hashedOtp = await bcrypt.hash(otp, 10);
     const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
-    const userFields = { name, email: email.toLowerCase(), phone, password: hashedPassword, role: 'customer', otp: hashedOtp, otpExpires, isVerified: false, status: 'pending_verification' };
+    
+    // Pass the plain password to the userFields object.
+    const userFields = { name, email: email.toLowerCase(), phone, password: password, role: 'customer', otp: hashedOtp, otpExpires, isVerified: false, status: 'pending_verification' };
+    
     let user;
     if (existingUser) {
         user = await User.findOneAndUpdate({ _id: existingUser._id }, userFields, { new: true });
@@ -48,6 +56,35 @@ const registerCustomer = async (userData) => {
         user = new User({ ...userFields, id: uuidv4() });
         await user.save();
     }
+    
+    if (referralCode && referralCode.trim().length > 0) {
+        const trimmedCode = referralCode.trim().toUpperCase();
+
+        // 1. Check if the code belongs to an active agent first.
+        const potentialAgent = await Agent.findOne({ agentCode: trimmedCode });
+
+        if (potentialAgent && potentialAgent.isActive) {
+            // It's an agent referral. Link the user to the agent.
+            user.referredByAgentId = potentialAgent.id;
+            logger.info(`[AUTH_SERVICE] Attributing new user ${email} to agent ${potentialAgent.id} via code ${trimmedCode}.`);
+        } else {
+            // 2. If not an agent, fallback to the customer-to-customer referral logic.
+            logger.info(`[AUTH_SERVICE] Code ${trimmedCode} not found for an active agent. Checking for customer referral.`);
+            referralService.processCodeOnRegistration(user, trimmedCode);
+        }
+    }
+    // =================== MODIFICATION END: Unified Referral Code Logic ===================
+
+    await user.save();
+
+    // ================== MODIFICATION START: Update Agent Stats After User is Saved ==================
+    // If the user was linked to an agent, mark the registration event to update agent stats.
+    if (user.referredByAgentId) {
+        // This call updates the agent's total and logs the event.
+        await agentService.markCustomerRegisteredByAgent(referralCode.trim().toUpperCase(), user.id);
+    }
+    // =================== MODIFICATION END: Update Agent Stats After User is Saved ===================
+
     await sendEmail({ to: email, subject: 'Your Gas2Door Verification Code', text: `Your verification code is: ${otp}.`, html: `<p>Your verification code is: <strong>${otp}</strong>.</p>` });
     logger.info(`[AUTH_SERVICE] OTP for ${email}: ${otp}`);
     return { userId: user.id, message: 'Registration successful. A 4-digit verification code has been sent to your email.' };
@@ -73,22 +110,19 @@ const verifyGoogleIdTokenAndLogin = async (idToken) => {
         user.googleId = googleId;
         await user.save();
       }
-      // It's an existing user
       return generateJwtForUser(user, false);
     } else {
-      // It's a new user
       const newUser = new User({
         id: uuidv4(),
         googleId,
         name,
         email,
-        phone: '00000000000', // Still a placeholder, will be updated by user
+        phone: '00000000000',
         role: 'customer',
         isVerified: true,
         status: 'active',
       });
       await newUser.save();
-      // Pass 'true' to signal this is a new user
       return generateJwtForUser(newUser, true);
     }
   } catch (error) {
@@ -97,9 +131,6 @@ const verifyGoogleIdTokenAndLogin = async (idToken) => {
   }
 };
 
-// ========================== FIX IS HERE (3 of 3) ==========================
-// All other functions from your existing auth.service.js are included here
-// to provide a single, complete, and correct file.
 const verifyEmailOtp = async (email, otp) => {
     const user = await User.findOne({ 
       email: email.toLowerCase(),
@@ -146,14 +177,85 @@ const requestPasswordReset = async (email) => {
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) {
       logger.warn(`Password reset requested for non-existent email: ${email}.`);
-      return { message: 'If your email is registered, you will receive a password reset link.' };
+      return { message: 'If your email is registered, you will receive a 6-digit reset code.' };
     }
-    const resetToken = crypto.randomBytes(32).toString('hex');
-    user.passwordResetToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-    user.passwordResetExpires = Date.now() + 3600000;
+    
+    const resetToken = Math.floor(100000 + Math.random() * 900000).toString();
+    
+    user.passwordResetToken = await bcrypt.hash(resetToken, 10);
+    user.passwordResetExpires = Date.now() + 10 * 60 * 1000; 
     await user.save();
-    logger.info(`Password Reset Token for ${email}: ${resetToken}`);
-    return { message: 'If your email is registered, you will receive a password reset link.' };
+    
+    await sendEmail({
+      to: email,
+      subject: 'Your Gas2Door Password Reset Code',
+      text: `Your password reset code is: ${resetToken}. It will expire in 10 minutes.`,
+      html: `<p>Your password reset code is: <strong>${resetToken}</strong>. It will expire in 10 minutes.</p>`
+    });
+
+    logger.info(`Password Reset Code for ${email}: ${resetToken}`);
+    return { message: 'A 6-digit reset code has been sent to your email.' };
+};
+
+const adminCreateUser = async (newUserData, requestingUser) => {
+  // This check is now robust. It uses the user object that the middleware already verified.
+  if (!requestingUser || requestingUser.role !== 'admin') {
+    throw new HttpError(403, 'Insufficient permissions. Only admins can create new users.');
+  }
+
+  const { email, password, name, phone, role } = newUserData;
+
+  const existingUser = await User.findOne({ email: email.toLowerCase() });
+  if (existingUser) {
+    throw new HttpError(409, 'An account with this email already exists.');
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+  
+  const newUser = new User({
+    id: uuidv4(),
+    name,
+    email: email.toLowerCase(),
+    phone,
+    password: hashedPassword,
+    role: role || 'customer', // Default to 'customer' if role not provided
+    isVerified: true, // Users created by admins are verified by default
+    status: 'active',
+  });
+
+  await newUser.save();
+  
+  // Return a clean version of the user object, without the password.
+  const userJson = newUser.toJSON();
+  delete userJson.password;
+
+  return userJson;
+};
+
+const verifyPasswordResetToken = async (email, token) => {
+    const user = await User.findOne({ 
+      email: email.toLowerCase(),
+      passwordResetExpires: { $gt: Date.now() }
+    }).select('+passwordResetToken');
+  
+    if (!user) {
+      throw new HttpError(400, 'Reset code is invalid or has expired.');
+    }
+  
+    const isMatch = await bcrypt.compare(token, user.passwordResetToken);
+    if (!isMatch) {
+      throw new HttpError(400, 'Invalid reset code provided.');
+    }
+
+    const finalResetToken = crypto.randomBytes(32).toString('hex');
+    user.passwordResetToken = crypto.createHash('sha256').update(finalResetToken).digest('hex');
+    user.passwordResetExpires = Date.now() + 10 * 60 * 1000; 
+    await user.save();
+
+    return { 
+      message: 'Code verified successfully.',
+      resetToken: finalResetToken 
+    };
 };
 
 const resetPassword = async (token, newPassword) => {
@@ -162,13 +264,17 @@ const resetPassword = async (token, newPassword) => {
       passwordResetToken: hashedToken,
       passwordResetExpires: { $gt: Date.now() },
     });
+    
     if (!user) {
       throw new HttpError(400, 'Password reset token is invalid or has expired.');
     }
-    user.password = await bcrypt.hash(newPassword, 10);
+    
+    user.password = newPassword; 
     user.passwordResetToken = undefined;
-    user.passwordResetExpires = null;
+    user.passwordResetExpires = undefined;
+    
     await user.save();
+    
     return { message: 'Password has been reset successfully.' };
 };
 
@@ -178,5 +284,8 @@ module.exports = {
   verifyEmailOtp,
   login,
   requestPasswordReset,
+  verifyPasswordResetToken,
   resetPassword,
+  adminCreateUser,
+
 };

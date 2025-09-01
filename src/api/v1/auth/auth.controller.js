@@ -1,4 +1,6 @@
 // File: src/api/v1/auth/auth.controller.js
+// ADVISORY: This version adds the missing 'verifyPasswordResetToken' function to resolve the server crash.
+
 const authService = require('./auth.service');
 const authValidation = require('./auth.validation');
 const HttpError = require('../../../utils/HttpError');
@@ -6,12 +8,10 @@ const HttpError = require('../../../utils/HttpError');
 
 const registerAdmin = async (req, res, next) => {
   try {
-    // Step 1: Validate request body inside the controller
     const { error, value } = authValidation.registerAdminSchema.validate(req.body);
     if (error) {
       throw new HttpError(400, error.details.map(d => d.message).join(', '));
     }
-    // Step 2: Call the service with the validated data
     const result = await authService.registerAdmin(value);
     res.status(201).json(result);
   } catch (error) {
@@ -32,8 +32,6 @@ const login = async (req, res, next) => {
   }
 };
 
-// ========================== FIX IS HERE ==========================
-// This function was missing, causing the "argument handler must be a function" error.
 const verifyEmailOtp = async (req, res, next) => {
   try {
     const { email, otp } = req.body;
@@ -55,7 +53,6 @@ const resendOtp = async (req, res, next) => {
         next(error);
     }
 };
-// ===============================================================
 
 
 const registerCustomer = async (req, res, next) => {
@@ -97,6 +94,19 @@ const requestPasswordReset = async (req, res, next) => {
   }
 };
 
+// =======================================================================
+// NEW: Added the missing controller function for password token verification.
+// =======================================================================
+const verifyPasswordResetToken = async (req, res, next) => {
+  try {
+    const { email, token } = req.body;
+    const result = await authService.verifyPasswordResetToken(email, token);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
 const resetPassword = async (req, res, next) => {
   try {
     const { error, value } = authValidation.resetPasswordSchema.validate(req.body);
@@ -124,14 +134,27 @@ const googleMobileSignIn = async (req, res, next) => {
   }
 };
 
+const adminCreateUser = async (req, res, next) => {
+  try {
+    // req.user is the authenticated admin from the middleware
+    // req.body is the data for the new user to be created
+    const newUser = await authService.adminCreateUser(req.body, req.user);
+    res.status(201).json(newUser);
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   registerCustomer,
   registerDriver,
   registerAdmin,
+  adminCreateUser,
   googleMobileSignIn,
   login,
   requestPasswordReset,
+  verifyPasswordResetToken, // MODIFIED: Exported the new function
   resetPassword,
   verifyEmailOtp,
-  resendOtp, // Added resendOtp function
+  resendOtp,
 };

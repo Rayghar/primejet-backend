@@ -1,4 +1,6 @@
 // File: src/api/v1/auth/auth.validation.js
+// ADVISORY: This version adds the new, missing schema to resolve the server crash.
+
 const Joi = require('joi');
 
 const registerCustomerSchema = Joi.object({
@@ -6,6 +8,7 @@ const registerCustomerSchema = Joi.object({
   email: Joi.string().email().max(254).required(),
   phone: Joi.string().pattern(/^\+?\d{10,15}$/).required(),
   password: Joi.string().min(6).required(),
+  referralCode: Joi.string().trim().alphanum().optional().allow('', null),
 });
 
 const registerDriverSchema = Joi.object({
@@ -50,6 +53,19 @@ const verifyOtpSchema = Joi.object({
   }),
 });
 
+// =======================================================================
+// NEW: Added the missing schema for the password reset token.
+// =======================================================================
+const verifyPasswordTokenSchema = Joi.object({
+  email: Joi.string().email().required(),
+  token: Joi.string().length(6).pattern(/^\d+$/).required().messages({
+    'string.length': 'Token must be 6 digits long.',
+    'string.pattern.base': 'Token must only contain numbers.',
+    'any.required': 'Token is required.',
+  }),
+});
+
+
 module.exports = {
   registerCustomerSchema,
   registerDriverSchema,
@@ -58,4 +74,5 @@ module.exports = {
   requestPasswordResetSchema,
   resetPasswordSchema,
   verifyOtpSchema,
+  verifyPasswordTokenSchema, // MODIFIED: Exported the new schema
 };

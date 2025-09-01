@@ -29,25 +29,36 @@ const generateUniqueAgentCode = async (length = 6) => {
 };
 
 const login = async (email, password) => {
-  // Add .select('+password') to explicitly fetch the hidden password field
-  const agent = await Agent.findOne({ email: email.toLowerCase() }).select('+password');
-  
-  if (!agent) {
+  const lcEmail = email.toLowerCase();
+  let userRecord;
+
+  // First, check if the user is an Agent
+  let user = await Agent.findOne({ email: lcEmail }).select('+password');
+
+  // If not found as an Agent, check if they are an Admin
+  if (!user) {
+    user = await Admin.findOne({ email: lcEmail }).select('+password');
+  }
+
+  if (!user) {
     throw new HttpError(401, 'Invalid email or password.');
   }
 
-  const isMatch = await bcrypt.compare(password, agent.password);
+  const isMatch = await bcrypt.compare(password, user.password);
   if (!isMatch) {
     throw new HttpError(401, 'Invalid email or password.');
   }
 
-  // Create a JWT payload
-  const payload = { id: agent.id, role: 'agent' };
+  // Create a JWT payload (works for both Admins and Agents)
+  const payload = { id: user.id, role: user.role || 'admin' }; // Default to 'admin' role if not specified
   const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1d' });
 
-  return { token, agent: agent.toObject() };
+  // Return the token and the user object (excluding password)
+  const userObject = user.toObject();
+  delete userObject.password;
+
+  return { token, agent: userObject }; // Keep 'agent' key for frontend compatibility
 };
-// =
 
 // Admin: Create a new agent
 const createAgent = async (agentData) => {
@@ -295,6 +306,54 @@ const getAgentPerformance = async (agentId) => {
   };
 };
 
+// ================== ADD THIS NEW FUNCTION ==================
+/**
+ * Admin: Get a summary of the campaign performance for the current day.
+ */
+const getCampaignSummary = async () => {
+  // Define the start and end of the current day in the server's local timezone
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+
+  // Find customers who were created today and have a referring agent
+  const referredToday = await User.find({
+    referredByAgentId: { $exists: true, $ne: null },
+    createdAt: { $gte: startOfDay, $lt: endOfDay }
+  }).populate('referredByAgentId', 'name'); // Populate agent's name for top agent calculation
+
+  const totalReferralsToday = referredToday.length;
+  const totalRewardsToday = totalReferralsToday * 500; // NGN 500 reward per referral
+
+  // Find the top performing agent for the day
+  let topAgentToday = { name: 'N/A', referrals: 0 };
+  if (totalReferralsToday > 0) {
+    // Tally up referrals per agent
+    const agentPerformance = referredToday.reduce((acc, user) => {
+      if (user.referredByAgentId && user.referredByAgentId._id) {
+          const agentId = user.referredByAgentId._id.toString();
+          if (!acc[agentId]) {
+            acc[agentId] = { name: user.referredByAgentId.name, referrals: 0 };
+          }
+          acc[agentId].referrals++;
+      }
+      return acc;
+    }, {});
+
+    // Find the agent with the highest tally
+    const topPerformer = Object.values(agentPerformance).sort((a, b) => b.referrals - a.referrals)[0];
+    if (topPerformer) {
+      topAgentToday = topPerformer;
+    }
+  }
+
+  return {
+    totalReferralsToday,
+    totalRewardsToday,
+    topAgentToday,
+  };
+};
+
 
 module.exports = {
   createAgent,
@@ -307,5 +366,7 @@ module.exports = {
   getAgentPerformance,
   login,
   getAllReferredCustomers,
-  
+  getCampaignSummary,
+
+
 };

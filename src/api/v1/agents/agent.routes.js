@@ -61,6 +61,12 @@ router.post(
   agentController.login
 );
 
+router.get(
+  '/summary/campaign',
+  authMiddleware('admin'), // Secure for admins only
+  agentController.getCampaignSummary
+);
+
 
 console.log('[AGENT_ROUTES] Agent routes registered.');
 

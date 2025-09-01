@@ -105,6 +105,15 @@ const trackAgentLink = async (req, res, next) => {
   }
 };
 
+const getCampaignSummary = async (req, res, next) => {
+  try {
+    const summary = await agentService.getCampaignSummary();
+    res.status(200).json(summary);
+  } catch (error) {
+    next(error);
+  }
+};
+
 
 module.exports = {
   createAgent,
@@ -115,4 +124,6 @@ module.exports = {
   trackAgentLink,
   login,
   getAllReferredCustomers,
+  getCampaignSummary,
+
 };

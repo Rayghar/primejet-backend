@@ -69,6 +69,9 @@ const createAgent = async (agentData) => {
     throw new HttpError(409, `Agent code '${agentCodeToUse}' already exists. Please choose another.`);
   }
 
+  const salt = await bcrypt.genSalt(10);
+  const hashedPassword = await bcrypt.hash(password, salt);
+
   const referralLink = `${BASE_APP_DEEPLINK_URL}/agent_onboard?agentCode=${agentCodeToUse}`;
 
   const newAgent = new Agent({
@@ -76,7 +79,7 @@ const createAgent = async (agentData) => {
     name,
     email,
     phone,
-    password, // In a real app, ensure this is hashed before saving
+    password: hashedPassword,
     agentCode: agentCodeToUse,
     referralLink,
     isActive,
@@ -148,6 +151,13 @@ const updateAgent = async (agentId, updateData) => {
     // If agent code changes, the referralLink needs to be updated too
     updateData.referralLink = `${BASE_APP_DEEPLINK_URL}/agent_onboard?agentCode=${updateData.agentCode}`;
   }
+
+  if (updateData.password) {
+    const salt = await bcrypt.genSalt(10);
+    updateData.password = await bcrypt.hash(updateData.password, salt);
+  }
+
+
 
   Object.keys(updateData).forEach(key => {
     if (updateData[key] !== undefined && key !== 'id' && key !== 'referralLink' && key !== 'totalCustomersReferred') {

@@ -12,6 +12,16 @@ const createAgent = async (req, res, next) => {
   }
 };
 
+const login = async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+    const result = await agentService.login(email, password);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
 // Admin: Get All Agents
 const getAgents = async (req, res, next) => {
   try {
@@ -89,4 +99,5 @@ module.exports = {
   updateAgent,
   deleteAgent,
   trackAgentLink,
+  login,
 };

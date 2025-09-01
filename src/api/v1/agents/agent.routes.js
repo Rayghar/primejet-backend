@@ -49,6 +49,12 @@ router.delete(
   agentController.deleteAgent
 );
 
+router.post(
+  '/login',
+  validate(agentLoginSchema),
+  agentController.login
+);
+
 
 console.log('[AGENT_ROUTES] Agent routes registered.');
 

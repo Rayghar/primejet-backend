@@ -36,8 +36,14 @@ const getAgentsQuerySchema = Joi.object({
   isActive: Joi.boolean().optional(),
 });
 
+const agentLoginSchema = Joi.object({
+  email: Joi.string().email().required(),
+  password: Joi.string().required(),
+});
+
 module.exports = {
   createAgentSchema,
   updateAgentSchema,
   getAgentsQuerySchema,
+  agentLoginSchema,
 };

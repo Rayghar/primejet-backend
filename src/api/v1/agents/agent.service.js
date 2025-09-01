@@ -5,6 +5,7 @@ const Agent = require('../../../models/agent.model');
 const AgentReferralEvent = require('../../../models/agentReferralEvent.model');
 const User = require('../../../models/user.model'); // To update user's referredByAgentId
 const HttpError = require('../../../utils/HttpError');
+const JWT_SECRET = process.env.JWT_SECRET || 'your-default-super-secret-key-for-dev';
 
 // Base URL for your app's deep links (e.g., from Firebase Dynamic Links or custom scheme)
 // This should be configured in your .env file.
@@ -24,6 +25,25 @@ const generateUniqueAgentCode = async (length = 6) => {
   }
   return agentCode;
 };
+
+const login = async (email, password) => {
+  const agent = await Agent.findOne({ email: email.toLowerCase() });
+  if (!agent) {
+    throw new HttpError(401, 'Invalid email or password.');
+  }
+
+  const isMatch = await bcrypt.compare(password, agent.password);
+  if (!isMatch) {
+    throw new HttpError(401, 'Invalid email or password.');
+  }
+
+  // Create a JWT payload
+  const payload = { id: agent.id, role: 'agent' };
+  const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1d' });
+
+  return { token, agent: agent.toObject() };
+};
+// =
 
 // Admin: Create a new agent
 const createAgent = async (agentData) => {
@@ -233,4 +253,5 @@ module.exports = {
   trackAgentLinkClick,
   markCustomerRegisteredByAgent,
   getAgentPerformance,
+  login,
 };

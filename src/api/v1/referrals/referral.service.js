@@ -7,13 +7,14 @@ const User = require('../../../models/user.model');
 const Config = require('../../../models/config.model');
 const WalletTransaction = require('../../../models/walletTransaction.model');
 const HttpError = require('../../../utils/HttpError');
+const Agent = require('../../../models/agent.model');
+const agentService = require('../agents/agent.service');
+const { logger } = require('../../../config/logger.config');
 
-// Fetch default program details from Config model or use fallbacks
 let DEFAULT_PROGRAM_DESCRIPTION = "Share your code with friends! They get a discount, and you get rewards.";
 let DEFAULT_BENEFIT_SELF = "Get N500 wallet credit for every successful referral.";
 let DEFAULT_BENEFIT_FRIEND = "Get 10% off their first order.";
 
-// Function to load defaults from DB config
 const loadReferralProgramDefaults = async () => {
   try {
     const config = await Config.findOne();
@@ -27,8 +28,6 @@ const loadReferralProgramDefaults = async () => {
     console.error('[REFERRAL_SERVICE] Error loading referral program defaults from DB, using hardcoded values:', error);
   }
 };
-
-// Call once on service initialization or app startup
 loadReferralProgramDefaults();
 
 const generateUniqueReferralCode = async (length = 8) => {
@@ -42,6 +41,36 @@ const generateUniqueReferralCode = async (length = 8) => {
     }
   }
   return referralCode;
+};
+
+const processCodeOnRegistration = async (newUser, code) => {
+  logger.info(`[REFERRAL_SERVICE] Processing code '${code}' for new user ${newUser.id}.`);
+
+  // Step 1: Check if the code belongs to another customer.
+  const referrer = await Referral.findOne({ referralCode: code });
+  if (referrer) {
+    logger.info(`Code '${code}' identified as a customer referral from user ${referrer.userId}.`);
+    newUser.referredByCode = code;
+    await newUser.save();
+
+    referrer.totalReferredCount = (referrer.totalReferredCount || 0) + 1;
+    await referrer.save();
+    logger.info(`Updated total referral count for referrer ${referrer.userId}.`);
+    return;
+  }
+
+  // Step 2: If not a customer code, check if it belongs to an agent.
+  const agent = await Agent.findOne({ agentCode: code });
+  if (agent) {
+    logger.info(`Code '${code}' identified as an agent referral from agent ${agent.id}.`);
+    newUser.referredByAgentId = agent.id;
+    await newUser.save();
+
+    await agentService.markCustomerRegisteredByAgent(agent.agentCode, newUser.id);
+    return;
+  }
+
+  logger.warn(`[REFERRAL_SERVICE] Submitted code '${code}' for user ${newUser.id} is not a valid customer or agent code.`);
 };
 
 const getReferralInformation = async (userId) => {
@@ -77,50 +106,74 @@ const getReferralInformation = async (userId) => {
   }
 };
 
-/**
- * Credits a referrer's wallet and updates their stats after a successful referral.
- * This should be called after a referee's first order payment is confirmed.
- * @param {object} order - The completed order object of the referee. Must include order.referrerId and order.id.
- * @returns {Promise<void>}
- */
 const creditReferrerForSuccessfulReferral = async (order, session) => {
-  const shouldCommit = !session; // Commit only if we started the transaction here
+  // ============================= MODIFIED WITH DETAILED LOGGING =============================
+  logger.info(`[CREDIT_REFERRER] --- Initiating referral credit check for Order ID: ${order.id} ---`);
+
+  const shouldCommit = !session;
   const activeSession = session || await mongoose.startSession();
   if (!session) activeSession.startTransaction();
 
   try {
+    // CONDITION 1: Check if the order has a referrerId.
     if (!order.referrerId) {
-      console.log(`[REFERRAL_SERVICE] Order ${order.id} has no referrer. No credit issued.`);
+      logger.warn(`[CREDIT_REFERRER] [FAIL] Order ${order.id} has no referrerId. No credit will be issued.`);
       if (shouldCommit) await activeSession.abortTransaction();
       return;
     }
+    logger.info(`[CREDIT_REFERRER] [PASS] Order has referrerId: ${order.referrerId}.`);
 
+    // CONDITION 2: Check if the referrer's user account and referral record exist.
     const [referrer, referralInfo, globalConfig] = await Promise.all([
       User.findOne({ id: order.referrerId }).session(activeSession),
       Referral.findOne({ userId: order.referrerId }).session(activeSession),
       Config.findOne().session(activeSession)
     ]);
 
-    const referralProgramSettings = globalConfig?.referralProgram;
-
     if (!referrer || !referralInfo) {
+      logger.error(`[CREDIT_REFERRER] [FATAL] Referrer User or Referral record not found for user ID: ${order.referrerId}. Aborting.`);
       throw new Error(`Referrer or Referral info not found for user ID: ${order.referrerId}`);
     }
+    logger.info(`[CREDIT_REFERRER] [PASS] Found Referrer User (${referrer.name}) and their Referral record.`);
+
+    const referralProgramSettings = globalConfig?.referralProgram;
+
+    // CONDITION 3: Check if the referral program is globally active.
     if (!referralProgramSettings || !referralProgramSettings.isActive) {
-        console.log(`[REFERRAL_SERVICE] Global referral program is inactive. Not crediting referrer ${referrer.id}.`);
+        logger.warn(`[CREDIT_REFERRER] [FAIL] Global referral program is currently inactive. Not crediting referrer ${referrer.id}.`);
         if (shouldCommit) await activeSession.abortTransaction();
         return;
     }
+    logger.info(`[CREDIT_REFERRER] [PASS] Global referral program is active.`);
 
-    // Check if referee's order meets minimum purchase amount
-    if (order.finalAmountPaid < referralProgramSettings.minRefereePurchaseAmountKobo) {
-        console.log(`[REFERRAL_SERVICE] Referee's purchase (${order.id}) of ${order.finalAmountPaid} is below minimum of ${referralProgramSettings.minRefereePurchaseAmountKobo}. No credit issued.`);
+    // CONDITION 4: Check if the order meets the minimum purchase amount.
+    const minPurchaseAmount = referralProgramSettings.minRefereePurchaseAmountKobo;
+    if (order.finalAmountPaid < minPurchaseAmount) {
+        logger.warn(`[CREDIT_REFERRER] [FAIL] Referee's purchase amount (${order.finalAmountPaid}) is below the minimum of ${minPurchaseAmount}. No credit will be issued.`);
         if (shouldCommit) await activeSession.abortTransaction();
         return;
     }
+    logger.info(`[CREDIT_REFERRER] [PASS] Purchase amount (${order.finalAmountPaid}) meets or exceeds minimum of ${minPurchaseAmount}.`);
 
+    // CONDITION 5: Check if this is the referee's FIRST successful order. (This was already in your order.service.js, but we re-verify here for safety)
+    const completedOrdersCount = await Order.countDocuments({
+        customerId: order.customerId,
+        paymentStatus: 'Completed',
+        status: { $nin: ['Canceled', 'Canceled by Customer', 'Payment Failed'] }
+    }).session(activeSession);
+
+    if (completedOrdersCount !== 1) {
+        logger.warn(`[CREDIT_REFERRER] [FAIL] This is not the referee's first completed order. Found ${completedOrdersCount} completed orders. No credit will be issued for this order.`);
+        if (shouldCommit) await activeSession.abortTransaction();
+        return;
+    }
+    logger.info(`[CREDIT_REFERRER] [PASS] This is the referee's first completed order.`);
+
+    // All conditions met, proceed to credit the referrer.
+    logger.info(`[CREDIT_REFERRER] All conditions met. Proceeding to credit wallet for referrer ${referrer.id}.`);
+    
     const REWARD_AMOUNT_KOBO = referralProgramSettings.rewardAmountKobo;
-    const REWARD_DESCRIPTION = `Referral bonus from ${order.id.substring(0,8)}`;
+    const REWARD_DESCRIPTION = `Referral bonus from order #${order.id.substring(0,8)}`;
 
     const balanceBefore = referrer.walletBalance || 0;
     const balanceAfter = balanceBefore + REWARD_AMOUNT_KOBO;
@@ -144,30 +197,17 @@ const creditReferrerForSuccessfulReferral = async (order, session) => {
     await referralInfo.save({ session: activeSession });
 
     if (shouldCommit) await activeSession.commitTransaction();
-    console.log(`[REFERRAL_SERVICE] Successfully credited wallet for referrer ${referrer.id}.`);
+    logger.info(`[CREDIT_REFERRER] [SUCCESS] Successfully credited wallet for referrer ${referrer.id}. New balance: ${balanceAfter}. Successful referrals count: ${referralInfo.successfulReferralsCount}.`);
+    logger.info(`[CREDIT_REFERRER] --- Referral credit check finished for Order ID: ${order.id} ---`);
 
   } catch (error) {
     if (shouldCommit) await activeSession.abortTransaction();
-    console.error(`[REFERRAL_SERVICE] Failed to credit referrer for order ${order.id}. Error: ${error.message}`);
+    logger.error(`[CREDIT_REFERRER] [FATAL] An error occurred during the credit process for order ${order.id}. Transaction rolled back.`, { message: error.message, stack: error.stack });
     throw new HttpError(500, `Failed to process referral credit.`);
   } finally {
     if (shouldCommit) activeSession.endSession();
   }
 };
-
-/**
- * Admin function to get all referral records, with pagination and search.
- * @param {object} options - Pagination and search options.
- * @param {number} options.page - Current page number.
- * @param {number} options.limit - Number of records per page.
- * @param {string} options.search - Search query for referralCode or user name/email.
- * @returns {Promise<object>} - Paginated list of referral records.
- */
-/**
- * Admin function to get all referral records, with pagination and search.
- * @param {object} options - Pagination and search options.
- * @returns {Promise<object>} - Paginated list of referral records.
- */
 const getReferralsForAdmin = async ({ page = 1, limit = 10, search = '' }) => {
   try {
     const query = {};
@@ -189,11 +229,11 @@ const getReferralsForAdmin = async ({ page = 1, limit = 10, search = '' }) => {
     const totalReferrals = await Referral.countDocuments(query);
     const referrals = await Referral.find(query)
       .populate({
-        path: 'userId', // The field in this schema
-        model: 'User',   // The model to link to
-        select: 'name email phone', // The fields to bring back
-        foreignField: 'id', // The field in the User model to match with
-        localField: 'userId'  // The key from this schema
+        path: 'userId',
+        model: 'User',
+        select: 'name email phone',
+        foreignField: 'id',
+        localField: 'userId'
       })
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
@@ -228,10 +268,10 @@ const getReferralsForAdmin = async ({ page = 1, limit = 10, search = '' }) => {
   }
 };
 
-
 module.exports = {
   getReferralInformation,
   creditReferrerForSuccessfulReferral,
   getReferralsForAdmin,
   loadReferralProgramDefaults,
+  processCodeOnRegistration,
 };

@@ -41,7 +41,7 @@ const registerCustomer = async (userData) => {
     // This prevents the double-hashing bug.
     // const hashedPassword = await bcrypt.hash(password, 10); // REMOVED
     // =====================================================================
-
+    const hashedPassword = await bcrypt.hash(password, 10);
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
     const hashedOtp = await bcrypt.hash(otp, 10);
     const otpExpires = new Date(Date.now() + 10 * 60 * 1000);

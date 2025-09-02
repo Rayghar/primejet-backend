@@ -70,7 +70,7 @@ const registerCustomer = async (userData) => {
         } else {
             // 2. If not an agent, fallback to the customer-to-customer referral logic.
             logger.info(`[AUTH_SERVICE] Code ${trimmedCode} not found for an active agent. Checking for customer referral.`);
-            referralService.processCodeOnRegistration(user, trimmedCode);
+            await referralService.processCodeOnRegistration(user, trimmedCode);
         }
     }
     // =================== MODIFICATION END: Unified Referral Code Logic ===================

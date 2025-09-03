@@ -64,7 +64,15 @@ const initiateChatSession = async (orderId, senderId, recipientId) => {
     };
 
   } catch (error) {
-    logger.error(`[CHAT_SERVICE] Error initiating chat session for order ${orderId}:`, error);
+    // Check if the error is from Firebase/Firestore
+    if (error.code && error.code.startsWith('firestore/')) {
+        logger.error(`[CHAT_SERVICE] Firestore error initiating chat for order ${orderId}:`, error.message);
+        // Throw a more specific error back to the app if you want
+        throw new HttpError(500, `Database error: ${error.message}`);
+    }
+
+    // Keep the original logic for other types of errors
+    logger.error(`[CHAT_SERVICE] General error initiating chat session for order ${orderId}:`, error);
     if (error instanceof HttpError) throw error;
     throw new HttpError(500, 'Failed to initiate chat session due to an unexpected error.');
   }

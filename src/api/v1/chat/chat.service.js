@@ -15,17 +15,49 @@ const { logger } = require('../../../config/logger.config.js');
  */
 const initiateChatSession = async (orderId, senderId, recipientId) => {
   try {
-    const [sender, recipient, order] = await Promise.all([
-      User.findOne({ id: senderId }).select('id role name'),
-      User.findOne({ id: recipientId }).select('id role name'),
-      Order.findOne({ id: orderId }).select('id customerId driverId')
-    ]);
+    let sender, recipient, order;
 
-    if (!sender) throw new HttpError(404, `Sender (user ID: ${senderId}) not found.`);
-    if (!recipient) throw new HttpError(404, `Recipient (user ID: ${recipientId}) not found.`);
-    if (!order) throw new HttpError(404, `Order (ID: ${orderId}) not found for chat context.`);
+    // --- Step 1: Fetch Sender from MongoDB ---
+    try {
+      logger.info(`[CHAT_SERVICE] Attempting to find sender: ${senderId}`);
+      sender = await User.findOne({ id: senderId }).select('id role name');
+      if (!sender) {
+        throw new HttpError(404, `Sender (user ID: ${senderId}) not found.`);
+      }
+      logger.info(`[CHAT_SERVICE] Successfully found sender: ${senderId}`);
+    } catch (dbError) {
+      logger.error(`[CHAT_SERVICE] !!! MONGODB_ERROR fetching sender ${senderId}:`, dbError);
+      throw new Error('Failed during sender lookup in MongoDB.');
+    }
 
-    // Business logic to ensure only authorized participants can chat.
+    // --- Step 2: Fetch Recipient from MongoDB ---
+    try {
+      logger.info(`[CHAT_SERVICE] Attempting to find recipient: ${recipientId}`);
+      recipient = await User.findOne({ id: recipientId }).select('id role name');
+      if (!recipient) {
+        throw new HttpError(404, `Recipient (user ID: ${recipientId}) not found.`);
+      }
+      logger.info(`[CHAT_SERVICE] Successfully found recipient: ${recipientId}`);
+    } catch (dbError) {
+      logger.error(`[CHAT_SERVICE] !!! MONGODB_ERROR fetching recipient ${recipientId}:`, dbError);
+      throw new Error('Failed during recipient lookup in MongoDB.');
+    }
+
+    // --- Step 3: Fetch Order from MongoDB ---
+    try {
+      logger.info(`[CHAT_SERVICE] Attempting to find order: ${orderId}`);
+      order = await Order.findOne({ id: orderId }).select('id customerId driverId');
+      if (!order) {
+        throw new HttpError(404, `Order (ID: ${orderId}) not found for chat context.`);
+      }
+      logger.info(`[CHAT_SERVICE] Successfully found order: ${orderId}`);
+    } catch (dbError) {
+      logger.error(`[CHAT_SERVICE] !!! MONGODB_ERROR fetching order ${orderId}:`, dbError);
+      throw new Error('Failed during order lookup in MongoDB.');
+    }
+
+    // --- Step 4: Perform Authorization Logic ---
+    logger.info(`[CHAT_SERVICE] Performing authorization checks for order ${orderId}.`);
     const isSenderCustomer = sender.id === order.customerId;
     const isSenderDriver = sender.id === order.driverId;
     const isRecipientCustomer = recipient.id === order.customerId;
@@ -44,36 +76,36 @@ const initiateChatSession = async (orderId, senderId, recipientId) => {
       logger.warn(`[CHAT_SERVICE] Unauthorized chat attempt: sender ${senderId} for order ${orderId}`);
       throw new HttpError(403, 'These users are not authorized to chat in the context of this order.');
     }
+    logger.info(`[CHAT_SERVICE] Authorization successful.`);
 
-    // <<-- MODIFIED: Delegate to firebaseService and ensure it uses the orderId -->>
-    // This now creates the chat document in Firestore using the orderId as the ID.
-    await firebaseService.findOrCreateChatThread(orderId, {
-        orderId: orderId,
-        participants: [senderId, recipientId],
-        participantInfo: {
-            [senderId]: { name: sender.name },
-            [recipientId]: { name: recipient.name }
-        },
-    });
-
-    logger.info(`[CHAT_SERVICE] Chat session ready for order ${orderId}.`);
-    
-    // Return the orderId as the chatId to match the Flutter app's expectation
-    return {
-      chatId: orderId, 
-    };
-
-  } catch (error) {
-    // Check if the error is from Firebase/Firestore
-    if (error.code && error.code.startsWith('firestore/')) {
-        logger.error(`[CHAT_SERVICE] Firestore error initiating chat for order ${orderId}:`, error.message);
-        // Throw a more specific error back to the app if you want
-        throw new HttpError(500, `Database error: ${error.message}`);
+    // --- Step 5: Create Chat Thread in Firestore ---
+    try {
+      logger.info(`[CHAT_SERVICE] Attempting to find or create chat thread in Firestore for order: ${orderId}`);
+      await firebaseService.findOrCreateChatThread(orderId, {
+          orderId: orderId,
+          participants: [senderId, recipientId],
+          participantInfo: {
+              [senderId]: { name: sender.name },
+              [recipientId]: { name: recipient.name }
+          },
+      });
+      logger.info(`[CHAT_SERVICE] Successfully created/found Firestore chat thread for order ${orderId}.`);
+    } catch (fsError) {
+      logger.error(`[CHAT_SERVICE] !!! FIREBASE_ERROR creating chat thread for order ${orderId}:`, fsError);
+      throw new Error('Failed during Firestore findOrCreateChatThread operation.');
     }
 
-    // Keep the original logic for other types of errors
-    logger.error(`[CHAT_SERVICE] General error initiating chat session for order ${orderId}:`, error);
-    if (error instanceof HttpError) throw error;
+    // --- Step 6: Return Success ---
+    logger.info(`[CHAT_SERVICE] Chat session ready for order ${orderId}.`);
+    return { chatId: orderId };
+
+  } catch (error) {
+    // This is the final catch-all block. It will now log the specific error from our blocks above.
+    logger.error(`[CHAT_SERVICE] Final error in initiateChatSession for order ${orderId}:`, error.message);
+    if (error instanceof HttpError) {
+        throw error; // Re-throw specific HTTP errors
+    }
+    // For all other errors (like the database ones we threw), return a generic 500.
     throw new HttpError(500, 'Failed to initiate chat session due to an unexpected error.');
   }
 };

@@ -14,52 +14,58 @@ const { logger } = require('../../../config/logger.config');
  */
 const sendPushNotification = async (userId, title, body, data = {}) => {
   try {
-    // 1. Find the user in your database
     const user = await User.findOne({ id: userId }).select('fcmTokens').lean();
 
     if (!user) {
-      logger.warn(`[FCM_SERVICE] User not found for ID: ${userId}. Cannot send notification.`);
+      logger.warn(`[FCM_SERVICE] User not found for ID: ${userId}.`);
       return;
     }
 
     const tokens = user.fcmTokens;
-
     if (!tokens || tokens.length === 0) {
-      logger.info(`[FCM_SERVICE] User ${userId} has no FCM tokens. Skipping notification.`);
+      logger.info(`[FCM_SERVICE] User ${userId} has no FCM tokens. Skipping.`);
       return;
     }
 
-    // 2. Construct the message payload
-    const payload = {
-      notification: {
-        title: title,
-        body: body,
-      },
-      data: {
-        ...data, // Include any custom data from the Cloud Function
-        click_action: 'FLUTTER_NOTIFICATION_CLICK', // Required for Flutter
-      },
+    // Construct the multicast message
+    const message = {
+      notification: { title, body },
+      data: { ...data, click_action: 'FLUTTER_NOTIFICATION_CLICK' },
+      tokens: tokens,
     };
 
-    // 3. Send the message using the Firebase Admin SDK
-    const response = await admin.messaging().sendToDevice(tokens, payload);
-    logger.info(`[FCM_SERVICE] Successfully sent notification to user ${userId}. Response:`, response);
+    // Use sendMulticast for better handling of multiple tokens
+    const response = await admin.messaging().sendMulticast(message);
+    logger.info(`[FCM_SERVICE] Sent notification to user ${userId}. Success: ${response.successCount}, Failure: ${response.failureCount}`);
 
-    // Optional: Clean up invalid tokens
-    response.results.forEach((result, index) => {
-      const error = result.error;
-      if (error) {
-        logger.error(`[FCM_SERVICE] Failure sending notification to ${tokens[index]}`, error);
-        // If a token is no longer valid, you might want to remove it from the user's fcmTokens array
-        if (error.code === 'messaging/registration-token-not-registered') {
-          // Logic to remove the invalid token from the user's profile
+    // --- Start: Invalid Token Cleanup Logic ---
+    if (response.failureCount > 0) {
+      const tokensToRemove = [];
+      response.responses.forEach((result, index) => {
+        const error = result.error;
+        if (error) {
+          logger.error(`[FCM_SERVICE] Failure sending to ${tokens[index]}`, error);
+          if (
+            error.code === 'messaging/registration-token-not-registered' ||
+            error.code === 'messaging/invalid-registration-token'
+          ) {
+            tokensToRemove.push(tokens[index]);
+          }
         }
+      });
+
+      if (tokensToRemove.length > 0) {
+        logger.info(`[FCM_SERVICE] Removing invalid tokens for user ${userId}:`, tokensToRemove);
+        await User.updateOne(
+          { id: userId },
+          { $pullAll: { fcmTokens: tokensToRemove } }
+        );
       }
-    });
+    }
+    // --- End: Invalid Token Cleanup Logic ---
 
   } catch (error) {
-    logger.error(`[FCM_SERVICE] Critical error sending push notification to user ${userId}:`, error);
-    // We don't throw here to prevent the calling service from crashing, but we log it.
+    logger.error(`[FCM_SERVICE] Critical error sending notification to user ${userId}:`, error);
   }
 };
 

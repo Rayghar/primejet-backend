@@ -110,6 +110,7 @@ const initiateChatSession = async (orderId, senderId, recipientId) => {
   }
 };
 
+
 /**
  * Fetches all of a user's chat threads from Firestore and enriches them with user data from MongoDB.
  * @param {string} userId - The ID of the user whose threads to fetch.

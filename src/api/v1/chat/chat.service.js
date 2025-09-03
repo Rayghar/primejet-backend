@@ -81,14 +81,7 @@ const initiateChatSession = async (orderId, senderId, recipientId) => {
     // --- Step 5: Create Chat Thread in Firestore ---
     try {
       logger.info(`[CHAT_SERVICE] Attempting to find or create chat thread in Firestore for order: ${orderId}`);
-      await firebaseService.findOrCreateChatThread(orderId, {
-          orderId: orderId,
-          participants: [senderId, recipientId],
-          participantInfo: {
-              [senderId]: { name: sender.name },
-              [recipientId]: { name: recipient.name }
-          },
-      });
+      await firebaseService.initiateChat(orderId, senderId, recipientId);
       logger.info(`[CHAT_SERVICE] Successfully created/found Firestore chat thread for order ${orderId}.`);
     } catch (fsError) {
       logger.error(`[CHAT_SERVICE] !!! FIREBASE_ERROR creating chat thread for order ${orderId}:`, fsError);

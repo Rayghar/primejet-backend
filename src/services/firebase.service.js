@@ -17,6 +17,7 @@ let firestore;
  */
 const initializeFirebase = () => {
   if (admin.apps.length) {
+    firestore = admin.firestore();
     logger.info('Firebase Admin SDK already initialized.');
     return;
   }

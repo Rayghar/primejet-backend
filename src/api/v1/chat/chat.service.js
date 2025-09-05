@@ -82,6 +82,8 @@ const initiateChatSession = async (orderId, senderId, recipientId) => {
     try {
       logger.info(`[CHAT_SERVICE] Attempting to find or create chat thread in Firestore for order: ${orderId}`);
       await firebaseService.initiateChat(orderId, senderId, recipientId);
+      const { chatId } = await firebaseService.initiateChat(orderId, senderId, recipientId);
+
       logger.info(`[CHAT_SERVICE] Successfully created/found Firestore chat thread for order ${orderId}.`);
     } catch (fsError) {
       logger.error(`[CHAT_SERVICE] !!! FIREBASE_ERROR creating chat thread for order ${orderId}:`, fsError);
@@ -91,7 +93,7 @@ const initiateChatSession = async (orderId, senderId, recipientId) => {
 
     // --- Step 6: Return Success ---
     logger.info(`[CHAT_SERVICE] Chat session ready for order ${orderId}.`);
-    return { chatId: orderId };
+    return { chatId };
 
   } catch (error) {
     logger.error(`[CHAT_SERVICE] Final error in initiateChatSession for order ${orderId}:`, error.message);

@@ -9,8 +9,16 @@ const router = express.Router();
 // Route to securely find or create a chat thread for a specific order.
 router.post(
   '/initiate',
-  authMiddleware(),
-  validate(initiateChatSchema),
+  (req, _res, next) => {
+    req.logger?.info?.('[CHAT_ROUTE] /initiate hit', {
+      hasAuth: Boolean(req.headers.authorization),
+      contentType: req.headers['content-type'],
+      bodyKeys: Object.keys(req.body || {}),
+    });
+    next();
+  },
+  authMiddleware,          // ensure this is present
+  validateBody(chatSchema),// your Joi validator
   chatController.initiateChat
 );
 

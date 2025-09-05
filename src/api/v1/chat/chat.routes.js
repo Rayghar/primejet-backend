@@ -1,40 +1,44 @@
+// File: src/api/v1/chat/chat.routes.js
+
 const express = require('express');
-const chatController = require('./chat.controller');
-const authMiddleware = require('../../../middleware/auth.middleware');
-const validate = require('../../../middleware/validate.middleware');
-const { initiateChatSchema } = require('./chat.validation');
+const Joi = require('joi');
 
 const router = express.Router();
 
-// Route to securely find or create a chat thread for a specific order.
-router.post(
-  '/initiate',
-  (req, _res, next) => {
+const chatController = require('./chat.controller');
+const auth = require('../../../middleware/auth.middleware');            // default export
+const validate = require('../../../middleware/validate.middleware');    // default export
+
+// Body schema for POST /initiate
+const initiateSchema = Joi.object({
+  orderId: Joi.string().required(),
+  recipientId: Joi.string().required(),
+});
+
+// (Optional) lightweight trace – safe even if req.logger is missing
+const trace = (req, _res, next) => {
+  try {
     req.logger?.info?.('[CHAT_ROUTE] /initiate hit', {
       hasAuth: Boolean(req.headers.authorization),
-      contentType: req.headers['content-type'],
       bodyKeys: Object.keys(req.body || {}),
+      contentType: req.headers['content-type'],
     });
-    next();
-  },
-  authMiddleware,          // ensure this is present
-  validateBody(chatSchema),// your Joi validator
+  } catch (_) {}
+  next();
+};
+
+router.post(
+  '/initiate',
+  trace,
+  auth(),                             // require authenticated user
+  validate(initiateSchema, 'body'),   // ✅ use the exported validate() fn
   chatController.initiateChat
 );
 
-// Route to fetch a list of all chat threads a user is a part of.
 router.get(
-  '/my-threads',
-  authMiddleware(),
+  '/threads/me',
+  auth(),
   chatController.getMyThreads
 );
-
-module.exports = router;
-
-console.log('[CHAT_ROUTES] Chat routes registered.');
-// You might add other chat-related routes here in the future, e.g.,
-// router.get('/:chatId/messages', authMiddleware(), chatController.getChatMessages);
-// router.post('/:chatId/messages', authMiddleware(), chatController.sendChatMessage);
-
 
 module.exports = router;

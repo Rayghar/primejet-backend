@@ -10,12 +10,30 @@ const cors = require('cors');
 const morgan = require('morgan');
 
 const { logger } = require('./config/logger.config');
-const { initializeFirebase } = require('./services/firebase.service'); // Adjust path if needed
-initializeFirebase(); // Initialize Firebase at app startup
+const { initializeFirebase, getFirestore } = require('./services/firebase.service'); // + getFirestore for debug
 const { errorHandler } = require('./middleware/error.handler');
 const { rateLimiter } = require('./middleware/rateLimit.middleware');
 const { setupMetrics } = require('./utils/metrics');
 const HttpError = require('./utils/HttpError');
+
+// --- Step 0: Startup diagnostics (helps catch prod env issues) ---
+logger.info('[APP] Boot diagnostics', {
+  nodeEnv: process.env.NODE_ENV || 'undefined',
+  // PRODUCTION ONLY: show presence/length, not contents
+  firebaseKeyPresent: !!process.env.FIREBASE_SERVICE_ACCOUNT_KEY,
+  firebaseKeyLength: process.env.FIREBASE_SERVICE_ACCOUNT_KEY
+    ? String(process.env.FIREBASE_SERVICE_ACCOUNT_KEY).length
+    : 0,
+});
+
+try {
+  initializeFirebase(); // Initialize Firebase at app startup
+  logger.info('[APP] Firebase initialization called successfully.');
+} catch (e) {
+  // Surface a loud startup error so you don’t chase 500s later
+  logger.error('[APP] Firebase failed to initialize at boot:', { message: e.message, stack: e.stack });
+  // Do not throw; keep server up so /_debug/firebase can be hit.
+}
 
 // --- Step 1: Import All v1 Route Handlers ---
 const authRoutesV1 = require('./api/v1/auth/auth.routes');
@@ -50,23 +68,29 @@ const app = express();
 logger.info('[APP] Initializing Express application...');
 
 app.set('trust proxy', 1);
+
 // --- Step 4: Setup Global Middleware ---
 app.use(helmet());
 app.use(cors());
 app.use(morgan('combined', { stream: logger.stream }));
 app.use('/api', rateLimiter);
-app.use(require('./middleware/logger_middleware')); // CORRECT: Moved to a proper position to log all requests.
-app.post('/api/v1/payments/webhooks/monnify', bodyParser.raw({ type: 'application/json' }), paymentController.handleMonnifyWebhook);
+app.use(require('./middleware/logger_middleware'));
+
+// Monnify webhook: must be RAW ahead of global JSON parsing (correct)
+app.post(
+  '/api/v1/payments/webhooks/monnify',
+  bodyParser.raw({ type: 'application/json' }),
+  paymentController.handleMonnifyWebhook
+);
 
 // --- Step 5: Setup Body Parsers ---
-// Correctly places body parsers after security and logging middleware.
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // --- Step 6: Mount All API Routes ---
 logger.info('[APP] Setting up API routes...');
 
-// Mount v1 API routes
+// v1
 app.use('/api/v1/auth', authRoutesV1);
 app.use('/api/v1/admin', adminRoutesV1);
 app.use('/api/v1/users', userRoutesV1);
@@ -78,11 +102,7 @@ app.use('/api/v1/faqs', faqRoutesV1);
 app.use('/api/v1/config', configRoutesV1);
 app.use('/api/v1/reports', reportRoutesV1);
 app.use('/api/v1/chat', chatRoutesV1);
-
-// Mount the payment routes, including the webhook.
-// The base path is '/api/v1/payments', which contains a '/webhooks/monnify' route.
 app.use('/api/v1/payments', paymentRoutesV1);
-
 app.use('/api/v1/wallet', walletRoutesV1);
 app.use('/api/v1/referrals', referralRoutesV1);
 app.use('/api/v1/notifications', notificationRoutesV1);
@@ -94,12 +114,12 @@ app.use('/api/v1/fcm', fcmRoutes);
 
 logger.info('[APP] API v1 routes setup complete.');
 
-// Mount v2 API routes
+// v2
 app.use('/api/v2', v2ApiRoutes);
 logger.info('[APP] API v2 routes setup complete.');
 
 app.use('/api/v2/data-entry', dataEntryRoutes);
-app.use('/api/v2/financials', financialsRoutes); // CORRECT: Removed duplicate route mount.
+app.use('/api/v2/financials', financialsRoutes);
 app.use('/api/v2/finance', financeRoutes);
 
 // --- Step 7: Health Check and Metrics ---
@@ -108,6 +128,16 @@ app.get('/', (req, res) => {
 });
 setupMetrics(app);
 
+// --- OPTIONAL DEBUG: Confirm Firestore readiness (dev-only; remove in prod) ---
+app.get('/_debug/firebase', (req, res, next) => {
+  try {
+    getFirestore(); // will throw if not initialized
+    res.json({ ok: true });
+  } catch (e) {
+    next(e);
+  }
+});
+
 // --- Step 8: Handle Unhandled Routes (404) ---
 app.use((req, res, next) => {
   next(new HttpError(404, `Not Found - ${req.originalUrl}`));
@@ -115,6 +145,11 @@ app.use((req, res, next) => {
 
 // --- Step 9: Global Error Handler ---
 app.use(errorHandler);
+
+// Bonus: catch unhandled promise rejections during boot/runtime
+process.on('unhandledRejection', (reason) => {
+  logger.error('[APP] UnhandledRejection:', { message: reason?.message, stack: reason?.stack });
+});
 
 logger.info('[APP] Express application initialized successfully.');
 

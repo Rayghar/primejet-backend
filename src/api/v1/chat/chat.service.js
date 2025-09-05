@@ -85,7 +85,8 @@ const initiateChatSession = async (orderId, senderId, recipientId) => {
       logger.info(`[CHAT_SERVICE] Successfully created/found Firestore chat thread for order ${orderId}.`);
     } catch (fsError) {
       logger.error(`[CHAT_SERVICE] !!! FIREBASE_ERROR creating chat thread for order ${orderId}:`, fsError);
-      throw new Error('Failed during Firestore findOrCreateChatThread operation.');
+      // Preserve underlying message so controller can surface it (when DEBUG is on)
+      throw new HttpError(500, `Firestore chat setup failed: ${fsError.message || 'Unknown Firebase error'}`);
     }
 
     // --- Step 6: Return Success ---
@@ -93,12 +94,14 @@ const initiateChatSession = async (orderId, senderId, recipientId) => {
     return { chatId: orderId };
 
   } catch (error) {
-    // This is the final catch-all block. It will now log the specific error from our blocks above.
     logger.error(`[CHAT_SERVICE] Final error in initiateChatSession for order ${orderId}:`, error.message);
     if (error instanceof HttpError) {
-        throw error; // Re-throw specific HTTP errors
+      throw error;
     }
-    // For all other errors (like the database ones we threw), return a generic 500.
+    // When DEBUG is on, include the original error message
+    if (process.env.DEBUG_CHAT_ERRORS === '1') {
+      throw new HttpError(500, `Unexpected chat error: ${error.message}`);
+    }
     throw new HttpError(500, 'Failed to initiate chat session due to an unexpected error.');
   }
 };

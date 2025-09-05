@@ -5,25 +5,32 @@ const HttpError = require('../../../utils/HttpError'); // Path to global HttpErr
 
 const initiateChat = async (req, res, next) => {
   try {
-    // req.body (orderId, recipientId) is validated by Joi schema in chat.routes.js
     const { orderId, recipientId } = req.body;
-    const senderId = req.user.id; // Sender is the authenticated user
+    const senderId = req.user.id;
 
     if (senderId === recipientId) {
       return next(new HttpError(400, 'Sender and recipient cannot be the same user.'));
     }
 
-    const chatDetails = await chatService.initiateChatSession(
-      orderId,
-      senderId,
-      recipientId
-    );
-
-    // The service (and previously firebaseService) returned { chatId }
-    res.status(201).json(chatDetails);
+    const chatDetails = await chatService.initiateChatSession(orderId, senderId, recipientId);
+    return res.status(201).json(chatDetails);
   } catch (error) {
-    // logger.error(`[CHAT_CONTROLLER] Error initiating chat for user ${req.user.id} with recipient ${req.body.recipientId}:`, error);
-    next(error);
+    // TEMPORARY: Surface underlying error to the client when DEBUG flag is set
+    const status = error.statusCode || error.status || 500;
+    const payload = { message: error.message || 'Failed to initiate chat session.' };
+
+    if (process.env.DEBUG_CHAT_ERRORS === '1') {
+      payload.name = error.name;
+      payload.stack = error.stack;
+      // Include minimal request context (non-PII)
+      payload.context = {
+        senderId: req.user?.id,
+        recipientId: req.body?.recipientId,
+        orderId: req.body?.orderId,
+      };
+    }
+
+    return res.status(status).json(payload);
   }
 };
 

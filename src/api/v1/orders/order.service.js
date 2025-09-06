@@ -1,4 +1,5 @@
 // src/api/v1/orders/order.service.js
+
 const { v4: uuidv4 } = require('uuid');
 const mongoose = require('mongoose');
 const Order = require('../../../models/order.model');
@@ -13,19 +14,16 @@ const { logger } = require('../../../config/logger.config.js');
 const referralService = require('../referrals/referral.service');
 const firebaseService = require('../../../services/firebase.service');
 const notificationService = require('../notifications/notification.service');
-const orderService = require('./order.service');
-// NEW: Added Dependencies from O2
 const paymentService = require('../payments/payment.service'); 
 const ServiceZone = require('../../../models/serviceZone.model');
 const dotenv = require('dotenv');
 const { sha512 } = require('js-sha512');
+const { sendNotificationToUser } = require('../../../utils/notification.util');
 dotenv.config();
 
+const FCM_FUNCTION_URL = process.env.FCM_FUNCTION_URL;
+const FUNCTIONS_SECRET_KEY = process.env.FUNCTIONS_SECRET_KEY;
 
-// =========================================================================
-// FIX: Moved initializePayment function after getOrder and before placeOrder.
-// It is now correctly defined before it is called.
-// =========================================================================
 const initializePayment = async ({ orderId, userId, session }) => {
   logger.info(`[Order Service][initializePayment] Initializing payment for order ${orderId} and user ${userId}.`);
   try {
@@ -174,9 +172,6 @@ const getOrders = async (options) => {
 };
 
 
-// =========================================================================
-// NEW FUNCTIONALITY: Replaced O1's placeOrder with the enhanced O2 version
-// =========================================================================
 const placeOrder = async (customerId, orderData) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -228,22 +223,15 @@ const placeOrder = async (customerId, orderData) => {
       throw new HttpError(500, 'System configuration for fees is not available.');
     }
 
-    // ... (logic for paymentMethod, orderStatus remains the same) ...
-
-    // <<-- NEW: Create a map of price overrides for fast lookups -->>
     const priceOverrideMap = new Map(
       (coveringZone.priceOverrides || []).map(override => [override.cylinderId, override.newPrice])
     );
     
-    // <<-- MODIFIED: Calculate subtotal using zone-specific prices -->>
     const itemsSubtotal = items.reduce((sum, item) => {
-      // If a price override exists for this cylinder in this zone, use it.
-      // Otherwise, use the unit price sent from the frontend (which is the default price).
       const effectivePrice = priceOverrideMap.get(item.cylinderId) ?? item.unitPrice;
       return sum + (item.quantity * effectivePrice);
     }, 0);
     
-    // The rest of the financial calculations will now automatically use the correct subtotal.
     let discountAmount = 0.0;
     if (promoCodeApplied) {
       const promotion = await Promotion.findOne({ promoCode: promoCodeApplied.toUpperCase(), isActive: true, validFrom: { $lte: new Date() }, validUntil: { $gte: new Date() } }).session(session);
@@ -270,8 +258,6 @@ const placeOrder = async (customerId, orderData) => {
 
     const overallGrandTotal = subtotalAfterDiscount + vatAmount + serviceFeeAmount + deliveryFee;
     
-    // ... (The rest of the placeOrder function for wallet, saving the order, etc., remains the same) ...
-
     let totalBeforeWallet = overallGrandTotal;
     let walletAmountUsed = 0;
     if (useWalletBalance && user.walletBalance > 0) {
@@ -391,10 +377,6 @@ const driverArrivedForPickup = async (orderId, driverId) => {
   return order.toObject();
 };
 
-/**
- * Updates an order's status and payment details, typically from a webhook.
- * (This function is preserved from your gold copy as requested)
- */
 async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetails, verifiedAmount, notes = '' }) {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -422,7 +404,6 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
     if (paymentStatus === 'Completed') {
         logger.info(`[Order Service][updateOrderStatus] Processing successful payment confirmation for order ${orderId}.`);
 
-        // FIX: Round both numbers to a consistent precision before comparing to avoid floating-point errors
         const roundedVerifiedAmount = Math.round(verifiedAmount);
         const roundedOrderTotal = Math.round(order.grandTotal);
         if (roundedVerifiedAmount !== roundedOrderTotal) {
@@ -490,7 +471,6 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
     await session.commitTransaction();
     logger.info(`[Order Service][updateOrderStatus] Transaction committed for order ${orderId}. Final DB state: Status='${order.status}', Payment Status: '${order.paymentStatus}'.`);
 
-    // Referral logic. Moved outside main transaction for robustness, ensure its own transaction/idempotency
     if (order.referrerId && paymentStatus === 'Completed') {
         logger.debug(`[Order Service][updateOrderStatus] Checking referral for order ${orderId} (referrerId: ${order.referrerId}) after webhook confirmation.`);
         try {
@@ -537,10 +517,6 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
   }
 }
 
-// =========================================================================
-// NEW FUNCTIONALITY: Add a processPayment function for first-time referral logic
-// This function is distinct from updateOrderStatus (which handles webhooks).
-// =========================================================================
 const processPayment = async (orderId, paymentData, customerId, customerRole) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -568,7 +544,6 @@ const processPayment = async (orderId, paymentData, customerId, customerRole) =>
 
     await order.save({ session });
 
-    // START O2: First Purchase Check and Referrer Credit
     if (user.referredBy) {
       const completedOrdersCount = await Order.countDocuments({
         customerId: user.id,
@@ -581,7 +556,6 @@ const processPayment = async (orderId, paymentData, customerId, customerRole) =>
         await referralService.creditReferrerForSuccessfulReferral(order, session);
       }
     }
-    // END O2: First Purchase Check and Referrer Credit
 
     await session.commitTransaction();
     return { transactionId: paymentData.transactionId, message: 'Payment processed successfully.' };
@@ -594,25 +568,13 @@ const processPayment = async (orderId, paymentData, customerId, customerRole) =>
     session.endSession();
   }
 };
-// =========================================================================
 
-/**
- * Submits feedback for a given order and updates the driver's rating.
- * @param {string} orderId - The ID of the order.
- * @param {object} feedbackData - The feedback data containing rating and comment.
- * @param {string} userId - The ID of the customer submitting feedback.
- * @returns {Promise<Order>} The updated order object.
- */
 const submitFeedback = async (orderId, feedbackData, userId) => {
-  // <<< FIX: Get the initialized Firestore instance >>>
   const firestore = firebaseService.getFirestore();
-
   const session = await Order.startSession();
   session.startTransaction();
-
   try {
     const order = await Order.findOne({ id: orderId, customerId: userId }).session(session);
-
     if (!order) {
       throw new HttpError(404, 'Order not found or you are not authorized to submit feedback.');
     }
@@ -622,8 +584,6 @@ const submitFeedback = async (orderId, feedbackData, userId) => {
     if (order.status !== 'Delivered') {
         throw new HttpError(400, 'Feedback can only be submitted for delivered orders.');
     }
-
-    // Save feedback to the Order model in MongoDB
     order.feedback = {
       rating: feedbackData.rating,
       comment: feedbackData.comment,
@@ -631,7 +591,6 @@ const submitFeedback = async (orderId, feedbackData, userId) => {
     };
     await order.save({ session });
 
-    // If there's a driver, update their average rating
     if (order.driverId) {
       const driver = await User.findOne({ id: order.driverId }).session(session);
       if (driver) {
@@ -645,8 +604,6 @@ const submitFeedback = async (orderId, feedbackData, userId) => {
       }
     }
 
-    // Save a copy of the feedback to the Firestore 'feedback' collection
-    // This will now work correctly
     await firestore.collection('feedback').add({
       orderId: order.id,
       customerId: userId,
@@ -658,7 +615,6 @@ const submitFeedback = async (orderId, feedbackData, userId) => {
 
     await session.commitTransaction();
     session.endSession();
-
     logger.info(`Feedback submitted successfully for order ${orderId} by user ${userId}.`);
     return order.toObject();
 
@@ -800,61 +756,70 @@ const adminUpdateOrderStatus = async (orderId, newStatus, notes, adminId, adminR
 };
 
 const adminAssignDriver = async (orderId, driverIdToAssign, adminId, adminRole) => {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    try {
-        if (adminRole !== 'admin') throw new HttpError(403, 'Only admins can assign drivers.');
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-        const order = await Order.findOne({ id: orderId }).session(session);
-        if (!order) throw new HttpError(404, 'Order not found for driver assignment.');
+  try {
+    if (adminRole !== 'admin') throw new HttpError(403, 'Only admins can assign drivers.');
+    const order = await Order.findOne({ id: orderId }).session(session);
+    if (!order) throw new HttpError(404, 'Order not found for driver assignment.');
+    const driver = await User.findOne({ id: driverIdToAssign, role: 'driver' }).session(session);
+    if (!driver) throw new HttpError(404, `Driver with ID ${driverIdToAssign} not found or is not a driver.`);
 
-        const driver = await User.findOne({ id: driverIdToAssign, role: 'driver' }).session(session);
-        if (!driver) throw new HttpError(404, `Driver with ID ${driverIdToAssign} not found or is not a driver.`);
+    order.driverId = driverIdToAssign;
+    order.status = 'Driver Assigned';
+    const note = `Driver ${driver.name} (ID: ${driverIdToAssign}) assigned by admin ${adminId}.`;
+    order.statusHistory.push({ status: 'Driver Assigned', timestamp: new Date(), notes: note, updatedBy: adminId, updaterRole: 'admin' });
+    await order.save({ session });
 
-        order.driverId = driverIdToAssign;
-        order.status = 'Driver Assigned';
-        const note = `Driver ${driver.name} (ID: ${driverIdToAssign}) assigned by admin ${adminId}.`;
-        order.statusHistory.push({ status: 'Driver Assigned', timestamp: new Date(), notes: note, updatedBy: adminId, updaterRole: 'admin' });
-        await order.save({ session });
+    const newRun = new Run({
+      id: uuidv4(),
+      driverId: driverIdToAssign,
+      overallStatus: 'Assigned',
+      stops: [{
+        stopId: uuidv4(),
+        orderId: order.id,
+        sequence: 1,
+        status: 'Pending',
+        latitude: order.deliveryLatitude,
+        longitude: order.deliveryLongitude,
+      }],
+      totalStops: 1,
+      notes: `Run created for Order #${order.id.substring(0, 8)}.`
+    });
+    await newRun.save({ session });
 
-        const newRun = new Run({
-            id: uuidv4(),
-            driverId: driverIdToAssign,
-            overallStatus: 'Assigned',
-            stops: [{
-                stopId: uuidv4(),
-                orderId: order.id,
-                sequence: 1,
-                status: 'Pending',
-                latitude: order.deliveryLatitude,
-                longitude: order.deliveryLongitude,
-            }],
-            totalStops: 1,
-            notes: `Run created for Order #${order.id.substring(0, 8)}.`
-        });
-        await newRun.save({ session });
+    await session.commitTransaction();
+    logger.info(`Run ${newRun.id} created and driver ${driver.name} assigned to order ${orderId}.`);
 
-        await session.commitTransaction();
-        logger.info(`Run ${newRun.id} created and driver ${driver.name} assigned to order ${orderId}.`);
+    // The single, correct notification call after a successful commit.
+    sendNotificationToUser(
+      FCM_FUNCTION_URL, // Pass the FCM URL from env
+      FUNCTIONS_SECRET_KEY, // Pass the secret key from env
+      order.customerId,
+      'Driver Assigned!',
+      `Your order #${order.shortOrderId} has been assigned to a driver.`,
+      { orderId: orderId, screen: 'order_details' }
+    );
 
-        const populatedOrder = await Order.findOne({ id: orderId })
-            .populate('customer', 'id name email phone')
-            .populate('driver', 'id name phone vehicleType licensePlate')
-            .session(session);
+    const populatedOrder = await Order.findOne({ id: orderId })
+      .populate('customer', 'id name email phone')
+      .populate('driver', 'id name phone vehicleType licensePlate')
+      .session(session);
 
-        return { message: `Driver ${driver.name} assigned to order ${orderId}.`, order: populatedOrder.toObject({ virtuals: true }) };
+    return { message: `Driver ${driver.name} assigned to order ${orderId}.`, order: populatedOrder.toObject({ virtuals: true }) };
 
-    } catch (error) {
-            await session.abortTransaction();
-        logger.error('Unexpected error in adminAssignDriver:', { error: error.message, stack: error.stack, orderId });
-        if (error instanceof HttpError) throw error;
-        if (error.name === 'ValidationError') {
-            throw new HttpError(400, error.message);
-        }
-        throw new HttpError(500, 'Failed to assign driver by admin.');
-    } finally {
-        session.endSession();
+  } catch (error) {
+    await session.abortTransaction();
+    logger.error('Unexpected error in adminAssignDriver:', { error: error.message, stack: error.stack, orderId });
+    if (error instanceof HttpError) throw error;
+    if (error.name === 'ValidationError') {
+      throw new HttpError(400, error.message);
     }
+    throw new HttpError(500, 'Failed to assign driver by admin.');
+  } finally {
+    session.endSession();
+  }
 };
 
 const cancelOrder = async (orderId, customerId, customerRole) => {
@@ -898,7 +863,6 @@ const markAsVerifyingPayment = async (orderId, customerId) => {
   if (!order) {
     throw new HttpError(404, 'Order not found or you are not authorized.');
   }
-  // Only update if the order is in a state where payment is expected.
   if (order.status === 'Pending Payment') {
     order.status = 'Verifying Payment';
     order.statusHistory.push({ status: 'Verifying Payment', notes: 'Customer payment initiated, awaiting gateway confirmation.' });
@@ -907,13 +871,9 @@ const markAsVerifyingPayment = async (orderId, customerId) => {
   return order.toObject();
 };
 
-// =========================================================================
-// NEW FUNCTIONALITY: Replaced getCustomerConsumptionData with getCustomerStats
-// =========================================================================
 const getCustomerStats = async (customerId) => {
   try {
     const deliveredOrdersQuery = { customerId: customerId, status: 'Delivered' };
-
     const [totalOrders, lastTwoOrders, totalGasKgResult] = await Promise.all([
       Order.countDocuments(deliveredOrdersQuery),
       Order.find(deliveredOrdersQuery).sort({ orderDate: -1 }).limit(2).select('orderDate items'),
@@ -949,7 +909,6 @@ const getCustomerStats = async (customerId) => {
     }
 
     const totalGasKg = totalGasKgResult.length > 0 ? totalGasKgResult[0].totalKg : 0;
-
     return {
       totalOrders: totalOrders,
       totalGasKg: totalGasKg.toFixed(1),
@@ -960,13 +919,12 @@ const getCustomerStats = async (customerId) => {
     throw new HttpError(500, 'Failed to retrieve customer statistics.');
   }
 };
-// =========================================================================
 
 module.exports = {
   getOrders,
   getOrder,
   placeOrder,
-  processPayment, // Add this new function to the exports
+  processPayment,
   submitFeedback,
   getLocationHistory,
   driverUpdateOrderStatus,
@@ -974,10 +932,10 @@ module.exports = {
   adminUpdateOrderStatus,
   adminAssignDriver,
   cancelOrder,
-  getCustomerStats, // Replaces getCustomerConsumptionData
+  getCustomerStats,
   updateOrderStatus,
   getOrderPaymentStatus,
   markAsVerifyingPayment,
   getCustomerStats,
   driverArrivedForPickup,
-}
+};

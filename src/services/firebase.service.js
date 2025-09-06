@@ -4,17 +4,8 @@ const admin = require('firebase-admin');
 const HttpError = require('../utils/HttpError');
 const { logger } = require('../config/logger.config.js');
 
-// --- IMPORTANT ---
-// 1. Replace this path with the actual path to your service account key file.
-// 2. DO NOT commit the 'serviceAccountKey.json' file to your Git repository.
-// 3. In production, it's best to load this path from an environment variable.
-//const serviceAccount = require('../../serviceAccountKey.json'); // Assumes key is in the project root
-
 let firestore;
 
-/**
- * Initializes the Firebase Admin SDK. This should be called once when your server starts.
- */
 const initializeFirebase = () => {
   if (admin.apps.length) {
     firestore = admin.firestore();
@@ -22,12 +13,10 @@ const initializeFirebase = () => {
     return;
   }
 
-  // <<< THIS LOGIC HANDLES BOTH PRODUCTION AND LOCAL ENVIRONMENTS >>>
   let serviceAccount;
   const isProduction = process.env.NODE_ENV === 'production';
 
   if (isProduction && process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
-    // On Render (production), parse the key from the environment variable.
     try {
       serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
       logger.info('Initializing Firebase Admin SDK using environment variable.');
@@ -36,7 +25,6 @@ const initializeFirebase = () => {
       throw new Error('Firebase configuration error.');
     }
   } else if (!isProduction) {
-    // On your local machine, load the key from the file.
     try {
       serviceAccount = require('../../serviceAccountKey.json');
       logger.info('Initializing Firebase Admin SDK using local file.');
@@ -57,10 +45,6 @@ const initializeFirebase = () => {
   logger.info('Firebase Admin SDK Initialized Successfully.');
 };
 
-/**
- * Returns the initialized Firestore instance.
- * @returns {FirebaseFirestore.Firestore} The Firestore database instance.
- */
 const getFirestore = () => {
   if (!firestore) {
     throw new HttpError(503, 'Firebase (Firestore) has not been initialized.');
@@ -68,18 +52,8 @@ const getFirestore = () => {
   return firestore;
 };
 
-
-
-
-/**
- * Initiates a chat session in Firestore between two users for a given order.
- * @param {string} orderId - The ID of the order.
- * * @param {string} senderId - The ID of the user sending the initial message/initiating.
- * @param {string} recipientId - The ID of the user receiving the initial message.
- * @returns {Promise<{chatId: string}>} An object containing the ID of the created chat.
- */
 const initiateChat = async (orderId, senderId, recipientId) => {
-  const db = getFirestore(); // Get the initialized instance
+  const db = getFirestore();
   try {
     const participants = [senderId, recipientId].sort();
     const chatId = `${orderId}_${participants[0]}_${participants[1]}`;
@@ -108,14 +82,6 @@ const initiateChat = async (orderId, senderId, recipientId) => {
   }
 };
 
-/**
- * Sends/stores a notification for a user in Firestore.
- * @param {string} userId - The ID of the user to notify.
- * @param {string} title - The title of the notification.
- * @param {string} body - The main content of the notification.
- * @param {object} [data={}] - Additional data to store with the notification (e.g., orderId, link).
- * @returns {Promise<{notificationId: string}>} An object containing the ID of the created notification.
- */
 const sendNotification = async (userId, title, body, data = {}) => {
   const db = getFirestore();
   try {
@@ -138,12 +104,6 @@ const sendNotification = async (userId, title, body, data = {}) => {
   }
 };
 
-/**
- * Updates the lastMessage field on a chat thread document.
- * @param {string} chatId - The ID of the chat document.
- * @param {object} messageData - The data of the message being sent.
- * @returns {Promise<void>}
- */
 const updateChatThreadOnNewMessage = async (chatId, messageData) => {
   const db = getFirestore();
   try {
@@ -162,15 +122,10 @@ const updateChatThreadOnNewMessage = async (chatId, messageData) => {
   }
 };
 
-/**
- * Fetches all chat threads for a specific user.
- * @param {string} userId - The ID of the user.
- * @returns {Promise<Array<object>>} A list of chat threads.
- */
 const fetchUserChatThreads = async (userId) => {
   const db = getFirestore();
   const snapshot = await db.collection('chats')
-    .where('participantIds', 'array-contains', userId) // Use the sorted array for querying
+    .where('participantIds', 'array-contains', userId)
     .orderBy('lastMessageTimestamp', 'desc')
     .get();
 
@@ -185,8 +140,8 @@ const fetchUserChatThreads = async (userId) => {
 };
 
 module.exports = {
-  initializeFirebase, // <-- Export the initializer
-  getFirestore,       // <-- Export the getter
+  initializeFirebase,
+  getFirestore,
   initiateChat,
   sendNotification,
   fetchUserChatThreads,

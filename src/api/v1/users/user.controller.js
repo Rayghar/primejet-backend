@@ -1,83 +1,106 @@
 // src/api/v1/users/user.controller.js
-const userService = require('./user.service'); // Path to co-located service
-const HttpError = require('../../../utils/HttpError'); // Path to global HttpError utility
 
-// Controller for the authenticated user's own profile
-const getProfile = async (req, res, next) => {
+const userService = require('./user.service');
+const HttpError = require('../../../utils/HttpError');
+const { logger } = require('../../../config/logger.config');
+
+const login = async (req, res, next) => {
   try {
-    // req.user is populated by authMiddleware
-    const user = await userService.getProfile(req.user.id, req.user.role);
+    const { email, password } = req.body;
+    const { token, user } = await userService.loginUserWithEmailAndPassword(email, password);
+    res.status(200).json({ token, ...user });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const registerCustomer = async (req, res, next) => {
+  try {
+    const userData = req.body;
+    const newUser = await userService.registerCustomer(userData);
+    res.status(201).json({ message: 'User registered successfully. An OTP has been sent to your email for verification.', user: newUser });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const registerDriver = async (req, res, next) => {
+  try {
+    const userData = req.body;
+    const newDriver = await userService.registerDriver(userData);
+    res.status(201).json({ message: 'Driver registered successfully. Pending admin approval.', user: newDriver });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const verifyOtp = async (req, res, next) => {
+  try {
+    const { email, otp } = req.body;
+    const user = await userService.verifyOtp(email, otp);
+    res.status(200).json({ message: 'OTP verified successfully.', user });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const requestPasswordReset = async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    const result = await userService.requestPasswordReset(email);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+const resetPassword = async (req, res, next) => {
+  try {
+    const { token, newPassword } = req.body;
+    await userService.resetPassword(token, newPassword);
+    res.status(200).json({ message: 'Password reset successfully.' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getMyProfile = async (req, res, next) => {
+  try {
+    const user = await userService.getUserById(req.user.id);
+    if (!user) {
+      throw new HttpError(404, 'User profile not found.');
+    }
     res.status(200).json(user);
   } catch (error) {
-    // console.error('[USER_CONTROLLER] Get profile error:', error.message); // Original log
     next(error);
   }
 };
 
-const updateFcmToken = async (req, res, next) => {
+const updateMyProfile = async (req, res, next) => {
   try {
-    const { fcmToken } = req.body;
-    await userService.updateFcmToken(req.user.id, fcmToken);
-    res.status(200).json({ message: 'FCM token updated successfully.' });
+    const updatedUser = await userService.updateUser(req.user.id, req.body);
+    res.status(200).json({ message: 'Profile updated successfully.', user: updatedUser });
   } catch (error) {
     next(error);
   }
 };
 
-const updateProfile = async (req, res, next) => {
+const updateDriverAvailability = async (req, res, next) => {
   try {
-    const result = await userService.updateProfile(req.user.id, req.body);
-    res.status(200).json(result);
+    const { isAvailableOnline } = req.body;
+    await userService.updateDriverAvailability(req.user.id, isAvailableOnline);
+    res.status(200).json({ message: 'Driver availability updated successfully.' });
   } catch (error) {
-    // console.error('[USER_CONTROLLER] Update profile error:', error.message); // Original log
     next(error);
   }
 };
 
-// Controller for notification preferences
-const getNotificationPreferences = async (req, res, next) => {
-  try {
-    const preferences = await userService.getNotificationPreferences(req.user.id);
-    res.status(200).json(preferences);
-  } catch (error) {
-    // console.error('[USER_CONTROLLER] Get notification preferences error:', error.message); // Original log
-    next(error);
-  }
-};
-
-const updateNotificationPreferences = async (req, res, next) => {
-  try {
-    const result = await userService.updateNotificationPreferences(req.user.id, req.body);
-    res.status(200).json(result);
-  } catch (error) {
-    // console.error('[USER_CONTROLLER] Update notification preferences error:', error.message); // Original log
-    next(error);
-  }
-};
-
-// Controllers for Admin user management
 const adminGetUsers = async (req, res, next) => {
   try {
-    const { role, search, page = 1, limit = 10 } = req.query;
-    const result = await userService.adminGetUsers({
-      role,
-      search,
-      page: parseInt(page, 10),
-      limit: parseInt(limit, 10),
-    });
-    res.status(200).json(result);
+    const { role, page, limit, search, status } = req.query;
+    const users = await userService.adminGetUsers({ role, page: parseInt(page, 10), limit: parseInt(limit, 10), search, status });
+    res.status(200).json(users);
   } catch (error) {
-    // console.error('[USER_CONTROLLER] Admin get users error:', error.message); // Original log
-    next(error);
-  }
-};
-
-const adminGetUser = async (req, res, next) => {
-  try {
-    const user = await userService.adminGetUser(req.params.userId);
-    res.status(200).json(user);
-  } catch (error) {
-    // console.error('[USER_CONTROLLER] Admin get user error:', error.message); // Original log
     next(error);
   }
 };
@@ -85,97 +108,69 @@ const adminGetUser = async (req, res, next) => {
 const adminCreateUser = async (req, res, next) => {
   try {
     const user = await userService.adminCreateUser(req.body);
-    // Consistent with your auth controller, returning { userId }
-    res.status(201).json({ userId: user.id, message: 'User created successfully by admin.' });
+    res.status(201).json(user);
   } catch (error) {
-    // console.error('[USER_CONTROLLER] Admin create user error:', error.message); // Original log
     next(error);
   }
 };
 
-const adminUpdateUser = async (req, res, next) => {
+const adminUpdateUserRole = async (req, res, next) => {
   try {
-    const result = await userService.adminUpdateUser(req.params.userId, req.body);
-    res.status(200).json(result);
+    const { userId } = req.params;
+    const { role } = req.body;
+    const updatedUser = await userService.adminUpdateUserRole(userId, role);
+    res.status(200).json(updatedUser);
   } catch (error) {
-    // console.error('[USER_CONTROLLER] Admin update user error:', error.message); // Original log
     next(error);
   }
 };
 
 const adminUpdateUserStatus = async (req, res, next) => {
   try {
-    // Ensure status is passed correctly from the request body
+    const { userId } = req.params;
     const { status } = req.body;
-    if (!status) {
-        return next(new HttpError(400, 'Status is required in the request body.'));
-    }
-    const result = await userService.adminUpdateUserStatus(req.params.userId, status);
-    res.status(200).json(result);
+    const updatedUser = await userService.adminUpdateUserStatus(userId, status);
+    res.status(200).json(updatedUser);
   } catch (error) {
-    // console.error('[USER_CONTROLLER] Admin update user status error:', error.message); // Original log
     next(error);
   }
 };
 
-const deleteUserById = async (req, res, next) => {
+const deleteUser = async (req, res, next) => {
   try {
-    // Role check might be slightly redundant if route is protected by authMiddleware('admin'),
-    // but acts as a good defense-in-depth.
-    if (req.user.role !== 'admin') {
-      return next(new HttpError(403, 'Insufficient permissions to delete a user.'));
-    }
-    const result = await userService.deleteUserById(req.params.userId);
-    res.status(200).json(result);
+    await userService.deleteUser(req.params.userId);
+    res.status(200).json({ message: 'User deleted successfully.' });
   } catch (error) {
-    // console.error('[USER_CONTROLLER] Delete user error:', error.message); // Original log
     next(error);
   }
 };
 
-// Controller for Driver specific actions
-const updateDriverAvailability = async (req, res, next) => {
+const registerFcmToken = async (req, res, next) => {
   try {
-    // Role check for defense-in-depth, even if route is protected by authMiddleware('driver').
-    if (req.user.role !== 'driver') {
-        return next(new HttpError(403, 'Only drivers can update their availability.'));
-    }
-    // Ensure isAvailableOnline is passed correctly from the request body
-    const { isAvailableOnline } = req.body;
-    if (typeof isAvailableOnline !== 'boolean') {
-        return next(new HttpError(400, 'isAvailableOnline must be a boolean value (true or false).'));
-    }
-    const result = await userService.updateDriverAvailability(req.user.id, isAvailableOnline);
-    res.status(200).json(result);
-  } catch (error) {
-    // console.error('[USER_CONTROLLER] Update driver availability error:', error.message); // Original log
-    next(error);
-  }
-};
-
-const getDriverStats = async (req, res, next) => {
-  try {
-    const stats = await userService.getDriverStats(req.user.id, req.query.period);
-    res.status(200).json(stats);
+    const { fcmToken } = req.body;
+    const userId = req.user.id;
+    await userService.registerFcmToken(userId, fcmToken);
+    res.status(200).json({ message: 'FCM token registered successfully.' });
   } catch (error) {
     next(error);
   }
 };
-
 
 
 module.exports = {
-  getProfile,
-  updateProfile,
-  getNotificationPreferences,
-  updateNotificationPreferences,
-  adminGetUsers,
-  adminGetUser,
-  adminCreateUser,
-  adminUpdateUser,
-  adminUpdateUserStatus,
-  deleteUserById,
+  login,
+  registerCustomer,
+  registerDriver,
+  verifyOtp,
+  requestPasswordReset,
+  resetPassword,
+  getMyProfile,
+  updateMyProfile,
   updateDriverAvailability,
-  getDriverStats,
-  updateFcmToken,
+  adminGetUsers,
+  adminCreateUser,
+  adminUpdateUserRole,
+  adminUpdateUserStatus,
+  deleteUser,
+  registerFcmToken
 };

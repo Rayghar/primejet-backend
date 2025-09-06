@@ -480,6 +480,14 @@ const findUserByCredentials = async (email, password) => {
     }
 };
 
+const registerFcmToken = async (userId, fcmToken) => {
+  // Find the user and add the new token if it doesn't exist
+  await User.updateOne(
+    { id: userId },
+    { $addToSet: { fcmTokens: fcmToken } }
+  );
+};
+
 
 
 
@@ -498,4 +506,5 @@ module.exports = {
   getDriverStats,
   registerUser,
   findUserByCredentials,
+  registerFcmToken,
 };

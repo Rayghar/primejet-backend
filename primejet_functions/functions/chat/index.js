@@ -1,17 +1,27 @@
-const functions = require('firebase-functions');
-const express = require('express');
+// File: functions/chat/index.js
+const { onRequest } = require("firebase-functions/v2/https");
 
-// The relative path is crucial here. Your 'src' directory needs to be moved inside 'functions/chat'.
-// This is a minimal, standalone Express app for just the chat feature.
-const { initializeFirebase } = require('../../../src/config/firebase.config.js');
-const chatRouter = require('../../../src/api/v1/chat/chat.routes.js');
+let chatApp;
 
-const app = express();
-initializeFirebase(); // Initialize Firebase Admin SDK
-app.use(express.json());
+exports.chatApi = onRequest({ timeoutSeconds: 300, memory: "1GiB" }, (req, res) => {
+  // Check if the app has been initialized
+  if (!chatApp) {
+    console.log("Initializing Chat App for the first time...");
 
-// Expose only the chat routes
-app.use('/', chatRouter);
+    // Defer all imports until the first request
+    const express = require("express");
+    const { initializeFirebase } = require("../../../src/config/firebase.config.js");
+    const chatRouter = require("../../../src/api/v1/chat/chat.routes.js");
 
-// Deploy this Express app as a Cloud Function
-exports.chatApi = functions.https.onRequest(app);
+    // Create the app and initialize everything
+    chatApp = express();
+    initializeFirebase();
+    chatApp.use(express.json());
+    chatApp.use("/", chatRouter);
+    
+    console.log("Chat App Initialized.");
+  }
+
+  // Route the request to the now-initialized Express app
+  return chatApp(req, res);
+});

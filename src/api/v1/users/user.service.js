@@ -17,17 +17,7 @@ const getProfile = async (userId) => {
     if (!user) {
       throw new HttpError(404, 'User profile not found.');
     }
-
-    // << MODIFIED: Check for any previous completed orders >>
-    const pastOrderCount = await Order.countDocuments({
-      customerId: userId,
-      status: { $in: ['Delivered', 'Processing', 'Driver Assigned', 'Out for Delivery', 'Completed'] }
-    });
-
-    const userObject = user.toObject();
-    userObject.isFirstTimeCustomer = pastOrderCount === 0; // Add the new flag
-
-    return userObject;
+    return user;
   } catch (error) {
     if (error instanceof HttpError) throw error;
     console.error('Unexpected error in getProfile:', error);
@@ -229,11 +219,11 @@ const adminGetUser = async (userId) => {
     if (user.role === 'driver') {
       const driverOrders = await Order.find({ driverId: userId, status: 'Delivered' }).sort({ orderDate: -1 });
       const totalEarnings = driverOrders.reduce((sum, order) => sum + (order.deliveryFee || 0), 0);
+      let averageRating = 0; // Default value
 
-      let averageRating = 0; // Default value if Firebase fails
-
-      // ========================== FIX IS HERE (Added try-catch for Firebase) ==========================
-      if (isFirebaseInitialized && firestore) { // Check if Firebase is initialized and firestore object is available
+      // --- FIX STARTS HERE ---
+      // This block now safely attempts to get the rating without crashing if Firestore isn't available.
+      if (isFirebaseInitialized && firestore) {
         try {
           const feedbackSnapshot = await firestore.collection('feedback').where('driverId', '==', userId).get();
           if (!feedbackSnapshot.empty) {
@@ -244,17 +234,17 @@ const adminGetUser = async (userId) => {
             averageRating = parseFloat((totalRating / feedbackSnapshot.size).toFixed(2));
           }
         } catch (firebaseError) {
-          logger.error(`[USER_SERVICE] Error fetching driver feedback from Firestore for driver ${userId}:`, firebaseError.message);
+          logger.warn(`[USER_SERVICE] Could not fetch driver feedback from Firestore for driver ${userId}. This is expected if Firestore is not configured. Defaulting rating to 0. Error: ${firebaseError.message}`);
           // The averageRating will remain its default value (0)
         }
       } else {
-        logger.warn(`[USER_SERVICE] Firebase/Firestore not fully initialized. Skipping driver feedback query for driver ${userId}.`);
+        logger.warn(`[USER_SERVICE] Firebase/Firestore not initialized. Skipping driver feedback query for driver ${userId}.`);
       }
-      // ==============================================================================================
+      // --- FIX ENDS HERE ---
 
       userObject.totalDeliveriesCompleted = driverOrders.length;
       userObject.totalEarnings = totalEarnings;
-      userObject.averageRating = averageRating;
+      userObject.averageRating = averageRating; // Safely defaults to 0
       userObject.lastDeliveryDate = driverOrders.length > 0 ? driverOrders[0].orderDate : null;
       userObject.recentDeliveries = driverOrders.slice(0, 5).map(o => o.toObject());
     }
@@ -449,47 +439,6 @@ const getDriverStats = async (driverId, period = 'allTime') => {
   }
 };
 
-/**
- * Finds a user by email and validates their password.
- * This function is crucial for the login process.
- * @param {string} email - The user's email.
- * @param {string} password - The plain-text password provided by the user.
- * @returns {Promise<User|null>} The user object if credentials are valid, otherwise null.
- */
-const findUserByCredentials = async (email, password) => {
-    try {
-        // Use .select('+password') to explicitly include the password field, as it's set to select: false in schema
-        const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
-        if (!user) {
-            return null; // User not found
-        }
-
-        // Compare the provided password with the hashed password in the database
-        const isMatch = await user.comparePassword(password);
-        if (!isMatch) {
-            return null; // Passwords do not match
-        }
-
-        // Return the user object, but remove the password before sending it back
-        const userObject = user.toObject();
-        delete userObject.password;
-        return userObject;
-    } catch (error) {
-        logger.error(`Error in findUserByCredentials for email ${email}:`, error);
-        throw new HttpError(500, 'Authentication failed due to server error.');
-    }
-};
-
-const registerFcmToken = async (userId, fcmToken) => {
-  // Find the user and add the new token if it doesn't exist
-  await User.updateOne(
-    { id: userId },
-    { $addToSet: { fcmTokens: fcmToken } }
-  );
-};
-
-
-
 
 module.exports = {
   getProfile,
@@ -505,6 +454,4 @@ module.exports = {
   updateDriverAvailability,
   getDriverStats,
   registerUser,
-  findUserByCredentials,
-  registerFcmToken,
 };

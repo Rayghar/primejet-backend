@@ -1,51 +1,31 @@
-// src/api/v1/chat/chat.controller.js
-const chatService = require('./chat.service'); // Path to the new co-located chat service
-const HttpError = require('../../../utils/HttpError'); // Path to global HttpError utility
-// const { logger } = require('../../../config/logger.config.js'); // Optional: for structured logging
-const catchAsync = require('../../../utils/catchAsync'); // ✅ ADD THIS LINE
+// File: functions/chat/src/api/v1/chat/chat.controller.js
 
-const initiateChat = async (req, res, next) => {
-  try {
-    const { orderId, recipientId } = req.body;
-    const senderId = req.user.id;
+const admin = require('firebase-admin');
+const chatService = require('./chat.service');
+const catchAsync = require('../../../utils/catchAsync'); // ✅ ADDED: This was the missing import
 
-    if (senderId === recipientId) {
-      return next(new HttpError(400, 'Sender and recipient cannot be the same user.'));
-    }
+const initiateChat = catchAsync(async (req, res) => {
+  const { orderId, recipientId } = req.body;
+  const senderId = req.user.id; // This is the internal app ID from your JWT
+  const chatSession = await chatService.initiateChatSession(orderId, senderId, recipientId);
+  res.status(201).json(chatSession);
+});
 
-    const chatDetails = await chatService.initiateChatSession(orderId, senderId, recipientId);
-    return res.status(201).json(chatDetails);
-  } catch (error) {
-    // TEMPORARY: Surface underlying error to the client when DEBUG flag is set
-    const status = error.statusCode || error.status || 500;
-    const payload = { message: error.message || 'Failed to initiate chat session.' };
+const getMyThreads = catchAsync(async (req, res) => {
+  // Pass the internal app ID to the service. The service will handle fetching the firebaseUid.
+  const userId = req.user.id;
+  const threads = await chatService.getMyThreads(userId);
+  res.status(200).json(threads);
+});
 
-    if (process.env.DEBUG_CHAT_ERRORS === '1') {
-      payload.name = error.name;
-      payload.stack = error.stack;
-      // Include minimal request context (non-PII)
-      payload.context = {
-        senderId: req.user?.id,
-        recipientId: req.body?.recipientId,
-        orderId: req.body?.orderId,
-      };
-    }
-
-    return res.status(status).json(payload);
-  }
-};
-
-const getMyThreads = async (req, res, next) => {
-  try {
-    const threads = await chatService.getMyThreads(req.user.id);
-    res.status(200).json(threads);
-  } catch (error) {
-    next(error);
-  }
-};
-
+const createFirebaseToken = catchAsync(async (req, res) => {
+  const appUserId = req.user.id; 
+  const firebaseToken = await admin.auth().createCustomToken(appUserId);
+  res.status(200).json({ firebaseToken });
+});
 
 module.exports = {
   initiateChat,
   getMyThreads,
+  createFirebaseToken,
 };

@@ -18,9 +18,10 @@ const initiateChatSession = async (orderId, senderId, recipientId) => {
   try {
     let sender, recipient, order;
 
-    // --- Steps 1 & 2: Fetch Users from MongoDB ---
+    // --- Step 1 & 2: Fetch Users & their Firebase UIDs from MongoDB ---
     try {
       logger.info(`[CHAT_SERVICE] Attempting to find sender: ${senderId}`);
+      // ✅ MODIFIED: Added 'firebaseUid' to the fields being selected.
       sender = await User.findOne({ id: senderId }).select('id role name firebaseUid');
       if (!sender) {
         throw new HttpError(404, `Sender (user ID: ${senderId}) not found.`);
@@ -28,6 +29,7 @@ const initiateChatSession = async (orderId, senderId, recipientId) => {
       logger.info(`[CHAT_SERVICE] Successfully found sender: ${senderId}`);
 
       logger.info(`[CHAT_SERVICE] Attempting to find recipient: ${recipientId}`);
+      // ✅ MODIFIED: Added 'firebaseUid' to the fields being selected.
       recipient = await User.findOne({ id: recipientId }).select('id role name firebaseUid');
       if (!recipient) {
         throw new HttpError(404, `Recipient (user ID: ${recipientId}) not found.`);
@@ -78,11 +80,13 @@ const initiateChatSession = async (orderId, senderId, recipientId) => {
     try {
       logger.info(`[CHAT_SERVICE] Attempting to find or create chat thread in Firestore for order: ${orderId}`);
       
-      // ✅ MODIFIED: Pass the full sender and recipient objects to the firebaseService.
+      // ✅ MODIFIED: Pass the fetched Firebase UIDs to the firebaseService.
       const result = await firebaseService.initiateChat(
         orderId,
-        sender,
-        recipient
+        senderId,
+        recipientId,
+        sender.firebaseUid,
+        recipient.firebaseUid
       );
       chatId = result.chatId;
 
@@ -115,12 +119,10 @@ const initiateChatSession = async (orderId, senderId, recipientId) => {
  */
 const getMyThreads = async (userId) => {
   try {
-    // This function assumes 'userId' is the Firebase Auth UID for the Firestore query.
     const threadsData = await firebaseService.fetchUserChatThreads(userId);
 
     const enrichedThreads = await Promise.all(
       threadsData.map(async (thread) => {
-        // Here, we use the internal app ID from the 'participants' array to fetch from MongoDB.
         const otherParticipantId = thread.participants.find(pId => pId !== userId);
         if (!otherParticipantId) return null;
 

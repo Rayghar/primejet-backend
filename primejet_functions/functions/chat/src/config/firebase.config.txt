@@ -1,0 +1,14 @@
+// File: functions/chat/src/config/firebase.config.js
+const admin = require('firebase-admin');
+
+// This check prevents the app from crashing on hot reloads or in environments
+// where the module might be evaluated more than once.
+if (!admin.apps.length) {
+  admin.initializeApp();
+  console.log('Firebase Admin SDK Initialized.');
+}
+
+// Initialize the services we need and export them.
+const db = admin.firestore();
+
+module.exports = { db };

@@ -4,67 +4,45 @@ const admin = require('firebase-admin');
 const HttpError = require('../utils/HttpError');
 const { logger } = require('../config/logger.config.js');
 
-let firestore;
+// --- REMOVED ---
+// The old, complex initializeFirebase() function is no longer needed.
+// Initialization is now handled once in the main index.js file.
 
-const initializeFirebase = () => {
-  if (admin.apps.length) {
-    firestore = admin.firestore();
-    logger.info('Firebase Admin SDK already initialized.');
-    return;
-  }
-
-  let serviceAccount;
-  const isProduction = process.env.NODE_ENV === 'production';
-
-  if (isProduction && process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
-    try {
-      serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
-      logger.info('Initializing Firebase Admin SDK using environment variable.');
-    } catch (error) {
-      logger.error('Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY environment variable.', error);
-      throw new Error('Firebase configuration error.');
-    }
-  } else if (!isProduction) {
-    try {
-      serviceAccount = require('../../serviceAccountKey.json');
-      logger.info('Initializing Firebase Admin SDK using local file.');
-    } catch (error) {
-      logger.error('Cannot find local serviceAccountKey.json file.', error);
-      throw new Error('Local Firebase credentials file not found.');
-    }
-  } else {
-    logger.error('FIREBASE_SERVICE_ACCOUNT_KEY environment variable not set for production.');
-    throw new Error('Firebase configuration is missing for production environment.');
-  }
-
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
-
-  firestore = admin.firestore();
-  logger.info('Firebase Admin SDK Initialized Successfully.');
-};
-
+// --- CORRECTED ---
+// This function now gets the Firestore instance from the globally initialized admin object.
 const getFirestore = () => {
-  if (!firestore) {
-    throw new HttpError(503, 'Firebase (Firestore) has not been initialized.');
+  try {
+    return admin.firestore();
+  } catch (error) {
+    logger.error('Failed to get Firestore instance. Was admin.initializeApp() called?', error);
+    throw new HttpError(503, 'Firebase (Firestore) has not been initialized correctly.');
   }
-  return firestore;
 };
 
-const initiateChat = async (orderId, senderId, recipientId) => {
+// ✅ UPDATED: The function now accepts the full sender and recipient objects.
+const initiateChat = async (orderId, sender, recipient) => {
   const db = getFirestore();
   try {
-    const participants = [senderId, recipientId].sort();
+    const participants = [sender.id, recipient.id].sort();
+    const participantUids = [sender.firebaseUid, recipient.firebaseUid];
+
     const chatId = `${orderId}_${participants[0]}_${participants[1]}`;
     const chatRef = db.collection('chats').doc(chatId);
     const chatDoc = await chatRef.get();
 
     if (!chatDoc.exists) {
+      // ✅ ADDED: Create the participantInfo map to store names and roles.
+      const participantInfo = {
+        [sender.id]: { name: sender.name, role: sender.role },
+        [recipient.id]: { name: recipient.name, role: recipient.role }
+      };
+
       await chatRef.set({
         orderId,
-        participants: [senderId, recipientId],
+        participants: [sender.id, recipient.id],
         participantIds: participants,
+        participantUids: participantUids,   // ✅ ADDED: For security rules
+        participantInfo: participantInfo, // ✅ ADDED: For displaying names in the app
         createdAt: new Date(),
         lastMessage: null,
         lastMessageTimestamp: null,
@@ -82,6 +60,7 @@ const initiateChat = async (orderId, senderId, recipientId) => {
   }
 };
 
+// This function is unchanged and will continue to work.
 const sendNotification = async (userId, title, body, data = {}) => {
   const db = getFirestore();
   try {
@@ -104,6 +83,7 @@ const sendNotification = async (userId, title, body, data = {}) => {
   }
 };
 
+// This function is unchanged and will continue to work.
 const updateChatThreadOnNewMessage = async (chatId, messageData) => {
   const db = getFirestore();
   try {
@@ -122,10 +102,12 @@ const updateChatThreadOnNewMessage = async (chatId, messageData) => {
   }
 };
 
-const fetchUserChatThreads = async (userId) => {
+// ✅ UPDATED: The function now takes firebaseUid to query Firestore securely.
+const fetchUserChatThreads = async (firebaseUid) => {
   const db = getFirestore();
+  // ✅ UPDATED: The query now correctly uses 'participantUids'.
   const snapshot = await db.collection('chats')
-    .where('participantIds', 'array-contains', userId)
+    .where('participantUids', 'array-contains', firebaseUid)
     .orderBy('lastMessageTimestamp', 'desc')
     .get();
 
@@ -140,7 +122,9 @@ const fetchUserChatThreads = async (userId) => {
 };
 
 module.exports = {
-  initializeFirebase,
+  // We keep initializeFirebase for now in case other parts of your app use it,
+  // but it's effectively empty and safe.
+  initializeFirebase: () => {}, 
   getFirestore,
   initiateChat,
   sendNotification,

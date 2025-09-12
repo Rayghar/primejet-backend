@@ -2,6 +2,7 @@
 const chatService = require('./chat.service'); // Path to the new co-located chat service
 const HttpError = require('../../../utils/HttpError'); // Path to global HttpError utility
 // const { logger } = require('../../../config/logger.config.js'); // Optional: for structured logging
+const catchAsync = require('../../../utils/catchAsync'); // ✅ ADD THIS LINE
 
 const initiateChat = async (req, res, next) => {
   try {

@@ -115,12 +115,18 @@ const initiateChatSession = async (orderId, senderId, recipientId) => {
  */
 const getMyThreads = async (userId) => {
   try {
-    // This function assumes 'userId' is the Firebase Auth UID for the Firestore query.
-    const threadsData = await firebaseService.fetchUserChatThreads(userId);
+    // ✅ ADDED: First, fetch the user from MongoDB to get their firebaseUid.
+    const user = await User.findOne({ id: userId }).select('firebaseUid').lean();
+    if (!user || !user.firebaseUid) {
+      throw new HttpError(404, 'User profile is incomplete and cannot fetch threads.');
+    }
+
+    // ✅ CORRECTED: Pass the correct firebaseUid to the service that queries Firestore.
+    const threadsData = await firebaseService.fetchUserChatThreads(user.firebaseUid);
 
     const enrichedThreads = await Promise.all(
       threadsData.map(async (thread) => {
-        // Here, we use the internal app ID from the 'participants' array to fetch from MongoDB.
+        // The rest of this logic correctly uses the internal app IDs
         const otherParticipantId = thread.participants.find(pId => pId !== userId);
         if (!otherParticipantId) return null;
 

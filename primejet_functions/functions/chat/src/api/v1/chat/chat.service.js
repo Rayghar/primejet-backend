@@ -9,33 +9,56 @@ const { logger } = require('../../../config/logger.config.js');
 const initiateChatSession = async (orderId, senderId, recipientId) => {
   try {
     let sender, recipient, order;
-    
-    sender = await User.findOne({ id: senderId }).select('id role name firebaseUid');
-    if (!sender) { throw new HttpError(404, `Sender not found.`); }
-    
-    recipient = await User.findOne({ id: recipientId }).select('id role name firebaseUid');
-    if (!recipient) { throw new HttpError(404, `Recipient not found.`); }
+
+    // --- Step 1 & 2: Fetch Users from MongoDB ---
+    try {
+      logger.info(`[CHAT_SERVICE] Attempting to find sender: ${senderId}`);
+      // ✅ FINAL FIX: Added '-_id' to explicitly exclude the MongoDB ObjectId.
+      sender = await User.findOne({ id: senderId }).select('id role name firebaseUid -_id').lean();
+      if (!sender) {
+        throw new HttpError(404, `Sender (user ID: ${senderId}) not found.`);
+      }
+      logger.info(`[CHAT_SERVICE] Successfully found sender: ${senderId}`);
+
+      logger.info(`[CHAT_SERVICE] Attempting to find recipient: ${recipientId}`);
+      // ✅ FINAL FIX: Added '-_id' here as well.
+      recipient = await User.findOne({ id: recipientId }).select('id role name firebaseUid -_id').lean();
+      if (!recipient) {
+        throw new HttpError(404, `Recipient (user ID: ${recipientId}) not found.`);
+      }
+      logger.info(`[CHAT_SERVICE] Successfully found recipient: ${recipientId}`);
+
+    } catch (dbError) {
+      logger.error(`[CHAT_SERVICE] !!! MONGODB_ERROR fetching users:`, dbError);
+      throw new Error('Failed during user lookup in MongoDB.');
+    }
+    // --- The rest of your function is already correct and remains unchanged ---
     
     order = await Order.findOne({ id: orderId }).select('id customerId driverId');
-    if (!order) { throw new HttpError(404, `Order not found.`); }
-    
-    // Authorization Logic
+    if (!order) {
+      throw new HttpError(404, `Order (ID: ${orderId}) not found for chat context.`);
+    }
+    logger.info(`[CHAT_SERVICE] Successfully found order: ${orderId}`);
+
+    logger.info(`[CHAT_SERVICE] Performing authorization checks for order ${orderId}.`);
     const isSenderCustomer = sender.id === order.customerId;
     const isSenderDriver = sender.id === order.driverId;
     const isRecipientCustomer = recipient.id === order.customerId;
     const isRecipientDriver = recipient.id === order.driverId;
+    
     let canChat = false;
     if ((isSenderCustomer && isRecipientDriver) || (isSenderDriver && isRecipientCustomer)) {
         if (order.driverId) canChat = true;
     } else if (sender.role === 'admin' || recipient.role === 'admin') {
         canChat = true;
     }
+
     if (!canChat) {
+      logger.warn(`[CHAT_SERVICE] Unauthorized chat attempt for order ${orderId}`);
       throw new HttpError(403, 'These users are not authorized to chat in the context of this order.');
     }
     logger.info(`[CHAT_SERVICE] Authorization successful.`);
 
-    // Pass the full sender and recipient objects to create the full chat document
     const { chatId } = await firebaseService.initiateChat(orderId, sender, recipient);
     
     logger.info(`[CHAT_SERVICE] Chat session ready for order ${orderId}.`);
@@ -51,24 +74,19 @@ const initiateChatSession = async (orderId, senderId, recipientId) => {
 };
 
 const getMyThreads = async (userId) => {
+  // This function is correct and requires no changes.
   try {
-    // First, fetch the user from MongoDB to get their firebaseUid.
     const user = await User.findOne({ id: userId }).select('firebaseUid').lean();
     if (!user || !user.firebaseUid) {
       throw new HttpError(404, 'User profile is incomplete and cannot fetch threads.');
     }
-
-    // Pass the correct firebaseUid to the service that queries Firestore.
     const threadsData = await firebaseService.fetchUserChatThreads(user.firebaseUid);
-
     const enrichedThreads = await Promise.all(
       threadsData.map(async (thread) => {
         const otherParticipantId = thread.participants.find(pId => pId !== userId);
         if (!otherParticipantId) return null;
-
         const otherParticipant = await User.findOne({ id: otherParticipantId }).select('id name photoUrl role');
         if (!otherParticipant) return null;
-
         return {
           chatId: thread.chatId,
           orderId: thread.orderId,
@@ -83,9 +101,7 @@ const getMyThreads = async (userId) => {
         };
       })
     );
-
     return enrichedThreads.filter(thread => thread !== null);
-
   } catch (error) {
     logger.error(`Error in getMyThreads for user ${userId}:`, error);
     throw new HttpError(500, 'Failed to retrieve message threads.');

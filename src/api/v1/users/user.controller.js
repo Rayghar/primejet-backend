@@ -6,7 +6,7 @@ const HttpError = require('../../../utils/HttpError'); // Path to global HttpErr
 const getProfile = async (req, res, next) => {
   try {
     // req.user is populated by authMiddleware
-    const user = await userService.getProfile(req.user.id, req.user.role);
+    const user = await userService.getProfile(req.user.id);
     res.status(200).json(user);
   } catch (error) {
     // console.error('[USER_CONTROLLER] Get profile error:', error.message); // Original log
@@ -178,4 +178,5 @@ module.exports = {
   updateDriverAvailability,
   getDriverStats,
   updateFcmToken,
+  
 };

@@ -368,49 +368,59 @@ const driverAcceptRun = async (driverId, runId) => {
   );
 
   if (!run) {
+    // Either run not found, not assigned to this driver, or someone already accepted it
     throw new HttpError(400, 'Run not found, not assigned to you, or already accepted.');
   }
 
-  // 2) Gather all orderIds in this run
-  const orderIds = run.stops.map(s => s.orderId);
+  // 2) Collect order IDs in this run
+  const orderIds = (run.stops || []).map(s => s.orderId).filter(Boolean);
 
-  // 3) Load only orders that are NOT "payOnPickup" (POA must remain Awaiting Driver Arrival)
+  if (!orderIds.length) {
+    return { message: 'Run accepted. No orders to update.' };
+  }
+
+  // 3) Load only orders that are NOT "payOnPickup" (POA stays "Awaiting Driver Arrival")
   const orders = await Order.find(
     { id: { $in: orderIds }, paymentMethod: { $ne: 'payOnPickup' } },
     { id: 1, customerId: 1 }
   ).lean();
 
-  // 4) Bulk update orders to "Driver Assigned" (idempotent)
+  // 4) Bulk update orders to "Driver Assigned" (idempotent; no session)
   if (orders.length) {
-    await Order.bulkWrite(
-      orders.map(o => ({
-        updateOne: {
-          filter: { id: o.id },
-          update: {
-            $set: { status: 'Driver Assigned' },
-            $push: {
-              statusHistory: {
-                status: 'Driver Assigned',
-                timestamp: new Date(),
-                notes: `Order assigned to driver.`,
-                updatedBy: driverId,
-                updaterRole: 'driver'
-              }
+    const ops = orders.map(o => ({
+      updateOne: {
+        filter: { id: o.id },
+        update: {
+          $set: { status: 'Driver Assigned' },
+          $push: {
+            statusHistory: {
+              status: 'Driver Assigned',
+              timestamp: new Date(),
+              notes: 'Order assigned to driver.',
+              updatedBy: driverId,
+              updaterRole: 'driver'
             }
           }
         }
-      }))
-    );
+      }
+    }));
 
-    // 5) Notify customers
+    await Order.bulkWrite(ops, { ordered: false });
+
+    // 5) Notify customers; guard so a notification error never crashes the flow
     for (const o of orders) {
-      createAndSendNotification({
-        userId: o.customerId,
-        title: 'Your Order is on its way!',
-        body: 'Your order has been assigned to a driver.',
-        type: 'ORDER_UPDATE',
-        data: { orderId: o.id, screen: 'order_details' }
-      });
+      try {
+        await createAndSendNotification({
+          userId: o.customerId,
+          title: 'Your Order is on its way!',
+          body: 'Your order has been assigned to a driver.',
+          type: 'ORDER_UPDATE',
+          data: { orderId: o.id, screen: 'order_details' }
+        });
+      } catch (err) {
+        // Don't crash; just log
+        try { logger.error?.('[RUN_SERVICE] Notification error:', err); } catch (_) {}
+      }
     }
   }
 

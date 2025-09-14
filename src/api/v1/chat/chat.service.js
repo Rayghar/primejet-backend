@@ -9,27 +9,21 @@ const { logger } = require('../../../config/logger.config');
  * Verifies if a user is allowed to join a chat for a specific order.
  */
 const initiateChatSession = async (orderId, senderId) => {
-  // BEFORE: This was causing a CastError because senderId is a UUID, not an ObjectId.
-  // const sender = await User.findById(senderId).lean();
-  
-  // ✅ AFTER: Query by the custom 'id' field.
-  const sender = await User.findOne({ id: senderId }).lean();
+  // Find the sender (User) by their UUID 'id'
+  const sender = await User.findOne({ id: senderId });
 
-  // BEFORE: This was causing a CastError because orderId is a UUID, not an ObjectId.
-  // const order = await Order.findById(orderId).lean();
-
-  // ✅ AFTER: Query by the custom 'id' field.
-  const order = await Order.findOne({ id: orderId }).lean();
+  // Find the Order by its UUID 'id' and populate its virtual customer/driver fields
+  const order = await Order.findOne({ id: orderId })
+    .populate('customer')
+    .populate('driver');
 
   if (!sender || !order) {
     throw new HttpError(404, 'User or Order not found.');
   }
 
-  // NOTE: Your authorization logic here is incorrect because of the change to lean().
-  // Mongoose documents have an .equals() method, but plain JavaScript objects do not.
-  // You must compare the string representations of the ObjectIds.
-  const isSenderCustomer = sender._id.toString() === order.customer.toString();
-  const isSenderDriver = order.driver && (sender._id.toString() === order.driver.toString());
+  // Perform authorization by comparing the UUIDs of the sender and the order's participants
+  const isSenderCustomer = order.customer && sender.id === order.customer.id;
+  const isSenderDriver = order.driver && sender.id === order.driver.id;
 
   if (!isSenderCustomer && !isSenderDriver) {
     throw new HttpError(403, 'You are not authorized to chat for this order.');
@@ -37,7 +31,7 @@ const initiateChatSession = async (orderId, senderId) => {
 
   logger.info(`[CHAT_SERVICE] Auth successful for user ${senderId} on order ${orderId}.`);
   
-  // ✅ FIX: The chatId should be the UUID `id`, not the `_id`, to be consistent.
+  // Return the order's UUID as the chatId
   return { message: 'Authorization successful.', chatId: order.id }; 
 };
 

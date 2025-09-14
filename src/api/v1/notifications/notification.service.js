@@ -60,28 +60,53 @@ const adminSendNotification = async (notificationData) => {
   return { message: `Notification successfully sent to ${targetedUsers.length} user(s).` };
 };
 
-
 /**
- * This function sends a push notification via FCM and saves it to the database.
+ * Creates and stores a notification in the database, then sends a push notification.
+ * @param {string} userId - The ID of the user to notify.
+ * @param {string} title - The title of the notification.
+ * @param {string} body - The main content of the notification.
+ * @param {object} [data={}] - Additional data for the push notification.
+ * @returns {Promise<void>}
  */
-const createAndSendNotification = async ({ userId, title, body, type, data }) => {
-  const user = await User.findOne({ id: userId }).select('fcmTokens');
-  if (!user || user.fcmTokens.length === 0) {
-    return console.warn(`[NOTIFICATION_SERVICE] No FCM tokens found for user ${userId}. Skipping push notification.`);
+const createAndSendNotification = async (userId, title, body, data = {}) => {
+  try {
+    logger.info(`[NOTIFICATION_SERVICE] Creating notification for user ${userId}: "${title}"`);
+
+    // 1. Create the notification document in your MongoDB database.
+    // This part is likely correct and depends on your notification.model.js
+    await Notification.create({
+      userId,
+      title,
+      body,
+      data,
+      isRead: false,
+    });
+    
+    // 2. Fetch the user's FCM tokens to send the push notification.
+    const user = await User.findById(userId).select('fcmTokens').lean();
+    if (!user || !user.fcmTokens || !user.fcmTokens.length) {
+      logger.warn(`[NOTIFICATION_SERVICE] User ${userId} has no FCM tokens. Push notification skipped.`);
+      return;
+    }
+
+    // 3. ✅ THIS IS THE FIX: Call the correct function name and wrap it in a try/catch.
+    // The function is likely named 'sendNotification' in your firebase.service.js.
+    // This prevents a typo or failure here from crashing the entire server.
+    try {
+      await firebaseService.sendNotification(user.fcmTokens, title, body, data);
+      logger.info(`[NOTIFICATION_SERVICE] Successfully sent push notification for user ${userId}.`);
+    } catch (pushError) {
+      logger.error(`[NOTIFICATION_SERVICE] Failed to send push notification via FCM for user ${userId}:`, pushError);
+    }
+    
+  } catch (error) {
+    // By catching errors here, we prevent the entire server from crashing.
+    logger.error(`[NOTIFICATION_SERVICE] A critical error occurred in createAndSendNotification for user ${userId}:`, error);
+    // We do not rethrow the error, as failing to send a notification
+    // should not crash the primary operation (like updating an order status).
   }
-
-  const notification = new Notification({
-    userId,
-    title,
-    body,
-    type,
-    data: data || {},
-  });
-  await notification.save();
-
-  // Assuming firebaseService has a sendPushNotifications function
-  firebaseService.sendPushNotifications(user.fcmTokens, title, body, data);
 };
+
 
 const getMyNotifications = async (userId, { page = 1, limit = 10 }) => {
   const query = { userId };

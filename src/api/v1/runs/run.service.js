@@ -22,77 +22,104 @@ const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
 };
 
 const driverUpdateStopStatus = async (driverId, runId, stopId, newStatus, notes) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  try {
-    const run = await Run.findOne({ id: runId }).session(session);
+  // 0) Quick sanity: load the run to verify ownership and find the stop/orderId
+  const run = await Run.findOne(
+    { id: runId, driverId },
+    { stops: 1, overallStatus: 1, id: 1 }
+  ).lean();
 
-    if (!run) {
-      throw new HttpError(404, 'Run not found.');
-    }
-    if (run.driverId !== driverId) {
-      throw new HttpError(403, 'Not assigned to this driver.');
-    }
-    
-    const stop = run.stops.find(s => s.stopId === stopId);
-    if (!stop) {
-      throw new HttpError(404, 'Stop not found in this run.');
-    }
-    
-    stop.status = newStatus;
-    stop.statusHistory.push({
-      status: newStatus,
-      timestamp: new Date(),
-      notes: notes,
-      updatedBy: driverId,
-      updaterRole: 'driver'
-    });
-
-    // ======================= FIX STARTS HERE =======================
-    // 1. Define what statuses mean a stop is "finished".
-    // These should include all possible terminal states for a stop.
-    const terminalStopStatuses = ['DELIVERED', 'CUSTOMER_UNAVAILABLE', 'ISSUE_REPORTED'];
-
-    // 2. Recalculate the number of completed stops for the entire run.
-    run.completedStops = run.stops.filter(s => terminalStopStatuses.includes(s.status)).length;
-    
-    logger.info(`[RUN_SERVICE] Recalculated completed stops for run ${runId}. New count: ${run.completedStops}`);
-    // ======================== FIX ENDS HERE ========================
-
-    const newOrderStatus = mapDriverStopStatusToOrderStatus(newStatus);
-    if (newOrderStatus) {
-      const order = await Order.findOne({ id: stop.orderId }).session(session);
-      if (order) {
-        order.status = newOrderStatus;
-        order.statusHistory.push({
-          status: newOrderStatus,
-          timestamp: new Date(),
-          notes: `Driver update: ${notes || newStatus}`,
-          updatedBy: driverId,
-          updaterRole: 'driver'
-        });
-        await order.save({ session });
-        
-        createAndSendNotification({
-            userId: order.customerId,
-            title: `Your Order is now ${newOrderStatus}`,
-            body: `Your order #${order.shortOrderId} has been updated.`,
-            type: 'ORDER_UPDATE',
-            data: { orderId: order.id, screen: 'order_details' }
-        });
-      }
-    }
-
-    await run.save({ session }); // This now saves the updated completedStops count
-    await session.commitTransaction();
-    return { message: 'Stop status updated successfully.' };
-
-  } catch (error) {
-    await session.abortTransaction();
-    throw error;
-  } finally {
-    session.endSession();
+  if (!run) {
+    throw new HttpError(404, 'Run not found or not assigned to this driver.');
   }
+
+  const stop = (run.stops || []).find(s => s.stopId === stopId);
+  if (!stop) {
+    throw new HttpError(404, 'Stop not found in this run.');
+  }
+  const orderId = stop.orderId;
+
+  // 1) Atomically update the nested stop's status + history (NO transaction)
+  const now = new Date();
+  const updateRes = await Run.updateOne(
+    { id: runId, driverId },
+    {
+      $set: { 'stops.$[s].status': newStatus },
+      $push: {
+        'stops.$[s].statusHistory': {
+          status: newStatus,
+          timestamp: now,
+          notes,
+          updatedBy: driverId,
+          updaterRole: 'driver',
+        }
+      }
+    },
+    {
+      arrayFilters: [{ 's.stopId': stopId }],
+      upsert: false
+    }
+  );
+
+  const matched = updateRes.matchedCount ?? updateRes.n ?? 0;
+  if (matched === 0) {
+    // stop may have been updated concurrently; treat as conflict
+    throw new HttpError(409, 'Stop status not updated (possibly changed concurrently). Please retry.');
+  }
+
+  // 2) Update the order's customer-facing status (idempotent; swallow errors)
+  try {
+    const mapped = mapDriverStopStatusToOrderStatus(newStatus);
+    if (mapped) {
+      await Order.updateOne(
+        { id: orderId },
+        {
+          $set: { status: mapped },
+          $push: {
+            statusHistory: {
+              status: mapped,
+              timestamp: now,
+              notes: `Driver updated stop (${stopId}) to ${newStatus}`,
+              updatedBy: driverId,
+              updaterRole: 'driver'
+            }
+          }
+        }
+      );
+    }
+  } catch (err) {
+    logger?.error?.('[RUN_SERVICE] Order status update failed:', err);
+  }
+
+  // 3) If all stops are terminal, mark the run as Completed (idempotent)
+  try {
+    const terminalStopStatuses = ['DELIVERED', 'CUSTOMER_UNAVAILABLE', 'ISSUE_REPORTED', 'CANCELED'];
+    const fresh = await Run.findOne({ id: runId }, { stops: 1, overallStatus: 1, id: 1 }).lean();
+
+    const allDone = (fresh.stops || []).every(s => terminalStopStatuses.includes(s.status));
+    if (allDone && fresh.overallStatus !== 'Completed') {
+      await Run.updateOne(
+        { id: runId },
+        {
+          $set: { overallStatus: 'Completed' },
+          $push: {
+            statusHistory: {
+              status: 'Completed',
+              timestamp: now,
+              notes: 'All stops reached terminal state',
+              updatedBy: driverId,
+              updaterRole: 'driver'
+            }
+          }
+        }
+      );
+    }
+  } catch (err) {
+    logger?.error?.('[RUN_SERVICE] Could not finalize run to Completed:', err);
+  }
+
+  // 4) Return the fresh run for the client
+  const updatedRun = await Run.findOne({ id: runId }).lean();
+  return updatedRun;
 };
 
 // --- Admin Focused Services ---

@@ -14,15 +14,14 @@ process.on('uncaughtException', (error) => {
   process.exit(1);
 });
 
-const http = require('http');
-const app = require('./app');
+// ✅ CORRECTED: Import the unified server instance from app.js
+const server = require('./app');
 const globalConfig = require('./config'); // Import the global config
 const { logger } = require('./config/logger.config.js');
 // Import connectMongoDB, and also connectRedis and redisClient from database.config.js
 const { connectMongoDB, connectRedis, redisClient } = require('./config/database.config.js');
 
 const PORT = globalConfig.port;
-const server = http.createServer(app);
 
 async function startServer() {
   logger.info('[SERVER] startServer called.');
@@ -45,6 +44,7 @@ async function startServer() {
         logger.info('[SERVER] Skipping DB and Redis connections in test environment.');
     }
 
+    // ✅ CORRECTED: Use the unified server instance to listen
     server.listen(PORT, '0.0.0.0', () => {
       logger.info(`[SERVER] Server running on port ${PORT}`);
       logger.info(`[SERVER] Environment: ${globalConfig.env}`);
@@ -104,5 +104,3 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 if (require.main === module) {
   startServer();
 }
-
-module.exports = server;

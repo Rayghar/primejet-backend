@@ -8,7 +8,7 @@ const bodyParser = require('body-parser');
 const paymentController = require('./api/v1/payments/payment.controller');
 const helmet = require('helmet');
 const cors = require('cors');
-const morgan = 'morgan'; // This was defined as a string in your file
+const morgan = require('morgan');
 
 const { logger } = require('./config/logger.config');
 const { initializeFirebase, getFirestore } = require('./services/firebase.service');
@@ -71,7 +71,7 @@ app.set('trust proxy', 1);
 // --- Step 4: Setup Global Middleware ---
 app.use(helmet());
 app.use(cors());
-// app.use(morgan('combined', { stream: logger.stream })); // Your morgan require was a string, correcting
+app.use(morgan('combined', { stream: logger.stream }));
 app.use('/api', rateLimiter);
 app.use(require('./middleware/logger_middleware'));
 

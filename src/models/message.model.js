@@ -1,35 +1,13 @@
-// src/models/message.model.js
 const mongoose = require('mongoose');
-const { toJSON } = require('../plugins/toJSON.plugin.js');
 
-const messageSchema = mongoose.Schema(
-  {
-    chatId: { // This will typically be the orderId to group messages
-      type: String,
-      required: true,
-      index: true,
-    },
-    senderId: { // The internal app ID of the sender
-      type: String,
-      required: true,
-    },
-    recipientId: { // The internal app ID of the recipient
-      type: String,
-      required: true,
-    },
-    text: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-  },
-  {
-    timestamps: true, // Automatically adds createdAt and updatedAt
-  }
-);
+const schema = new mongoose.Schema({
+  chatId: { type: String, required: true, index: true },   // order UUID
+  senderId: { type: String, required: true, index: true },
+  recipientId: { type: String, required: true, index: true },
+  text: { type: String, required: true, maxlength: 2000, trim: true },
+  status: { type: String, enum: ['sent','delivered','read'], default: 'sent' },
+}, { timestamps: true });
 
-messageSchema.plugin(toJSON);
+schema.index({ chatId: 1, createdAt: 1 });
 
-const Message = mongoose.model('Message', messageSchema);
-
-module.exports = Message;
+module.exports = mongoose.model('Message', schema);

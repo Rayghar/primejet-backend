@@ -167,7 +167,6 @@ const getDriverStats = async (req, res, next) => {
 
 
 module.exports = {
-  getProfile,
   updateProfile,
   getNotificationPreferences,
   updateNotificationPreferences,
@@ -180,4 +179,5 @@ module.exports = {
   updateDriverAvailability,
   getDriverStats,
   updateFcmToken,
+  getMyProfile,
 };

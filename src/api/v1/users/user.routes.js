@@ -1,56 +1,100 @@
+// src/api/v1/users/user.routes.js
 const express = require('express');
-const Joi = require('joi');
+const userController = require('./user.controller'); // Path to co-located controller
+const authMiddleware = require('../../../middleware/auth.middleware'); // Path to global auth middleware
+const validate = require('../../../middleware/validate.middleware'); // Path to global validate middleware
+const { getDriverStatsSchema } = require('./user.validation');
+const {
+  updateProfileSchema,
+  updateNotificationPreferencesSchema,
+  adminCreateUserSchema,
+  adminUpdateUserSchema,
+  adminUpdateUserStatusSchema,
+  updateDriverAvailabilitySchema,
+} = require('./user.validation'); // Path to co-located validation schemas
+
 const router = express.Router();
 
-const userController = require('./user.controller');
-const auth = require('../../../middleware/auth.middleware');
-const validate = require('../../../middleware/validate.middleware');
-const {
-  registerCustomerSchema,
-  registerDriverSchema,
-  loginSchema,
-  verifyOTPSchema,
-  resetPasswordRequestSchema,
-  resetPasswordSchema,
-  updateProfileSchema,
-  adminCreateUserSchema,
-  updateUserRoleSchema,
-} = require('./user.validation');
+console.log('[USER_ROUTES] Registering user routes...');
 
-// --- Customer-specific routes ---
-router.post('/register/customer', validate(registerCustomerSchema), userController.registerCustomer);
-router.post('/login', validate(loginSchema), userController.login);
-router.post('/verify-otp', validate(verifyOTPSchema), userController.verifyOtp);
-router.post('/request-password-reset', validate(resetPasswordRequestSchema), userController.requestPasswordReset);
-router.post('/reset-password', validate(resetPasswordSchema), userController.resetPassword);
-
-// --- Driver-specific routes ---
-router.post('/register/driver', validate(registerDriverSchema), userController.registerDriver);
-router.put('/driver/availability', auth('driver'), userController.updateDriverAvailability);
-
-// --- Admin-specific routes ---
-router.get('/admin', auth('admin'), userController.adminGetUsers);
-router.post('/admin', auth('admin'), validate(adminCreateUserSchema), userController.adminCreateUser);
-router.put('/admin/:userId', auth('admin'), validate(updateUserRoleSchema), userController.adminUpdateUserRole);
-router.put('/admin/:userId/status', auth('admin'), userController.adminUpdateUserStatus);
-router.delete('/admin/:userId', auth('admin'), userController.deleteUser);
-
-// --- Routes accessible by authenticated users (customer, driver, admin) ---
-router.get('/me', auth(), userController.getMyProfile);
-router.put('/me', auth(), validate(updateProfileSchema), userController.updateMyProfile);
-
-// NEW: Route to register/update a user's FCM token
-const fcmTokenSchema = Joi.object({
-  fcmToken: Joi.string().required().messages({
-    'any.required': 'FCM token is required.',
-  }),
-});
-
-router.put(
-  '/me/fcm-token',
-  auth(),
-  validate(fcmTokenSchema),
-  userController.registerFcmToken
+// Authenticated user's own profile routes
+router.get(
+    '/me',
+    authMiddleware(), // Requires any authenticated user
+    // FIX: Use the correct controller function name `getMyProfile`
+    userController.getMyProfile
 );
+router.put(
+    '/me',
+    authMiddleware(),
+    validate(updateProfileSchema), // Validate request body
+    userController.updateProfile
+);
+
+router.get(
+    '/me/notification-preferences',
+    authMiddleware(),
+    userController.getNotificationPreferences
+);
+router.put(
+    '/me/notification-preferences',
+    authMiddleware(),
+    validate(updateNotificationPreferencesSchema), // Validate request body
+    userController.updateNotificationPreferences
+);
+
+// Driver specific routes
+router.put(
+    '/driver/availability',
+    authMiddleware('driver'), // Requires driver role
+    validate(updateDriverAvailabilitySchema), // Validate request body
+    userController.updateDriverAvailability
+);
+
+// Admin user management routes
+router.get(
+    '/admin',
+    authMiddleware('admin'), // Requires admin role
+    userController.adminGetUsers
+);
+router.post(
+    '/admin',
+    authMiddleware('admin'),
+    validate(adminCreateUserSchema), // Validate request body
+    userController.adminCreateUser
+);
+
+router.get(
+    '/admin/:userId',
+    authMiddleware('admin'),
+    userController.adminGetUser
+);
+router.put(
+    '/admin/:userId',
+    authMiddleware('admin'),
+    validate(adminUpdateUserSchema), // Validate request body
+    userController.adminUpdateUser
+);
+router.put(
+    '/admin/:userId/status',
+    authMiddleware('admin'),
+    validate(adminUpdateUserStatusSchema), // Validate request body
+    userController.adminUpdateUserStatus
+);
+router.delete(
+    '/admin/:userId',
+    authMiddleware('admin'),
+    userController.deleteUserById
+);
+
+// Fetch driver stats
+router.get(
+    '/me/stats',
+    authMiddleware('driver'), // Ensure only drivers can access this
+    validate(getDriverStatsSchema, 'query'), // Optional: validate query params
+    userController.getDriverStats // Use the real controller
+);
+
+console.log('[USER_ROUTES] User routes registered.');
 
 module.exports = router;

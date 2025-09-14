@@ -349,79 +349,72 @@ const endRun = async (runId, driverId) => {
 };
 
 const driverAcceptRun = async (driverId, runId) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  try {
-    const run = await Run.findOne({ id: runId }).session(session); // FIX IS HERE
-    if (!run) {
-      throw new HttpError(404, 'Run not found or not assigned to this driver.');
-    }
-
-    if (run.driverId !== driverId) { // FIX IS HERE
-      throw new HttpError(403, 'Not assigned to this driver.');
-    }
-    
-    // Check if run is already accepted
-    if (run.overallStatus !== 'Assigned') {
-      throw new HttpError(400, `This run is already '${run.overallStatus}'.`);
-    }
-
-    // Change run status to 'In Progress'
-    run.overallStatus = 'In Progress';
-    run.statusHistory.push({
-      status: 'In Progress',
-      timestamp: new Date(),
-      notes: 'Driver accepted the run.',
-      updatedBy: driverId,
-      updaterRole: 'driver'
-    });
-
-    const driver = await User.findOne({ id: driverId }).session(session);
-    if (!driver) {
-      throw new HttpError(404, 'Driver profile not found.');
-    }
-    
-    // Iterate through all stops in the run to update the associated orders
-    for (const stop of run.stops) {
-      const order = await Order.findOne({ id: stop.orderId }).session(session);
-      if (order) {
-        // === SURGICAL UPDATE FOR PAY ON ARRIVAL START ===
-        // Only update the order status if it is NOT a "Pay on Arrival" order.
-        // POA orders must remain in the 'Awaiting Driver Arrival' state.
-        if (order.paymentMethod !== 'payOnPickup') {
-          order.status = 'Driver Assigned'; 
-          order.statusHistory.push({
-            status: 'Driver Assigned',
-            timestamp: new Date(),
-            notes: `Order assigned to driver ${driver.name}.`,
-            updatedBy: driverId,
-            updaterRole: 'driver'
-          });
-          await order.save({ session });
-          
-          createAndSendNotification({
-              userId: order.customerId,
-              title: "Your Order is on its way!",
-              body: `Your order has been assigned to a driver.`,
-              type: 'ORDER_UPDATE',
-              data: { orderId: order.id, screen: 'order_details' }
-          });
+  // 1) Atomically flip the run to "In Progress" only if it's still Assigned and belongs to this driver
+  const run = await Run.findOneAndUpdate(
+    { id: runId, driverId, overallStatus: 'Assigned' },
+    {
+      $set: { overallStatus: 'In Progress' },
+      $push: {
+        statusHistory: {
+          status: 'In Progress',
+          timestamp: new Date(),
+          notes: 'Driver accepted the run.',
+          updatedBy: driverId,
+          updaterRole: 'driver'
         }
-        // For POA orders, we do nothing to the status here. It remains 'Awaiting Driver Arrival'.
-        // === SURGICAL UPDATE FOR PAY ON ARRIVAL END ===
       }
-    }
-    
-    await run.save({ session });
-    await session.commitTransaction();
-    return { message: 'Run accepted and order status updated successfully.' };
+    },
+    { new: true }
+  );
 
-  } catch (error) {
-    await session.abortTransaction();
-    throw error;
-  } finally {
-    session.endSession();
+  if (!run) {
+    throw new HttpError(400, 'Run not found, not assigned to you, or already accepted.');
   }
+
+  // 2) Gather all orderIds in this run
+  const orderIds = run.stops.map(s => s.orderId);
+
+  // 3) Load only orders that are NOT "payOnPickup" (POA must remain Awaiting Driver Arrival)
+  const orders = await Order.find(
+    { id: { $in: orderIds }, paymentMethod: { $ne: 'payOnPickup' } },
+    { id: 1, customerId: 1 }
+  ).lean();
+
+  // 4) Bulk update orders to "Driver Assigned" (idempotent)
+  if (orders.length) {
+    await Order.bulkWrite(
+      orders.map(o => ({
+        updateOne: {
+          filter: { id: o.id },
+          update: {
+            $set: { status: 'Driver Assigned' },
+            $push: {
+              statusHistory: {
+                status: 'Driver Assigned',
+                timestamp: new Date(),
+                notes: `Order assigned to driver.`,
+                updatedBy: driverId,
+                updaterRole: 'driver'
+              }
+            }
+          }
+        }
+      }))
+    );
+
+    // 5) Notify customers
+    for (const o of orders) {
+      createAndSendNotification({
+        userId: o.customerId,
+        title: 'Your Order is on its way!',
+        body: 'Your order has been assigned to a driver.',
+        type: 'ORDER_UPDATE',
+        data: { orderId: o.id, screen: 'order_details' }
+      });
+    }
+  }
+
+  return { message: 'Run accepted and order status updated successfully.' };
 };
 
 const getRunHistory = async (driverId, options) => {

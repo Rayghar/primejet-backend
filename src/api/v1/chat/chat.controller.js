@@ -4,7 +4,13 @@ const chatService = require('./chat.service');
 const initiateChat = async (req, res, next) => {
   try {
     const { orderId } = req.body;
-    const senderId = req.user.sub; // ID from JWT
+    
+    // BEFORE: This was incorrect, causing the crash.
+    // const senderId = req.user.sub; 
+    
+    // ✅ AFTER: Use `req.user.id`, which is correctly attached by your auth middleware.
+    const senderId = req.user.id; 
+
     const response = await chatService.initiateChatSession(orderId, senderId);
     res.status(200).json(response);
   } catch (error) {

@@ -3,56 +3,53 @@ const Joi = require('joi');
 const HttpError = require('../utils/HttpError');
 const pick = require('../utils/pick');
 
-const validate = (schema, dataSourceToValidate = 'body') => (req, res, next) => {
-  // Debug: Log the schema to confirm it's defined
-  console.log(`[VALIDATE_MIDDLEWARE] Schema for ${dataSourceToValidate}:`, schema);
-
-  // Check if schema is undefined
+/**
+ * A robust validation middleware that intelligently handles both simple and complex schemas.
+ * - For a complex schema like { body: userSchema, params: idSchema }, it validates req.body and req.params.
+ * - For a simple schema like userSchema, it validates req.body by default (maintaining old functionality).
+ * @param {object} schema - The Joi schema object or a plain object containing Joi schemas.
+ */
+const validate = (schema) => (req, res, next) => {
+  // Ensure a schema was actually provided to the middleware in the route.
   if (!schema) {
-    console.error(`[VALIDATE_MIDDLEWARE] Error: Validation schema is undefined for ${dataSourceToValidate}`);
-    return next(new HttpError(500, 'Internal server error: Validation schema is undefined'));
+    return next(new HttpError(500, 'Internal server error: Validation schema not defined.'));
   }
 
-  let objectToValidate;
-
-  switch (dataSourceToValidate) {
-    case 'query':
-      objectToValidate = req.query;
-      break;
-    case 'params':
-      objectToValidate = req.params;
-      break;
-    case 'body':
-    default:
-      objectToValidate = req.body;
-      break;
-  }
-
-  // Check if schema is a Joi schema by verifying it has describe method
-  if (typeof schema.describe !== 'function') {
-    console.error(`[VALIDATE_MIDDLEWARE] Error: Invalid schema type for ${dataSourceToValidate}`, schema);
-    return next(new HttpError(500, 'Internal server error: Invalid validation schema'));
-  }
-
-  const keysToPickFromSchema = Object.keys(schema.describe().keys || {});
-  const isComplexSchema = ['params', 'query', 'body'].some(key => keysToPickFromSchema.includes(key));
+  // Intelligently detect if the schema is complex by checking for 'body', 'params', or 'query' keys.
+  const isComplexSchema = ['body', 'params', 'query'].some((key) =>
+    Object.prototype.hasOwnProperty.call(schema, key)
+  );
 
   if (isComplexSchema) {
-    const objectForValidation = pick(req, Object.keys(schema.describe().keys));
-    const { error, value } = schema.validate(objectForValidation, {
-      abortEarly: false,
-      allowUnknown: true,
-      stripUnknown: { body: true, query: true },
+    // --- HANDLE COMPLEX SCHEMA ---
+    // This is the case for your chat route: validate({ body: someSchema })
+
+    // Combine all parts of the schema into one master Joi object.
+    const masterSchema = Joi.object(schema);
+
+    // Pick the corresponding parts from the request object (e.g., req.body, req.params).
+    const objectToValidate = pick(req, Object.keys(schema));
+
+    const { value, error } = masterSchema.validate(objectToValidate, {
+      abortEarly: false, // Return all validation errors, not just the first one.
+      allowUnknown: true, // Allow fields in the request that are not defined in the schema.
+      stripUnknown: true, // Remove unknown fields from the validated output.
     });
 
     if (error) {
       const errorMessage = error.details.map((details) => details.message).join(', ');
       return next(new HttpError(400, `Validation error: ${errorMessage}`, error.details));
     }
+
+    // Assign the validated and cleaned values back to the request object (e.g., req.body, req.params).
     Object.assign(req, value);
     return next();
+
   } else {
-    const { error, value } = schema.validate(objectToValidate, {
+    // --- HANDLE SIMPLE SCHEMA (maintains original functionality) ---
+    // This handles cases where you might just pass a schema to validate the request body directly.
+    
+    const { value, error } = schema.validate(req.body, {
       abortEarly: false,
       allowUnknown: true,
       stripUnknown: true,
@@ -63,10 +60,8 @@ const validate = (schema, dataSourceToValidate = 'body') => (req, res, next) => 
       return next(new HttpError(400, `Validation error: ${errorMessage}`, error.details));
     }
 
-    if (dataSourceToValidate === 'body') req.body = value;
-    else if (dataSourceToValidate === 'query') req.query = value;
-    else if (dataSourceToValidate === 'params') req.params = value;
-
+    // Assign the validated and cleaned value back to req.body.
+    req.body = value;
     return next();
   }
 };

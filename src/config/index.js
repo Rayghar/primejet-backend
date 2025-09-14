@@ -32,6 +32,20 @@ const config = {
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3001', // For password reset links etc.
   activePaymentGateway: process.env.DEFAULT_PAYMENT_GATEWAY || 'stripe',
   logLevel: process.env.LOG_LEVEL || 'info',
+  // ✅ NEW: Socket.IO configuration
+  socket: {
+    // This allows the Socket.IO server to accept connections from the specified frontend URL.
+    cors: {
+      origin: process.env.FRONTEND_URL || 'http://localhost:3001',
+      methods: ["GET", "POST"]
+    },
+    // The path the Socket.IO server will listen on.
+    path: '/socket.io',
+    // The polling interval in milliseconds. Defaults to 5 seconds.
+    pingInterval: 10000, 
+    // The ping timeout in milliseconds. Defaults to 5 seconds.
+    pingTimeout: 5000, 
+  },
 };
 
 // Validate essential configurations

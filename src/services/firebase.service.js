@@ -23,15 +23,14 @@ const getFirestore = () => {
 const initiateChat = async (orderId, sender, recipient) => {
   const db = getFirestore();
   try {
+    // ✅ CORRECTED: Use the internal 'id' for the participants arrays.
     const participants = [sender.id, recipient.id].sort();
-    const participantUids = [sender.firebaseUid, recipient.firebaseUid];
-
+    
     const chatId = `${orderId}_${participants[0]}_${participants[1]}`;
     const chatRef = db.collection('chats').doc(chatId);
     const chatDoc = await chatRef.get();
 
     if (!chatDoc.exists) {
-      // ✅ ADDED: Create the participantInfo map to store names and roles.
       const participantInfo = {
         [sender.id]: { name: sender.name, role: sender.role },
         [recipient.id]: { name: recipient.name, role: recipient.role }
@@ -39,23 +38,21 @@ const initiateChat = async (orderId, sender, recipient) => {
 
       await chatRef.set({
         orderId,
-        participants: [sender.id, recipient.id],
-        participantIds: participants,
-        participantUids: participantUids,   // ✅ ADDED: For security rules
-        participantInfo: participantInfo, // ✅ ADDED: For displaying names in the app
+        participants: participants, // This now contains the correct internal IDs
+        participantInfo: participantInfo,
+        // --- REMOVED --- We no longer need a separate 'participantUids' field.
         createdAt: new Date(),
         lastMessage: null,
         lastMessageTimestamp: null,
         updatedAt: new Date(),
       });
-      logger.info(`[FIREBASE_SERVICE] Chat initiated with ID: ${chatId} for order ${orderId}`);
+      logger.info(`[FIREBASE_SERVICE] Chat initiated with ID: ${chatId}`);
     } else {
-      logger.info(`[FIREBASE_SERVICE] Chat already exists with ID: ${chatId} for order ${orderId}`);
       await chatRef.update({ updatedAt: new Date() });
     }
     return { chatId };
   } catch (error) {
-    logger.error(`[FIREBASE_SERVICE] Error in initiateChat for order ${orderId}:`, error);
+    logger.error(`[FIREBASE_SERVICE] Error in initiateChat:`, error);
     throw new HttpError(500, `Failed to initiate chat: ${error.message}`);
   }
 };

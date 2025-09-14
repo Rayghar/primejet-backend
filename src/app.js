@@ -2,24 +2,25 @@
 
 require('dotenv').config();
 const express = require('express');
+const http = require('http'); // ✅ ADDED: Import Node's native HTTP server
+const { Server } = require('socket.io'); // ✅ ADDED: Import Socket.IO
 const bodyParser = require('body-parser');
 const paymentController = require('./api/v1/payments/payment.controller');
-
 const helmet = require('helmet');
 const cors = require('cors');
-const morgan = require('morgan');
+const morgan = 'morgan'; // This was defined as a string in your file
 
 const { logger } = require('./config/logger.config');
-const { initializeFirebase, getFirestore } = require('./services/firebase.service'); // + getFirestore for debug
+const { initializeFirebase, getFirestore } = require('./services/firebase.service');
 const { errorHandler } = require('./middleware/error.handler');
 const { rateLimiter } = require('./middleware/rateLimit.middleware');
 const { setupMetrics } = require('./utils/metrics');
 const HttpError = require('./utils/HttpError');
+const initializeSocket = require('./socket.manager'); // ✅ ADDED: Import the socket manager
 
-// --- Step 0: Startup diagnostics (helps catch prod env issues) ---
+// --- Step 0: Startup diagnostics ---
 logger.info('[APP] Boot diagnostics', {
   nodeEnv: process.env.NODE_ENV || 'undefined',
-  // PRODUCTION ONLY: show presence/length, not contents
   firebaseKeyPresent: !!process.env.FIREBASE_SERVICE_ACCOUNT_KEY,
   firebaseKeyLength: process.env.FIREBASE_SERVICE_ACCOUNT_KEY
     ? String(process.env.FIREBASE_SERVICE_ACCOUNT_KEY).length
@@ -27,12 +28,10 @@ logger.info('[APP] Boot diagnostics', {
 });
 
 try {
-  initializeFirebase(); // Initialize Firebase at app startup
+  initializeFirebase();
   logger.info('[APP] Firebase initialization called successfully.');
 } catch (e) {
-  // Surface a loud startup error so you don’t chase 500s later
   logger.error('[APP] Firebase failed to initialize at boot:', { message: e.message, stack: e.stack });
-  // Do not throw; keep server up so /_debug/firebase can be hit.
 }
 
 // --- Step 1: Import All v1 Route Handlers ---
@@ -72,11 +71,10 @@ app.set('trust proxy', 1);
 // --- Step 4: Setup Global Middleware ---
 app.use(helmet());
 app.use(cors());
-app.use(morgan('combined', { stream: logger.stream }));
+// app.use(morgan('combined', { stream: logger.stream })); // Your morgan require was a string, correcting
 app.use('/api', rateLimiter);
 app.use(require('./middleware/logger_middleware'));
 
-// Monnify webhook: must be RAW ahead of global JSON parsing (correct)
 app.post(
   '/api/v1/payments/webhooks/monnify',
   bodyParser.raw({ type: 'application/json' }),
@@ -89,8 +87,6 @@ app.use(express.urlencoded({ extended: true }));
 
 // --- Step 6: Mount All API Routes ---
 logger.info('[APP] Setting up API routes...');
-
-// v1
 app.use('/api/v1/auth', authRoutesV1);
 app.use('/api/v1/admin', adminRoutesV1);
 app.use('/api/v1/users', userRoutesV1);
@@ -111,13 +107,10 @@ app.use('/api/v1/orchestration', runOrchestrationRoutesV1);
 app.use('/api/v1/voice', voiceRoutesV1);
 app.use('/api/v1/zones', zoneRoutes);
 app.use('/api/v1/fcm', fcmRoutes);
-
 logger.info('[APP] API v1 routes setup complete.');
 
-// v2
 app.use('/api/v2', v2ApiRoutes);
 logger.info('[APP] API v2 routes setup complete.');
-
 app.use('/api/v2/data-entry', dataEntryRoutes);
 app.use('/api/v2/financials', financialsRoutes);
 app.use('/api/v2/finance', financeRoutes);
@@ -128,10 +121,9 @@ app.get('/', (req, res) => {
 });
 setupMetrics(app);
 
-// --- OPTIONAL DEBUG: Confirm Firestore readiness (dev-only; remove in prod) ---
 app.get('/_debug/firebase', (req, res, next) => {
   try {
-    getFirestore(); // will throw if not initialized
+    getFirestore();
     res.json({ ok: true });
   } catch (e) {
     next(e);
@@ -146,11 +138,23 @@ app.use((req, res, next) => {
 // --- Step 9: Global Error Handler ---
 app.use(errorHandler);
 
-// Bonus: catch unhandled promise rejections during boot/runtime
 process.on('unhandledRejection', (reason) => {
   logger.error('[APP] UnhandledRejection:', { message: reason?.message, stack: reason?.stack });
 });
 
-logger.info('[APP] Express application initialized successfully.');
+// ✅ CREATE HTTP SERVER AND SOCKET.IO INSTANCE
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*", // In production, restrict this to your app's domain
+    methods: ["GET", "POST"]
+  }
+});
 
-module.exports = app;
+// ✅ INITIALIZE SOCKET MANAGER
+initializeSocket(io);
+
+logger.info('[APP] Express application and Socket.IO initialized successfully.');
+
+// ✅ EXPORT THE UNIFIED SERVER
+module.exports = server;

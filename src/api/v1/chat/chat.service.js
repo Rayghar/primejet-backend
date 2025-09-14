@@ -1,84 +1,50 @@
 // src/api/v1/chat/chat.service.js
-
 const User = require('../../../models/user.model');
 const Order = require('../../../models/order.model');
-const firebaseService = require('../../../services/firebase.service');
+const Message = require('../../../models/message.model');
 const HttpError = require('../../../utils/HttpError');
-const { logger } = require('../../../config/logger.config.js');
+const { logger } = require('../../../config/logger.config');
 
-const initiateChatSession = async (orderId, senderId, recipientId) => {
-  try { // ✅ ADDED: Main try block
-    let sender, recipient, order;
+/**
+ * Verifies if a user is allowed to join a chat for a specific order.
+ */
+const initiateChatSession = async (orderId, senderId) => {
+  const sender = await User.findById(senderId).lean();
+  const order = await Order.findById(orderId).lean();
 
-    // Fetch users and order (No change to this part)
-    sender = await User.findOne({ id: senderId }).select('id role name firebaseUid');
-    if (!sender) { throw new HttpError(404, `Sender not found.`); }
-    recipient = await User.findOne({ id: recipientId }).select('id role name firebaseUid');
-    if (!recipient) { throw new HttpError(404, `Recipient not found.`); }
-    order = await Order.findOne({ id: orderId }).select('id customerId driverId');
-    if (!order) { throw new HttpError(404, `Order not found.`); }
-    
-    // Authorization logic (No change to this part)
-    logger.info(`[CHAT_SERVICE] Authorization successful.`);
-    
-    // Call firebaseService
-    const { chatId } = await firebaseService.initiateChat(orderId, sender, recipient);
-    
-    logger.info(`[CHAT_SERVICE] Chat session ready for order ${orderId}.`);
-    return { chatId };
-
-  } catch (error) { // ✅ ADDED: Main catch block
-    logger.error(`[CHAT_SERVICE] Final error in initiateChatSession for order ${orderId}:`, error.message);
-    // Rethrow HttpErrors, or create a new one for unexpected errors
-    if (error instanceof HttpError) {
-      throw error;
-    }
-    throw new HttpError(500, 'Failed to initiate chat session due to an unexpected error.');
+  if (!sender || !order) {
+    throw new HttpError(404, 'User or Order not found.');
   }
+
+  const isSenderCustomer = sender._id.equals(order.customer);
+  const isSenderDriver = order.driver && sender._id.equals(order.driver);
+
+  if (!isSenderCustomer && !isSenderDriver) {
+    throw new HttpError(403, 'You are not authorized to chat for this order.');
+  }
+
+  logger.info(`[CHAT_SERVICE] Auth successful for user ${senderId} on order ${orderId}.`);
+  return { message: 'Authorization successful.', chatId: orderId };
 };
 
-const getMyThreads = async (userId) => {
-  try { // ✅ ADDED: Main try block
-    const user = await User.findOne({ id: userId }).select('firebaseUid').lean();
-    if (!user || !user.firebaseUid) {
-      throw new HttpError(404, 'User profile is incomplete and cannot fetch threads.');
-    }
+/**
+ * Saves a new chat message to the MongoDB database.
+ */
+const saveChatMessage = async (messagePayload) => {
+  const message = await Message.create(messagePayload);
+  return message;
+};
 
-    const threadsData = await firebaseService.fetchUserChatThreads(user.firebaseUid);
-
-    const enrichedThreads = await Promise.all(
-      threadsData.map(async (thread) => {
-        const otherParticipantId = thread.participants.find(pId => pId !== user.firebaseUid); // Use firebaseUid for comparison here for consistency
-        if (!otherParticipantId) return null;
-
-        const otherParticipant = await User.findOne({ id: otherParticipantId }).select('id name photoUrl role');
-        if (!otherParticipant) return null;
-
-        return {
-          chatId: thread.chatId,
-          orderId: thread.orderId,
-          otherParticipant: {
-            id: otherParticipant.id,
-            name: otherParticipant.name,
-            role: otherParticipant.role,
-            photoUrl: otherParticipant.photoUrl,
-          },
-          lastMessage: thread.lastMessage,
-          lastMessageTimestamp: thread.lastMessageTimestamp,
-        };
-      })
-    );
-    return enrichedThreads.filter(thread => thread !== null);
-  } catch (error) { // ✅ ADDED: Main catch block
-    logger.error(`Error in getMyThreads for user ${userId}:`, error);
-    if (error instanceof HttpError) {
-      throw error;
-    }
-    throw new HttpError(500, 'Failed to retrieve message threads.');
-  }
+/**
+ * Fetches the message history for a specific chat room (order).
+ */
+const getMessageHistory = async (chatId) => {
+  const messages = await Message.find({ chatId }).sort({ createdAt: 1 }).lean();
+  return messages;
 };
 
 module.exports = {
   initiateChatSession,
-  getMyThreads,
+  saveChatMessage,
+  getMessageHistory,
 };

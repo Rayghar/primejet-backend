@@ -1,16 +1,20 @@
+// src/api/v1/chat/chat.validation.js
 const Joi = require('joi');
+const { objectId } = require('../../../plugins/validate.plugin.js');
 
-const initiateChatSchema = Joi.object({
-  orderId: Joi.string().required().messages({
-    'any.required': 'Order ID is required to initiate chat.',
-    'string.empty': 'Order ID cannot be empty.',
+const initiateChatSchema = {
+  body: Joi.object().keys({
+    orderId: Joi.string().custom(objectId).required(),
   }),
-  recipientId: Joi.string().required().messages({
-    'any.required': 'Recipient ID is required to initiate chat.',
-    'string.empty': 'Recipient ID cannot be empty.',
+};
+
+const getChatHistorySchema = {
+  params: Joi.object().keys({
+    chatId: Joi.string().custom(objectId).required(),
   }),
-});
+};
 
 module.exports = {
   initiateChatSchema,
+  getChatHistorySchema,
 };

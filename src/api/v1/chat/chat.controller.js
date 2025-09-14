@@ -1,35 +1,23 @@
-// File: functions/chat/src/api/v1/chat/chat.controller.js
-
-const admin = require('firebase-admin');
+// src/api/v1/chat/chat.controller.js
 const chatService = require('./chat.service');
-// --- REMOVED --- No longer need catchAsync
 
 const initiateChat = async (req, res, next) => {
   try {
-    const { orderId, recipientId } = req.body;
-    const senderId = req.user.id;
-    const chatSession = await chatService.initiateChatSession(orderId, senderId, recipientId);
-    res.status(201).json(chatSession);
-  } catch (error) {
-    next(error); // Pass errors to the central error handler
-  }
-};
-
-const getMyThreads = async (req, res, next) => {
-  try {
-    const userId = req.user.id;
-    const threads = await chatService.getMyThreads(userId);
-    res.status(200).json(threads);
+    const { orderId } = req.body;
+    const senderId = req.user.sub; // ID from JWT
+    const response = await chatService.initiateChatSession(orderId, senderId);
+    res.status(200).json(response);
   } catch (error) {
     next(error);
   }
 };
 
-const createFirebaseToken = async (req, res, next) => {
+const getChatHistory = async (req, res, next) => {
   try {
-    const appUserId = req.user.id; 
-    const firebaseToken = await admin.auth().createCustomToken(appUserId);
-    res.status(200).json({ firebaseToken });
+    const { chatId } = req.params;
+    // Optional: Add a check here to ensure req.user.sub is a participant in this chat
+    const messages = await chatService.getMessageHistory(chatId);
+    res.status(200).json(messages);
   } catch (error) {
     next(error);
   }
@@ -37,6 +25,5 @@ const createFirebaseToken = async (req, res, next) => {
 
 module.exports = {
   initiateChat,
-  getMyThreads,
-  createFirebaseToken,
+  getChatHistory,
 };

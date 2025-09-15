@@ -47,19 +47,22 @@ const initializeSocket = (io) => {
     socket.on('send_message', async (data = {}) => {
       try {
         const { chatId, text, tempId } = data;
-        if (!chatId || !text) return socket.emit('message_error', { message: 'Invalid payload.' });
+        if (!chatId || !text) {
+          return socket.emit('message_error', { message: 'Invalid payload.' });
+        }
 
         const { ok, otherId } = await getParticipation(chatId, socket.user.id);
-        if (!ok || !otherId) return socket.emit('message_error', { message: 'Not authorized.' });
+        // If user is a legit participant (customer or driver), allow sending even if the other party isn't assigned yet.
+        if (!ok) return socket.emit('message_error', { message: 'Not authorized.' });
 
         const saved = await chatService.saveChatMessage({
           chatId,
           senderId: socket.user.id,
-          recipientId: otherId,                         // server decides the counterparty
-          text: String(text).slice(0, 2000).trim(),     // limit & sanitize
+          recipientId: otherId || null,      // may be null until driver is assigned
+          text: String(text).slice(0, 2000).trim(),
         });
 
-        io.to(chatId).emit('receive_message', saved);   // broadcast to room
+        io.to(chatId).emit('receive_message', saved);       // broadcast to everyone in the room
         socket.emit('message_ack', { chatId, messageId: saved._id, tempId }); // ack to sender
       } catch (e) {
         logger.error('[SOCKET] send_message error', e);

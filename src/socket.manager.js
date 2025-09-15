@@ -4,7 +4,7 @@ const { logger } = require('./config/logger.config');
 const chatService = require('./api/v1/chat/chat.service.js'); // NOTE: default import (no {})
 const Order = require('./models/order.model');
 const { Server } = require('socket.io');
-const Message = require('./api/v1/messages/message.model'); // <-- your Mongoose Message
+const Message = require('./models/message.model'); // <-- your Mongoose Message
 
 const initializeSocket = (io) => {
   // 1) Authenticate socket with JWT from handshake.auth.token

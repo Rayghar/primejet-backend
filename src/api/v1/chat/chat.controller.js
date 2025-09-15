@@ -29,7 +29,19 @@ const getChatHistory = async (req, res, next) => {
   }
 };
 
+const getMyThreads = async (req, res, next) => {
+  try {
+    const me = req.user.id;            // set by your auth middleware
+    const { limit = 50 } = req.query;
+    const threads = await chatService.getThreadsForUser(me, limit);
+    return res.json({ threads });
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   initiateChat,
   getChatHistory,
+  getMyThreads,
 };

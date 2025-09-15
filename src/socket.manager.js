@@ -3,6 +3,8 @@ const config = require('./config/index.js');
 const { logger } = require('./config/logger.config');
 const chatService = require('./api/v1/chat/chat.service.js'); // NOTE: default import (no {})
 const Order = require('./models/order.model');
+const { Server } = require('socket.io');
+const Message = require('./api/v1/messages/message.model'); // <-- your Mongoose Message
 
 const initializeSocket = (io) => {
   // 1) Authenticate socket with JWT from handshake.auth.token
@@ -15,6 +17,112 @@ const initializeSocket = (io) => {
       next();
     });
   });
+
+  function createSocketServer(httpServer) {
+  const io = new Server(httpServer, {
+    cors: { origin: '*', methods: ['GET', 'POST'] },
+    path: '/socket.io', // keep default if you didn't change it client-side
+  });
+
+  io.on('connection', (socket) => {
+    const userId = socket?.user?.id;
+    if (!userId) {
+      socket.disconnect(true);
+      return;
+    }
+
+    // Join a chat room (chatId == orderId)
+    socket.on('join_room', (chatId) => {
+      if (!chatId) return;
+      socket.join(chatId);
+    });
+
+    // Send a message
+    socket.on('send_message', async ({ chatId, recipientId, text, tempId }) => {
+      try {
+        if (!chatId || !recipientId || !text) return;
+
+        // Persist as "sent"
+        const msg = await Message.create({
+          chatId,
+          senderId: userId,
+          recipientId,
+          text,
+          status: 'sent',
+        });
+
+        // Broadcast the new message to the room
+        io.to(chatId).emit('receive_message', {
+          _id: msg._id,
+          id: msg._id,           // helpful for client models
+          chatId: msg.chatId,
+          senderId: msg.senderId,
+          recipientId: msg.recipientId,
+          text: msg.text,
+          status: msg.status,
+          createdAt: msg.createdAt,
+          updatedAt: msg.updatedAt,
+        });
+
+        // Let the sender reconcile optimistic bubble
+        if (tempId) {
+          socket.emit('message_ack', { tempId, messageId: msg._id.toString() });
+        }
+      } catch (err) {
+        socket.emit('message_error', { message: 'Could not send message' });
+      }
+    });
+
+    // Recipient confirms the message reached their device
+    socket.on('message_delivered', async ({ messageId, chatId }) => {
+      try {
+        if (!messageId || !chatId) return;
+
+        const res = await Message.updateOne(
+          { _id: messageId, recipientId: userId, status: 'sent' },
+          { $set: { status: 'delivered' } }
+        );
+
+        if (res.modifiedCount) {
+          io.to(chatId).emit('message_status', {
+            chatId,
+            messageId,
+            status: 'delivered',
+          });
+        }
+      } catch (err) {
+        // swallow
+      }
+    });
+
+    // User opened the chat: mark all incoming messages as read
+    socket.on('mark_read', async ({ chatId }) => {
+      try {
+        if (!chatId) return;
+
+        const res = await Message.updateMany(
+          {
+            chatId,
+            recipientId: userId,
+            status: { $in: ['sent', 'delivered'] },
+          },
+          { $set: { status: 'read' } }
+        );
+
+        if (res.modifiedCount) {
+          // Let everyone in the room (incl. the sender) know this chat was read
+          io.to(chatId).emit('chat_read', { chatId });
+        }
+      } catch (err) {
+        // swallow
+      }
+    });
+
+    socket.on('disconnect', () => {});
+  });
+
+  return io;
+}
 
   // Helper: check user is a participant and get counterparty
   const getParticipation = async (orderId, userUuid) => {

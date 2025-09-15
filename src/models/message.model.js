@@ -1,13 +1,17 @@
+// File: src/models/message.model.js
 const mongoose = require('mongoose');
 
-const schema = new mongoose.Schema({
-  chatId: { type: String, required: true, index: true },   // order UUID
-  senderId: { type: String, required: true, index: true },
-  recipientId: { type: String, required: false, default: null, index: true },
-  text: { type: String, required: true, maxlength: 2000, trim: true },
-  status: { type: String, enum: ['sent','delivered','read'], default: 'sent' },
-}, { timestamps: true });
+const MessageSchema = new mongoose.Schema({
+  chatId: { type: String, index: true, required: true },
+  senderId: { type: String, index: true, required: true },
+  recipientId: { type: String, index: true, required: true },
+  text: { type: String, required: true },
+  status: { type: String, default: 'sent' },
+}, { timestamps: true, collection: 'documents' }); // <--- important if your data lives there
 
-schema.index({ chatId: 1, createdAt: 1 });
+// helpful indexes
+MessageSchema.index({ chatId: 1, createdAt: 1 });
+MessageSchema.index({ recipientId: 1, status: 1, createdAt: -1 });
+MessageSchema.index({ senderId: 1, createdAt: -1 });
 
-module.exports = mongoose.model('Message', schema);
+module.exports = mongoose.model('Message', MessageSchema);

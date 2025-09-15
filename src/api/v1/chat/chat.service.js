@@ -36,9 +36,36 @@ const getMessageHistory = async (chatId, before, limit = 50) => {
   return items.reverse(); // newest last for UI
 };
 
+async function getThreadsForUser(userId, limit = 50) {
+  const pipeline = [
+    { $match: { $or: [{ senderId: userId }, { recipientId: userId }] } },
+    { $sort: { createdAt: -1 } },
+    { $group: { _id: '$chatId', lastMessage: { $first: '$$ROOT' } } },
+    { $project: { _id: 0, chatId: '$_id', lastMessage: 1 } },
+    { $limit: Number(limit) }
+  ];
+
+  const threads = await Message.aggregate(pipeline).exec();
+
+  // OPTIONAL: hydrate recipient display from Order if you want
+  const ids = threads.map(t => t.chatId);
+  const orders = await Order.find({ id: { $in: ids }}).lean();
+  const byId = Object.fromEntries(orders.map(o => [o.id, o]));
+  return threads.map(t => ({
+     ...t,
+     recipientName: byId[t.chatId]?.recipientName ?? 'Customer',
+     recipientPhone: byId[t.chatId]?.recipientPhone ?? null,
+   }));
+
+  return threads;
+}
+
+
+
 module.exports = {
   initiateChatSession,
   verifyParticipation,
   saveChatMessage,
   getMessageHistory,
+  getThreadsForUser,
 };

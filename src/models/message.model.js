@@ -6,7 +6,7 @@ const MessageSchema = new mongoose.Schema({
   senderId: { type: String, index: true, required: true },
   recipientId: { type: String, index: true, required: true },
   text: { type: String, required: true },
-  status: { type: String, default: 'sent' },
+  status: { type: String, enum: ['sent', 'delivered', 'read'], default: 'sent' },
 }, { timestamps: true, collection: 'documents' }); // <--- important if your data lives there
 
 // helpful indexes

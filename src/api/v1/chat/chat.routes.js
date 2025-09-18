@@ -15,7 +15,12 @@ router.post(
   chatController.initiateChat
 );
 
-router.get('/threads', auth(), chatController.getMyThreads);
+router.get(
+  '/threads',
+  auth(),
+  validate(chatValidation.getThreadsSchema),
+  chatController.getMyThreads
+);
 
 
 // Route for the client to fetch historical messages when opening the chat screen
@@ -24,6 +29,13 @@ router.get(
   auth(),
   validate(chatValidation.getChatHistorySchema),
   chatController.getChatHistory
+);
+
+router.post(
+  '/:chatId/message',
+  auth(),
+  validate(chatValidation.postMessageSchema),
+  chatController.postMessage
 );
 
 module.exports = router;

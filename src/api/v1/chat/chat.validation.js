@@ -1,25 +1,28 @@
+// api/v1/chat/chat.validation.js
 const Joi = require('joi');
 
-// v4 UUID format
-const uuid = Joi.string().guid({ version: 'uuidv4' });
-
-const initiateChatSchema = {
-  body: Joi.object({
-    orderId: uuid.required(),
-  }),
-};
-
-const getChatHistorySchema = {
+exports.getChatHistorySchema = {
   params: Joi.object({
-    chatId: uuid.required(),
+    chatId: Joi.string().required(),
   }),
   query: Joi.object({
-    before: Joi.date().iso().optional(),
-    limit: Joi.number().integer().min(1).max(200).default(50),
-  }).optional()
+    page: Joi.number().integer().min(1).optional(),
+    limit: Joi.number().integer().min(1).max(200).optional(),
+  }),
+  body: Joi.object({}),
 };
 
-module.exports = {
-  initiateChatSchema,
-  getChatHistorySchema,
+exports.postMessageSchema = {
+  params: Joi.object({
+    chatId: Joi.string().required(),
+  }),
+  body: Joi.object({
+    text: Joi.string().trim().min(1).max(2000).required(),
+  }),
+};
+
+exports.getThreadsSchema = {
+  query: Joi.object({
+    limit: Joi.number().integer().min(1).max(200).optional(),
+  }),
 };

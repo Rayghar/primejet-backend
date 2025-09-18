@@ -1,47 +1,43 @@
-// src/api/v1/chat/chat.controller.js
+// api/v1/chat/chat.controller.js
 const chatService = require('./chat.service');
 
-const initiateChat = async (req, res, next) => {
-  try {
-    const { orderId } = req.body;
-    
-    // BEFORE: This was incorrect, causing the crash.
-    // const senderId = req.user.sub; 
-    
-    // ✅ AFTER: Use `req.user.id`, which is correctly attached by your auth middleware.
-    const senderId = req.user.id; 
-
-    const response = await chatService.initiateChatSession(orderId, senderId);
-    res.status(200).json(response);
-  } catch (error) {
-    next(error);
-  }
-};
-
-const getChatHistory = async (req, res, next) => {
+exports.getHistory = async (req, res, next) => {
   try {
     const { chatId } = req.params;
-    // Optional: Add a check here to ensure req.user.sub is a participant in this chat
-    const messages = await chatService.getMessageHistory(chatId);
-    res.status(200).json(messages);
-  } catch (error) {
-    next(error);
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const page = Math.max(Number(req.query.page) || 1, 1);
+
+    const messages = await chatService.getChatHistory(chatId, limit, page);
+    res.json(messages);
+  } catch (e) {
+    next(e);
   }
 };
 
-const getMyThreads = async (req, res, next) => {
+exports.postMessage = async (req, res, next) => {
   try {
-    const me = req.user.id;            // set by your auth middleware
-    const { limit = 50 } = req.query;
-    const threads = await chatService.getThreadsForUser(me, limit);
-    return res.json({ threads });
-  } catch (err) {
-    next(err);
+    const { chatId } = req.params;
+    const { text } = req.body;
+    const senderId = req.user.id;
+    const saved = await chatService.saveChatMessage({
+      chatId,
+      senderId,
+      recipientId: null, // server will infer on socket flow; REST keeps it null
+      text,
+    });
+    res.status(201).json(saved);
+  } catch (e) {
+    next(e);
   }
 };
 
-module.exports = {
-  initiateChat,
-  getChatHistory,
-  getMyThreads,
+exports.getMyThreads = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const threads = await chatService.getThreadsForUser(userId, limit);
+    res.json({ threads });
+  } catch (e) {
+    next(e);
+  }
 };

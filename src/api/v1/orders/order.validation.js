@@ -18,7 +18,7 @@ const orderItemSchema = Joi.object({
   }),
   productName: Joi.string().required().messages({ // Similar to unitPrice, could be server-derived
     'any.required': 'Product name is required for each item.',
-  }),checkout 
+  }),
 });
 
 const placeOrderSchema = Joi.object({

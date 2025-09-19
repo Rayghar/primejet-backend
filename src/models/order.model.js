@@ -7,19 +7,20 @@ const itemSchema = new mongoose.Schema({
   productName: { type: String, required: [true, 'Product name is required.'] },
   quantity: { type: Number, required: [true, 'Item quantity is required.'], min: [1, 'Quantity must be at least 1.'] },
   unitPrice: { type: Number, required: [true, 'Unit price is required.'], min: [0, 'Unit price cannot be negative.'] }, // Price in smallest currency unit
-}, { _id: false });
+  // subtotal: { type: Number, required: true } // Optionally store item subtotal if needed frequently
+}, { _id: false }); // No separate _id for sub-documents if not needed
 
 const statusHistorySchema = new mongoose.Schema({
   status: { type: String, required: [true, 'Status in history is required.'] },
   timestamp: { type: Date, required: true, default: Date.now },
   notes: { type: String, trim: true },
-  updatedBy: { type: String }, // Optional
+  updatedBy: { type: String }, // Optional: User ID of who made the change (customer, driver, admin)
   updaterRole: { type: String, enum: ['customer', 'driver', 'admin', 'system'] }, // Optional
 }, { _id: false });
 
 const adminNoteSchema = new mongoose.Schema({
   note: { type: String, required: [true, 'Admin note content is required.'], trim: true },
-  adminId: { type: String, required: [true, 'Admin ID is required.'] },
+  adminId: { type: String, required: [true, 'Admin ID is required.'] /* ref: 'User' // if 'id' is User's primary key */ },
   timestamp: { type: Date, required: true, default: Date.now },
 }, { _id: false });
 
@@ -28,10 +29,8 @@ const orderSchema = new mongoose.Schema(
     id: { type: String, required: true, unique: true, default: () => uuidv4(), index: true },
     customerId: { type: String, required: true, ref: 'User', index: true },
     driverId: { type: String, ref: 'User', index: true, sparse: true },
-
     items: [itemSchema],
-
-    deliveryAddressSnapshot: {
+    deliveryAddressSnapshot: { 
       fullAddress: { type: String, required: true },
       street: { type: String },
       city: { type: String },
@@ -42,43 +41,40 @@ const orderSchema = new mongoose.Schema(
       longitude: { type: Number },
       deliveryInstructions: { type: String },
     },
-
     recipientName: { type: String, required: true },
     recipientPhone: { type: String, required: true },
-
+    
     itemsSubtotal: { type: Number, required: true, default: 0 },
     discountAmount: { type: Number, default: 0 },
     promoCodeApplied: { type: String, trim: true },
     referralCodeUsed: { type: String, trim: true, uppercase: true },
     referrerId: { type: String, ref: 'User' },
+    vatAmount: { type: Number, default: 0 },
+    serviceFeeAmount: { type: Number, default: 0 },
+    deliveryFee: { type: Number, default: 0 },
+    walletAmountUsed: { type: Number, default: 0 },
+    grandTotal: { type: Number, required: true, default: 0 },
+    finalAmountPaid: { type: Number, default: 0 },
 
-    deliveryFee: { type: Number, required: true, default: 0 },
-    serviceFee: { type: Number, required: true, default: 0 },
-    totalBeforeWallet: { type: Number, required: true, default: 0 },
-    walletAmountUsed: { type: Number, required: true, default: 0 },
-    overallGrandTotal: { type: Number, required: true, default: 0 },
-
-    // ✅ Restored/kept statuses needed for POA
-    status: {
-      type: String,
-      required: true,
-      enum: [
-        'Pending Payment',
-        'Awaiting Driver Arrival',   // <—
-        'Verifying Payment',         // <—
-        'Order Placed',
-        'Driver Assigned',
-        'Processing',
-        'Out for Delivery',
-        'Delivered',
-        'Canceled',
-        'Customer Unavailable',
-        'Failed'
-      ],
-      default: 'Pending Payment',
-      index: true
+    status: { 
+        type: String, 
+        required: true, 
+        enum: [ // << MODIFIED: Added new status >>
+            'Pending Payment',
+            'Awaiting Driver Arrival',
+            'Verifying Payment',
+            'Order Placed',
+            'Driver Assigned',
+            'Processing',
+            'Out for Delivery',
+            'Delivered',
+            'Canceled',
+            'Customer Unavailable',
+            'Failed'
+        ],
+        default: 'Pending Payment',
+        index: true 
     },
-
     paymentStatus: {
       type: String,
       required: [true, 'Payment status is required.'],
@@ -86,17 +82,14 @@ const orderSchema = new mongoose.Schema(
       default: 'Pending',
       index: true,
     },
-
-    // ✅ Restored/kept POA method
-    paymentMethod: {
-      type: String,
-      enum: ['card', 'wallet', 'stripe', 'paystack', 'payOnPickup'],
-      default: 'paystack'
+    paymentMethod: { 
+        type: String,
+        enum: ['card', 'wallet', 'stripe', 'paystack', 'payOnPickup'], // << MODIFIED: Added 'payOnPickup'
+        default: 'paystack'
     },
-
-    paymentGateway: { type: String, enum: ['stripe', 'paystack', 'wallet', null], sparse: true },
-    paymentIntentId: { type: String, trim: true, index: true, sparse: true },
-    paymentGatewayReference: { type: String, trim: true, index: true, sparse: true },
+    paymentGateway: { type: String, enum: ['stripe', 'paystack', 'wallet', null], sparse:true },
+    paymentIntentId: { type: String, trim: true, index: true, sparse:true },
+    paymentGatewayReference: { type: String, trim: true, index: true, sparse:true },
     paymentTransactionId: { type: String, trim: true },
 
     isExpressDelivery: { type: Boolean, default: false },
@@ -104,17 +97,19 @@ const orderSchema = new mongoose.Schema(
     deliveryLongitude: { type: Number, min: -180, max: 180 },
     estimatedDeliveryTime: { type: Date },
     actualDeliveryTime: { type: Date },
-
-    // Keep history default
+    // <<<< NEW CODE: ADDED default value to statusHistory >>>>
     statusHistory: {
-      type: [statusHistorySchema],
-      default: []
+        type: [statusHistorySchema],
+        default: [] // <-- ADDED THIS LINE
     },
-
-    adminNotes: [{ note: String, adminId: String, timestamp: { type: Date, default: Date.now }, _id: false }],
-    orderDate: { type: Date, default: Date.now, index: true },
+    // <<<< END NEW CODE >>>>
+    adminNotes: [{ note: String, adminId: String, timestamp: {type: Date, default: Date.now}, _id: false }],
+    orderDate: { type: Date, required: true, default: Date.now, index: true },
   },
-  { timestamps: true }
+  { timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true }
+  }
 );
 
 // --- FIX START: Define Virtual Properties for Population ---
@@ -134,6 +129,7 @@ orderSchema.virtual('driver', {
   foreignField: 'id',
   justOne: true
 });
-// Virtuals (customer/driver) elided for brevity...
+
+// --- FIX END ---
 
 module.exports = mongoose.model('Order', orderSchema);

@@ -111,6 +111,12 @@ const userSchema = new mongoose.Schema(
     },
     gatewayCustomerId: { type: String, trim: true, sparse: true, unique: true, select: false },
     referredByCode: { type: String, trim: true, sparse: true }, // Customer-to-customer referral code used
+    referredByUserId: { // <-- ADD THIS FIELD
+      type: String,
+      ref: 'User',
+      sparse: true,
+      index: true,
+    },
     referralBenefitApplied: { type: Boolean, default: false },
     defaultAddressId: { type: String },
     referredByAgentId: { // New field: ID of the agent who referred this user

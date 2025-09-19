@@ -297,7 +297,7 @@ const placeOrder = async (customerId, orderData) => {
       id: uuidv4(), customerId, deliveryAddressId, deliveryAddressSnapshot, items,
       recipientName: recipientName || user.name, recipientPhone: recipientPhone || user.phone,
       isExpressDelivery: isExpress || false, itemsSubtotal, discountAmount,
-      referrerId: user.referredBy || null,
+      referrerId: user.referredByUserId || null,
       promoCodeApplied: discountAmount > 0 ? (promoCodeApplied ? promoCodeApplied.toUpperCase() : null) : null,
       vatAmount, serviceFeeAmount, deliveryFee, walletAmountUsed,
       grandTotal: overallGrandTotal,
@@ -337,6 +337,8 @@ const placeOrder = async (customerId, orderData) => {
       grandTotalToPay: grandTotalToPayByGateway,
       message: 'Order placed successfully.'
     };
+
+    
   } catch (error) {
     await session.abortTransaction();
     logger.error(`[ORDER_PLACE_FAIL] Customer ${customerId}: ${error.message}`, { stack: error.stack, inputData: orderData });
@@ -423,6 +425,21 @@ async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetail
             throw new HttpError(400, 'Verified payment amount does not match order total.');
         }
         logger.debug(`[Order Service][updateOrderStatus] Amount verification passed for order ${orderId}.`);
+
+        if (paymentStatus === 'Completed') {
+            const referee = await User.findOne({ id: order.customerId });
+            if (referee && referee.referredByAgentId) {
+                const completedOrdersCount = await Order.countDocuments({
+                    customerId: order.customerId,
+                    paymentStatus: 'Completed',
+                });
+                
+                if (completedOrdersCount === 1) {
+                    console.log(`[ORDER_SERVICE] Triggering agent's first purchase event for agent ${referee.referredByAgentId}.`);
+                    await agentService.recordFirstPurchase(referee.referredByAgentId, referee.id, order);
+                }
+            }
+        }
 
         order.finalAmountPaid = verifiedAmount;
         order.status = 'Order Placed';

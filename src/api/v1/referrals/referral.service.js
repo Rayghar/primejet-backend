@@ -51,6 +51,7 @@ const processCodeOnRegistration = async (newUser, code) => {
   if (referrer) {
     logger.info(`Code '${code}' identified as a customer referral from user ${referrer.userId}.`);
     newUser.referredByCode = code;
+    newUser.referredByUserId = referrer.userId; // <-- ADD THIS LINE to save the ID
     await newUser.save();
 
     referrer.totalReferredCount = (referrer.totalReferredCount || 0) + 1;

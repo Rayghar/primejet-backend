@@ -306,6 +306,22 @@ const getAgentPerformance = async (agentId) => {
   };
 };
 
+// Internal: Records the first successful purchase by a customer referred by an agent.
+const recordFirstPurchase = async (agentId, customerId, order) => {
+  const event = new AgentReferralEvent({
+    agentId: agentId,
+    customerId: customerId,
+    eventType: 'FIRST_PURCHASE_COMPLETED',
+    metadata: {
+      orderId: order.id,
+      purchaseAmountKobo: order.finalAmountPaid,
+      orderDate: order.orderDate,
+    },
+  });
+  await event.save();
+  console.log(`[AGENT_SERVICE] Logged FIRST_PURCHASE_COMPLETED for customer ${customerId} via agent ${agentId}.`);
+};
+
 // ================== ADD THIS NEW FUNCTION ==================
 /**
  * Admin: Get a summary of the campaign performance for the current day.
@@ -367,6 +383,7 @@ module.exports = {
   login,
   getAllReferredCustomers,
   getCampaignSummary,
+  recordFirstPurchase,
 
 
 };

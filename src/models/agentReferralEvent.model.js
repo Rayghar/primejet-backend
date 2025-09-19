@@ -27,7 +27,7 @@ const agentReferralEventSchema = new mongoose.Schema(
     eventType: { // e.g., 'LINK_CLICK', 'APP_INSTALL', 'CUSTOMER_REGISTERED'
       type: String,
       required: [true, 'Event type is required.'],
-      enum: ['LINK_CLICK', 'CUSTOMER_REGISTERED', 'APP_INSTALL'], // Define specific event types
+      enum: ['LINK_CLICK', 'CUSTOMER_REGISTERED', 'APP_INSTALL', 'FIRST_PURCHASE_COMPLETED'], // <-- ADD NEW EVENT TYPE
       index: true,
     },
     metadata: { // Store additional data like IP, user agent, device info, etc.

@@ -211,7 +211,7 @@ const placeOrder = async (customerId, orderData) => {
         throw new HttpError(500, 'Service area pricing is not configured correctly. Please contact support.');
     }
     
-    const user = await User.findOne({ id: customerId }).select('name phone walletBalance defaultAddressId role referredBy').session(session);
+    const user = await User.findOne({ id: customerId }).select('name phone walletBalance defaultAddressId role referredBy referredByUserId').session(session);
     if (!user) {
       throw new HttpError(404, 'User placing order not found.');
     }

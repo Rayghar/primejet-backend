@@ -5,6 +5,20 @@ const chatService = require('./api/v1/chat/chat.service.js'); // NOTE: default i
 const Order = require('./models/order.model');
 const { Server } = require('socket.io');
 const Message = require('./models/message.model'); // <-- your Mongoose Message
+const onlineUsers = new Map(); // userId -> Set(socketId)
+function addOnline(userId, socketId) {
+  if (!onlineUsers.has(userId)) onlineUsers.set(userId, new Set());
+  onlineUsers.get(userId).add(socketId);
+}
+function removeOnline(userId, socketId) {
+  const s = onlineUsers.get(userId);
+  if (!s) return;
+  s.delete(socketId);
+  if (s.size === 0) onlineUsers.delete(userId);
+}
+function isUserOnline(userId) {
+  return onlineUsers.has(userId) && onlineUsers.get(userId).size > 0;
+}
 
 const initializeSocket = (io) => {
   // 1) Authenticate socket with JWT from handshake.auth.token

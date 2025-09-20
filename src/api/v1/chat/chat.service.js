@@ -2,6 +2,7 @@ const User = require('../../../models/user.model');
 const Order = require('../../../models/order.model');
 const Message = require('../../../models/message.model');
 const HttpError = require('../../../utils/HttpError');
+const { notifyMessage } = require('../../../services/notification.service');
 
 const initiateChatSession = async (orderId, senderId) => {
   const sender = await User.findOne({ id: senderId });
@@ -24,8 +25,6 @@ const verifyParticipation = async (orderId, userId) => {
   );
 };
 
-const saveChatMessage = async (payload) => Message.create(payload);
-
 const getMessageHistory = async (chatId, before, limit = 50) => {
   const cursor = before ? new Date(before) : new Date();
   const items = await Message
@@ -35,6 +34,43 @@ const getMessageHistory = async (chatId, before, limit = 50) => {
     .lean();
   return items.reverse(); // newest last for UI
 };
+
+async function saveChatMessage({ chatId, senderId, recipientId, text }) {
+  const msg = await Message.create({
+    chatId,
+    senderId,
+    recipientId: recipientId || null, // ok if null until driver is assigned
+    text: String(text || '').slice(0, 2000).trim(),
+    status: 'sent',
+  });
+
+  // Fire push + DB notification for the recipient (if we know them)
+  if (recipientId) {
+    const title = 'New message';
+    const body = text.length > 60 ? `${text.slice(0, 57)}...` : text;
+    await notifyMessage({
+      recipientId,
+      title,
+      body,
+      data: { chatId, messageId: String(msg._id), senderId },
+    });
+  }
+
+  // Return a normalized payload your clients already accept
+  return {
+    _id: msg._id,
+    id: msg._id,
+    chatId: msg.chatId,
+    senderId: msg.senderId,
+    recipientId: msg.recipientId,
+    text: msg.text,
+    status: msg.status,
+    createdAt: msg.createdAt,
+    updatedAt: msg.updatedAt,
+  };
+}
+
+
 
 async function getThreadsForUser(userId, limit = 50) {
   const pipeline = [
@@ -68,4 +104,5 @@ module.exports = {
   saveChatMessage,
   getMessageHistory,
   getThreadsForUser,
+  saveChatMessage,
 };

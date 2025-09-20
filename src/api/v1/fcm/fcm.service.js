@@ -1,74 +1,96 @@
-// File: src/api/v1/fcm/fcm.service.js
-
+// services/fcm.service.js
+// Lightweight wrapper around firebase-admin for sending device pushes
 const admin = require('firebase-admin');
-const User = require('../../../models/user.model');
-const { logger } = require('../../../config/logger.config');
+const Notification = require('../../../models/notification.model');
+const UserTokens = require('../models/userTokens.model'); // see note below
 
-/**
- * Sends a push notification to a specific user.
- * @param {string} userId - The ID of the user to notify.
- * @param {string} title - The title of the notification.
- * @param {string} body - The main content of the notification.
- * @param {object} [data={}] - Additional data to send with the message.
- * @returns {Promise<void>}
- */
-const sendPushNotification = async (userId, title, body, data = {}) => {
-  try {
-    const user = await User.findOne({ id: userId }).select('fcmTokens').lean();
-
-    if (!user) {
-      logger.warn(`[FCM_SERVICE] User not found for ID: ${userId}.`);
-      return;
-    }
-
-    const tokens = user.fcmTokens;
-    if (!tokens || tokens.length === 0) {
-      logger.info(`[FCM_SERVICE] User ${userId} has no FCM tokens. Skipping.`);
-      return;
-    }
-
-    // Construct the multicast message
-    const message = {
-      notification: { title, body },
-      data: { ...data, click_action: 'FLUTTER_NOTIFICATION_CLICK' },
-      tokens: tokens,
-    };
-
-    // Use sendMulticast for better handling of multiple tokens
-    const response = await admin.messaging().sendMulticast(message);
-    logger.info(`[FCM_SERVICE] Sent notification to user ${userId}. Success: ${response.successCount}, Failure: ${response.failureCount}`);
-
-    // --- Start: Invalid Token Cleanup Logic ---
-    if (response.failureCount > 0) {
-      const tokensToRemove = [];
-      response.responses.forEach((result, index) => {
-        const error = result.error;
-        if (error) {
-          logger.error(`[FCM_SERVICE] Failure sending to ${tokens[index]}`, error);
-          if (
-            error.code === 'messaging/registration-token-not-registered' ||
-            error.code === 'messaging/invalid-registration-token'
-          ) {
-            tokensToRemove.push(tokens[index]);
-          }
-        }
-      });
-
-      if (tokensToRemove.length > 0) {
-        logger.info(`[FCM_SERVICE] Removing invalid tokens for user ${userId}:`, tokensToRemove);
-        await User.updateOne(
-          { id: userId },
-          { $pullAll: { fcmTokens: tokensToRemove } }
-        );
-      }
-    }
-    // --- End: Invalid Token Cleanup Logic ---
-
-  } catch (error) {
-    logger.error(`[FCM_SERVICE] Critical error sending notification to user ${userId}:`, error);
+let initialized = false;
+function ensureInit() {
+  if (initialized) return;
+  // Expect GOOGLE_APPLICATION_CREDENTIALS or explicit JSON via env
+  if (!admin.apps.length) {
+    admin.initializeApp({
+      // If running on Render/Heroku with env var GOOGLE_APPLICATION_CREDENTIALS_JSON:
+      credential: admin.credential.cert(
+        JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON || '{}')
+      ),
+    });
   }
-};
+  initialized = true;
+}
+
+// NOTE: persist per-user device tokens in a tiny collection
+//  { userId: 'uuid', tokens: ['fcm1','fcm2', ...] }
+const mongoose = require('mongoose');
+const userTokensSchema = new mongoose.Schema({
+  userId: { type: String, index: true, unique: true },
+  tokens: { type: [String], default: [] },
+});
+const UserTokensModel =
+  mongoose.models.UserTokens || mongoose.model('UserTokens', userTokensSchema);
+
+async function addToken(userId, token) {
+  ensureInit();
+  if (!userId || !token) return;
+  await UserTokensModel.updateOne(
+    { userId },
+    { $addToSet: { tokens: token } },
+    { upsert: true }
+  );
+}
+
+async function removeToken(userId, token) {
+  ensureInit();
+  if (!userId || !token) return;
+  await UserTokensModel.updateOne({ userId }, { $pull: { tokens: token } });
+}
+
+async function getTokens(userId) {
+  ensureInit();
+  const row = await UserTokensModel.findOne({ userId }).lean();
+  return row?.tokens || [];
+}
+
+// Create DB notification + push to devices
+async function notifyMessage({ recipientId, title, body, data }) {
+  ensureInit();
+  if (!recipientId) return;
+
+  // 1) save notification record
+  const notif = await Notification.create({
+    userId: recipientId,
+    type: 'message',
+    title: title || 'New message',
+    body: body || '',
+    data: data || {},
+  });
+
+  // 2) push to all recipient devices
+  const tokens = await getTokens(recipientId);
+  if (tokens.length === 0) return notif;
+
+  const message = {
+    notification: { title: title || 'New message', body: body || '' },
+    data: Object.fromEntries(
+      Object.entries(data || {}).map(([k, v]) => [k, String(v)])
+    ),
+    android: { priority: 'high' },
+    apns: { headers: { 'apns-priority': '10' } },
+    tokens,
+  };
+
+  try {
+    await admin.messaging().sendEachForMulticast(message);
+  } catch (e) {
+    // best-effort; don’t throw
+    // console.error('[FCM] sendEachForMulticast error', e);
+  }
+  return notif;
+}
 
 module.exports = {
-  sendPushNotification,
+  addToken,
+  removeToken,
+  getTokens,
+  notifyMessage,
 };

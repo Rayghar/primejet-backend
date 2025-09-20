@@ -3,6 +3,31 @@ const orderService = require('./order.service');
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config.js');
 
+// ——— added: minimal, non-intrusive logging wrapper ———
+const withLogging = (name, handler) => {
+  return async (req, res, next) => {
+    const meta = {
+      route: req.originalUrl,
+      method: req.method,
+      userId: req.user?.id || null,
+      requestId: req.id || req.headers['x-request-id'] || null,
+    };
+    logger.info(`[ORDER_CONTROLLER] ${name}: start`, meta);
+    try {
+      await handler(req, res, next);
+      logger.info(`[ORDER_CONTROLLER] ${name}: success`, meta);
+    } catch (error) {
+      logger.error(`[ORDER_CONTROLLER] ${name}: error`, {
+        ...meta,
+        message: error?.message,
+        stack: error?.stack,
+      });
+      next(error);
+    }
+  };
+};
+// 
+
 const placeOrder = async (req, res, next) => {
   try {
     logger.info(`[ORDER_CONTROLLER] placeOrder initiated by user: ${req.user.id}`);
@@ -164,3 +189,14 @@ module.exports = {
   driverArrivedForPickup,
   markAsVerifyingPayment,
 };
+
+// ——— added: wrap exports without touching internal handler bodies ———
+module.exports = Object.fromEntries(
+  Object.entries(module.exports).map(([key, fn]) => {
+    // Only wrap functions
+    if (typeof fn === 'function') {
+      return [key, withLogging(key, fn)];
+    }
+    return [key, fn];
+  })
+);

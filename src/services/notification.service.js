@@ -1,8 +1,8 @@
 // src/api/v1/notifications/notification.service.js
-const Notification = require('../../../models/notification.model');
-const User = require('../../../models/user.model');
-const HttpError = require('../../../utils/HttpError');
-const firebaseService = require('../../../services/firebase.service'); // <<< IMPORT FIREBASE SERVICE
+const Notification = require('../models/notification.model');
+const User = require('../models/user.model');
+const HttpError = require('../utils/HttpError');
+const firebaseService = require('../services/firebase.service'); // <<< IMPORT FIREBASE SERVICE
 
 /**
  * Admin sends a notification to target users (broadcast or specific).

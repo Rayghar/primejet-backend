@@ -252,9 +252,24 @@ const placeOrder = async (customerId, orderData) => {
     const subtotalAfterDiscount = itemsSubtotal - discountAmount;
     const vatAmount = subtotalAfterDiscount > 0 ? subtotalAfterDiscount * (config.feeSettings.vatPercentage / 100) : 0;
     const serviceFeeAmount = subtotalAfterDiscount > 0 ? subtotalAfterDiscount * (config.feeSettings.serviceFeePercentage / 100) : 0;
-    const deliveryFee = isExpress
+    let deliveryFee = isExpress
         ? coveringZone.deliveryFee + coveringZone.expressSurcharge
         : coveringZone.deliveryFee;
+      // 1. Calculate the total quantity of all cylinders in the order.
+    const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
+
+    // 2. If there's more than one cylinder, calculate and add the surcharge.
+    if (totalQuantity > 1) {
+      // Define the surcharge percentage. 0.50 means 50%.
+      // You could make this configurable in the future.
+      const surchargePercentage = 0.50;
+
+      // Calculate the surcharge based on the ZONE'S BASE delivery fee (not the express fee).
+      const surchargePerItem = coveringZone.deliveryFee * surchargePercentage;
+
+      // Add the total surcharge for all *additional* cylinders.
+      deliveryFee += (totalQuantity - 1) * surchargePerItem;
+    }
 
     const overallGrandTotal = subtotalAfterDiscount + vatAmount + serviceFeeAmount + deliveryFee;
     

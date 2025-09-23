@@ -1,31 +1,35 @@
 // controllers/fcm.controller.js
-const { addToken, removeToken } = require('../../../services/notification.service');
+// Minimal controller that stores/removes a device token for the authenticated user
 
-async function registerToken(req, res) {
+const {
+  addToken,
+  removeToken,
+} = require('../../../api/v1/fcm/fcm.service'); // adjust path if your services live elsewhere
+
+exports.registerToken = async (req, res, next) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user && req.user.id;
     const { token } = req.body || {};
-    if (!userId || !token) return res.status(400).json({ error: 'Missing token.' });
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!token) return res.status(400).json({ error: 'token required' });
+
     await addToken(userId, token);
     return res.json({ ok: true });
   } catch (e) {
-    return res.status(500).json({ error: 'Failed to register token.' });
+    return next(e);
   }
-}
+};
 
-async function unregisterToken(req, res) {
+exports.unregisterToken = async (req, res, next) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user && req.user.id;
     const { token } = req.body || {};
-    if (!userId || !token) return res.status(400).json({ error: 'Missing token.' });
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!token) return res.status(400).json({ error: 'token required' });
+
     await removeToken(userId, token);
     return res.json({ ok: true });
   } catch (e) {
-    return res.status(500).json({ error: 'Failed to unregister token.' });
+    return next(e);
   }
-}
-
-module.exports = {
-  registerToken,
-  unregisterToken,
 };

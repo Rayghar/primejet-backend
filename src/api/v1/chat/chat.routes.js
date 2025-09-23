@@ -1,4 +1,3 @@
-// src/api/v1/chat/chat.routes.js
 const express = require('express');
 const auth = require('../../../middleware/auth.middleware');
 const validate = require('../../../middleware/validate.middleware');
@@ -15,15 +14,24 @@ router.post(
   chatController.initiateChat
 );
 
+// Get the caller's chat threads
 router.get('/threads', auth(), chatController.getMyThreads);
 
-
-// Route for the client to fetch historical messages when opening the chat screen
+// EXISTING history route (keep this so nothing breaks):
+// GET /api/v1/chat/:chatId/history
 router.get(
   '/:chatId/history',
   auth(),
   validate(chatValidation.getChatHistorySchema),
   chatController.getChatHistory
+);
+
+// NEW alias route to fix frontend calls like
+// GET /api/v1/chat/history/:chatId?limit=50
+router.get(
+  '/history/:chatId',
+  auth(), // (no extra validation necessary for a quick alias)
+  chatController.getHistory // new controller handler below
 );
 
 module.exports = router;

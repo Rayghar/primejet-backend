@@ -37,6 +37,12 @@ router.put(
   addressController.updateAddress
 );
 
+router.delete(
+  '/:addressId',
+  authMiddleware('customer'),
+  addressController.deleteAddress
+);
+
 router.post(
   '/:addressId/default',
   authMiddleware('customer'),

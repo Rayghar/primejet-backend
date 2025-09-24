@@ -41,6 +41,16 @@ const updateAddress = async (req, res, next) => {
   }
 };
 
+const deleteAddress = async (req, res, next) => {
+  try {
+    const { addressId } = req.params;
+    const result = await addressService.deleteAddress(req.user.id, addressId);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
 const setDefaultAddress = async (req, res, next) => {
   try {
     const { addressId } = req.params;
@@ -57,4 +67,5 @@ module.exports = {
   createAddress,
   updateAddress,
   setDefaultAddress,
+  deleteAddress,
 };

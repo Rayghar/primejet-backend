@@ -1,103 +1,127 @@
-// src/api/v1/users/address.service.js
+// File: src/api/v1/users/address.service.js
+
 const { v4: uuidv4 } = require('uuid');
-const Address = require('../../../models/address.model'); // Adjusted path to global models
-const User = require('../../../models/user.model');    // Adjusted path to global models
-const HttpError = require('../../../utils/HttpError');  // Adjusted path to global utils
-// const { logger } = require('../../../config/logger.config'); // Optional: For structured logging
+const axios = require('axios');
+const Address = require('../../../models/address.model');
+const User = require('../../../models/user.model');
+const HttpError = require('../../../utils/HttpError');
+
+// Util to fetch geolocation and metadata from Google Geocoding API
+async function geocodeAddressFromGoogle(addressText) {
+  try {
+    const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(addressText)}&key=${apiKey}`;
+    const res = await axios.get(url);
+    const data = res.data;
+
+    if (data.status === 'OK' && data.results.length > 0) {
+      const result = data.results[0];
+      return {
+        lat: result.geometry.location.lat,
+        lng: result.geometry.location.lng,
+        components: result.address_components,
+      };
+    }
+  } catch (err) {
+    console.error('Google Geocoding API failed:', err.message);
+  }
+  return null;
+}
+
+function extractComponent(components, type) {
+  const match = components.find(c => c.types.includes(type));
+  return match ? match.long_name : '';
+}
 
 const getAddresses = async (userId) => {
   try {
-    const addresses = await Address.find({ userId }).sort({ createdAt: -1 }); // Optional: sort by creation date
-    return addresses;
+    return await Address.find({ userId }).sort({ createdAt: -1 });
   } catch (error) {
-    // logger.error(`Error fetching addresses for userId ${userId}:`, error);
-    console.error('Unexpected error in getAddresses:', error); // Fallback logging
+    console.error('Unexpected error in getAddresses:', error);
     throw new HttpError(500, 'Failed to retrieve addresses due to an unexpected error.');
   }
 };
 
 const createAddress = async (userId, addressData) => {
-  // Input validation (required fields, formats) is assumed to be handled by Joi
-  // in address.validation.js at the route level.
   const { label, fullAddress, street, city, state, country, isDefault = false, latitude, longitude } = addressData;
 
-  try {
-    const newAddress = new Address({
-      id: uuidv4(),
-      userId,
-      label,
-      fullAddress,
-      street,
-      city,
-      state,
-      country,
-      isDefault,
-      latitude,
-      longitude,
-    });
+  let finalLat = latitude;
+  let finalLng = longitude;
+  let enrichedComponents = null;
 
+  if ((!latitude || !longitude) && fullAddress) {
+    const geocoded = await geocodeAddressFromGoogle(fullAddress);
+    if (geocoded) {
+      finalLat = geocoded.lat;
+      finalLng = geocoded.lng;
+      enrichedComponents = geocoded.components;
+    }
+  }
+
+  if (!finalLat || !finalLng) {
+    throw new HttpError(400, 'Address could not be resolved. Please select a valid address.');
+  }
+
+  const newAddress = new Address({
+    id: uuidv4(),
+    userId,
+    label,
+    fullAddress,
+    street,
+    city: city || extractComponent(enrichedComponents, 'locality'),
+    state: state || extractComponent(enrichedComponents, 'administrative_area_level_1'),
+    country: country || extractComponent(enrichedComponents, 'country'),
+    postalCode: addressData.postalCode || extractComponent(enrichedComponents, 'postal_code'),
+    latitude: finalLat,
+    longitude: finalLng,
+    isDefault,
+    deliveryInstructions: addressData.deliveryInstructions,
+  });
+
+  try {
     await newAddress.save();
 
     if (isDefault) {
-      // If this new address is set as default, update other addresses for the user
       await Address.updateMany({ userId, id: { $ne: newAddress.id } }, { $set: { isDefault: false } });
-      // Update the defaultAddressId on the User model
       await User.updateOne({ id: userId }, { $set: { defaultAddressId: newAddress.id } });
     }
 
-    return newAddress.toObject(); // Return the plain JS object
+    return newAddress.toObject();
   } catch (error) {
-    // logger.error(`Error creating address for userId ${userId}:`, error);
     console.error('Unexpected error in createAddress:', error);
     throw new HttpError(500, 'Failed to create address due to an unexpected error.');
   }
 };
 
 const updateAddress = async (userId, addressId, addressData) => {
-  // Input validation for addressData fields is primarily handled by Joi at the route level.
-  // Service ensures address belongs to the user and updates.
   const { isDefault, ...updateFields } = addressData;
 
   try {
     const address = await Address.findOne({ id: addressId, userId });
-    if (!address) {
-      throw new HttpError(404, 'Address not found or you do not have permission to update it.');
-    }
+    if (!address) throw new HttpError(404, 'Address not found or unauthorized.');
 
-    // Update specific fields
     Object.keys(updateFields).forEach(key => {
-      if (updateFields[key] !== undefined) { // Only update fields that are actually provided
+      if (updateFields[key] !== undefined) {
         address[key] = updateFields[key];
       }
     });
 
-    // Handle isDefault separately due to interactions with other addresses and User model
     if (typeof isDefault === 'boolean' && address.isDefault !== isDefault) {
       address.isDefault = isDefault;
       if (isDefault) {
-        // Set this address as default
         await Address.updateMany({ userId, id: { $ne: addressId } }, { $set: { isDefault: false } });
         await User.updateOne({ id: userId }, { $set: { defaultAddressId: addressId } });
       } else {
-        // If this address is being unset as default, check if it was the default
-        // and potentially clear defaultAddressId on User if no other address is default.
-        // Or, the application might require another address to be explicitly set as default.
-        // For simplicity, if unsetting, we'll just update this address.
-        // The User.defaultAddressId might become stale if this was the default,
-        // requiring logic to pick a new default or clear it.
-        // For now, we just unset it on the address. If it was the default on User model,
-        // it might need explicit clearing or re-assignment logic here or in setDefaultAddress.
         const user = await User.findOne({ id: userId });
         if (user && user.defaultAddressId === addressId) {
-            await User.updateOne({ id: userId }, { $set: { defaultAddressId: null } }); // Or set to another address
+          await User.updateOne({ id: userId }, { $set: { defaultAddressId: null } });
         }
       }
     }
 
     await address.save();
-    return address.toObject(); // Return the updated address
+    return address.toObject();
   } catch (error) {
-    // logger.error(`Error updating address ${addressId} for userId ${userId}:`, error);
     if (error instanceof HttpError) throw error;
     console.error('Unexpected error in updateAddress:', error);
     throw new HttpError(500, 'Failed to update address due to an unexpected error.');
@@ -107,52 +131,34 @@ const updateAddress = async (userId, addressId, addressData) => {
 const setDefaultAddress = async (userId, addressIdToSetAsDefault) => {
   try {
     const addressToSet = await Address.findOne({ id: addressIdToSetAsDefault, userId });
-    if (!addressToSet) {
-      throw new HttpError(404, 'Address not found or you do not have permission to set it as default.');
+    if (!addressToSet) throw new HttpError(404, 'Address not found or unauthorized.');
+
+    if (!addressToSet.isDefault) {
+      await Address.updateMany(
+        { userId, id: { $ne: addressIdToSetAsDefault }, isDefault: true },
+        { $set: { isDefault: false } }
+      );
+
+      addressToSet.isDefault = true;
+      await addressToSet.save();
+      await User.updateOne({ id: userId }, { $set: { defaultAddressId: addressIdToSetAsDefault } });
     }
-
-    if (addressToSet.isDefault) {
-      return { message: 'Address is already the default.', address: addressToSet.toObject() };
-    }
-
-    // Start a transaction if your DB supports it for atomicity, or handle carefully.
-    // For Mongoose without explicit transactions here, ensure operations are idempotent or handle potential partial failures.
-
-    // Unset other default addresses for the user
-    await Address.updateMany(
-      { userId, id: { $ne: addressIdToSetAsDefault }, isDefault: true },
-      { $set: { isDefault: false } }
-    );
-
-    // Set the new address as default
-    addressToSet.isDefault = true;
-    await addressToSet.save();
-
-    // Update the defaultAddressId on the User model
-    await User.updateOne({ id: userId }, { $set: { defaultAddressId: addressIdToSetAsDefault } });
 
     return { message: 'Default address set successfully.', address: addressToSet.toObject() };
   } catch (error) {
-    // logger.error(`Error setting default address ${addressIdToSetAsDefault} for userId ${userId}:`, error);
     if (error instanceof HttpError) throw error;
     console.error('Unexpected error in setDefaultAddress:', error);
-    throw new HttpError(500, 'Failed to set default address due to an unexpected error.');
+    throw new HttpError(500, 'Failed to set default address.');
   }
 };
 
-// It seems deleteAddress was not in your original controller/routes, but it's a common function.
-// If needed, it would look something like this:
 const deleteAddress = async (userId, addressIdToDelete) => {
   try {
     const address = await Address.findOne({ id: addressIdToDelete, userId });
-    if (!address) {
-      throw new HttpError(404, 'Address not found or you do not have permission to delete it.');
-    }
+    if (!address) throw new HttpError(404, 'Address not found or unauthorized.');
 
     await Address.deleteOne({ id: addressIdToDelete, userId });
 
-    // If the deleted address was the default, clear the defaultAddressId on the User model
-    // Or, implement logic to set another address as default.
     const user = await User.findOne({ id: userId });
     if (user && user.defaultAddressId === addressIdToDelete) {
       await User.updateOne({ id: userId }, { $set: { defaultAddressId: null } });
@@ -160,18 +166,16 @@ const deleteAddress = async (userId, addressIdToDelete) => {
 
     return { message: 'Address deleted successfully.' };
   } catch (error) {
-    // logger.error(`Error deleting address ${addressIdToDelete} for userId ${userId}:`, error);
     if (error instanceof HttpError) throw error;
     console.error('Unexpected error in deleteAddress:', error);
-    throw new HttpError(500, 'Failed to delete address due to an unexpected error.');
+    throw new HttpError(500, 'Failed to delete address.');
   }
 };
-
 
 module.exports = {
   getAddresses,
   createAddress,
   updateAddress,
   setDefaultAddress,
-  deleteAddress, // Added for completeness, ensure you add route and controller if used
+  deleteAddress,
 };

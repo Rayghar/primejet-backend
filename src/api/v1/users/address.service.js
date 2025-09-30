@@ -29,6 +29,9 @@ async function geocodeAddressFromGoogle(addressText) {
 }
 
 function extractComponent(components, type) {
+  if (!Array.isArray(components)) {
+    return '';
+  }
   const match = components.find(c => c.types.includes(type));
   return match ? match.long_name : '';
 }

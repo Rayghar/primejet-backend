@@ -40,13 +40,31 @@ function isUserOnline(userId) {
 const initializeSocket = (io) => {
   // 1) Authenticate socket with JWT from handshake.auth.token
   io.use((socket, next) => {
-    const token = socket.handshake.auth && socket.handshake.auth.token;
-    if (!token) return next(new Error('Authentication error: Token not provided.'));
-    jwt.verify(token, config.jwt.secret, (err, decoded) => {
-      if (err) return next(new Error('Authentication error: Invalid token.'));
-      socket.user = decoded; // e.g., { id, role, ... }
-      next();
-    });
+    try {
+      const token = socket.handshake.auth && socket.handshake.auth.token;
+      if (!token) {
+        return next(new Error('Authentication error: Token not provided.'));
+      }
+
+      // ✅ START: ADD THIS SAFETY CHECK FROM YOUR AUTH MIDDLEWARE
+      const jwtSecret = config.jwt.secret;
+      if (!jwtSecret || jwtSecret === 'fallback_super_secret_key_for_dev_only_please_change') {
+        logger.error('[SOCKET_AUTH] JWT_SECRET is not configured securely for production.');
+        return next(new Error('Server configuration error.'));
+      }
+      // ✅ END: ADD THIS SAFETY CHECK
+
+      jwt.verify(token, jwtSecret, (err, decoded) => {
+        if (err) {
+          return next(new Error('Authentication error: Invalid token.'));
+        }
+        socket.user = decoded; // e.g., { id, role, ... }
+        next();
+      });
+    } catch (error) {
+      logger.error('[SOCKET_AUTH] Unexpected middleware error:', { message: error.message });
+      next(new Error('An unexpected server error occurred during authentication.'));
+    }
   });
 
   // Helper: check user is a participant and get counterparty

@@ -40,41 +40,49 @@ function isUserOnline(userId) {
 
 const initializeSocket = (io) => {
   // 1) Authenticate socket with JWT from handshake.auth.token
-  io.use(async (socket, next) => {
-    try {
-      const token = socket.handshake.auth?.token;
-      if (!token) {
-        return next(new Error('Authentication error: Token not provided.'));
-      }
+io.use(async (socket, next) => {
+  const token = socket.handshake.auth?.token;
+  logger.info('[SOCKET_AUTH] New connection attempt...'); // Log start
 
-      const jwtSecret = config.jwt.secret;
-      if (!jwtSecret || jwtSecret === 'fallback_super_secret_key_for_dev_only_please_change') {
-        logger.error('[SOCKET_AUTH] JWT_SECRET is not configured securely.');
-        return next(new Error('Server configuration error.'));
-      }
-
-      const decoded = jwt.verify(token, jwtSecret);
-
-      // ✅ STEP 1: Fetch the user from the database
-      const user = await User.findOne({ id: decoded.id });
-
-      // ✅ STEP 2: Check if the user exists and is active
-      if (!user || user.status !== 'active') {
-        return next(new Error('Authentication error: User not found or is inactive.'));
-      }
-
-      // ✅ STEP 3: Attach the sanitized, up-to-date user object to the socket
-      socket.user = user.toObject();
-      next();
-
-    } catch (error) {
-      if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
-        return next(new Error('Authentication error: Invalid token.'));
-      }
-      logger.error('[SOCKET_AUTH] Unexpected middleware error:', { message: error.message });
-      next(new Error('An unexpected server error occurred during authentication.'));
+  try {
+    if (!token) {
+      logger.warn('[SOCKET_AUTH] Rejected: Token not provided.');
+      return next(new Error('Authentication error: Token not provided.'));
     }
-  });
+
+    const jwtSecret = config.jwt.secret;
+    if (!jwtSecret) { // Simplified check since we know it exists now
+      logger.error('[SOCKET_AUTH] Rejected: JWT_SECRET is missing in config.');
+      return next(new Error('Server configuration error.'));
+    }
+
+    const decoded = jwt.verify(token, jwtSecret);
+    logger.info(`[SOCKET_AUTH] Token verified for user ID: ${decoded.id}`);
+
+    // --- Start Database Debug ---
+    logger.info(`[SOCKET_AUTH] Searching database for user ID: ${decoded.id}`);
+    const user = await User.findOne({ id: decoded.id });
+    logger.info(`[SOCKET_AUTH] Database search finished for user ID: ${decoded.id}`);
+    // --- End Database Debug ---
+
+    if (!user || user.status !== 'active') {
+      logger.warn(`[SOCKET_AUTH] Rejected: User not found or inactive for ID: ${decoded.id}`);
+      return next(new Error('Authentication error: User not found or is inactive.'));
+    }
+
+    logger.info(`[SOCKET_AUTH] User authenticated successfully: ${user.id}`);
+    socket.user = user.toObject();
+    next();
+
+  } catch (error) {
+    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+      logger.warn(`[SOCKET_AUTH] Rejected: Invalid token. Error: ${error.name}`);
+      return next(new Error('Authentication error: Invalid token.'));
+    }
+    logger.error('[SOCKET_AUTH] Unexpected middleware error:', { message: error.message });
+    next(new Error('An unexpected server error occurred during authentication.'));
+  }
+});
 
   // Helper: check user is a participant and get counterparty
   const getParticipation = async (orderId, userUuid) => {

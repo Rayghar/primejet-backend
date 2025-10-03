@@ -1,73 +1,37 @@
 // File: src/api/v1/notifications/notification.controller.js
+
 const notificationService = require('./notification.service');
-const HttpError = require('../../../utils/HttpError');
+const { logger } = require('../../../config/logger.config');
 
-const adminSendNotification = async (req, res, next) => {
+const getUserNotifications = async (req, res, next) => {
   try {
-    const result = await notificationService.adminSendNotification(req.body);
+    const notifications = await notificationService.getUserNotifications(req.user.id);
+    res.status(200).json(notifications);
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getUnreadCount = async (req, res, next) => {
+  try {
+    const count = await notificationService.getUnreadCount(req.user.id);
+    res.status(200).json(count);
+  } catch (error) {
+    next(error);
+  }
+};
+
+const markAllAsRead = async (req, res, next) => {
+  try {
+    const result = await notificationService.markAllAsRead(req.user.id);
     res.status(200).json(result);
-  } catch(error) {
-    next(error);
-  }
-};
-
-const getMyNotifications = async (req, res, next) => {
-  try {
-    const { page = 1, limit = 10 } = req.query;
-    const result = await notificationService.getMyNotifications(req.user.id, {
-      page: parseInt(page, 10),
-      limit: parseInt(limit, 10),
-    });
-    res.status(200).json(result);
   } catch (error) {
     next(error);
   }
 };
-
-const markNotificationAsRead = async (req, res, next) => {
-  try {
-    const { notificationId } = req.params;
-    await notificationService.markNotificationAsRead(notificationId, req.user.id);
-    res.status(200).json({ message: 'Notification marked as read.' });
-  } catch (error) {
-    next(error);
-  }
-};
-
-const markAllNotificationsAsRead = async (req, res, next) => {
-  try {
-    await notificationService.markAllNotificationsAsRead(req.user.id);
-    res.status(200).json({ message: 'All notifications marked as read.' });
-  } catch (error) {
-    next(error);
-  }
-};
-
-const deleteNotification = async (req, res, next) => {
-  try {
-    const { notificationId } = req.params;
-    await notificationService.deleteNotification(notificationId, req.user.id);
-    res.status(200).json({ message: 'Notification deleted successfully.' });
-  } catch (error) {
-    next(error);
-  }
-};
-
-const clearAllNotifications = async (req, res, next) => {
-  try {
-    await notificationService.clearAllNotifications(req.user.id);
-    res.status(200).json({ message: 'All notifications cleared successfully.' });
-  } catch (error) {
-    next(error);
-  }
-};
-
 
 module.exports = {
-  adminSendNotification,
-  getMyNotifications,
-  markNotificationAsRead,
-  markAllNotificationsAsRead,
-  deleteNotification,
-  clearAllNotifications,
+  getUserNotifications,
+  getUnreadCount,
+  markAllAsRead,
 };

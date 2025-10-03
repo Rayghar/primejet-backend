@@ -44,6 +44,20 @@ const getTokensForUser = async (userId) => {
  * @param {object} data - The notification payload ({ title, body, custom: {} }).
  */
 const sendNotificationToUser = async (userId, data) => {
+    // ✅ ADD THIS BLOCK to save the notification
+    try {
+        const newNotification = new Notification({
+        userId: userId,
+        title: data.title,
+        body: data.body,
+        isRead: false,
+        data: data.custom || {},
+        });
+        await newNotification.save();
+    } catch (error) {
+        logger.error('[PUSH_SERVICE] Failed to save notification to DB.', { userId, error: error.message });
+    }
+    
     const deviceTokens = await getTokensForUser(userId);
 
     if (deviceTokens.length === 0) {

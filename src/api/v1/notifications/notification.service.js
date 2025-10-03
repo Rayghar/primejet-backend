@@ -61,6 +61,39 @@ const adminSendNotification = async (notificationData) => {
   return { message: `Notification successfully sent to ${targetedUsers.length} user(s).` };
 };
 
+// ✅ ADD THIS FUNCTION to get all notifications for a user
+const getUserNotifications = async (userId) => {
+  try {
+    const notifications = await Notification.find({ userId }).sort({ createdAt: -1 }).limit(50);
+    return notifications.map(n => n.toObject());
+  } catch (error) {
+    logger.error('Error fetching user notifications:', { error });
+    throw new HttpError(500, 'Could not retrieve notifications.');
+  }
+};
+
+// ✅ ADD THIS FUNCTION to get the unread count
+const getUnreadCount = async (userId) => {
+  try {
+    const count = await Notification.countDocuments({ userId, isRead: false });
+    return { unreadCount: count };
+  } catch (error) {
+    logger.error('Error fetching unread notification count:', { error });
+    throw new HttpError(500, 'Could not retrieve unread count.');
+  }
+};
+
+// ✅ ADD THIS FUNCTION to mark all notifications as read
+const markAllAsRead = async (userId) => {
+  try {
+    await Notification.updateMany({ userId, isRead: false }, { $set: { isRead: true } });
+    return { message: 'All notifications marked as read.' };
+  } catch (error) {
+    logger.error('Error marking notifications as read:', { error });
+    throw new HttpError(500, 'Could not mark notifications as read.');
+  }
+};
+
 /**
  * Creates and stores a notification in the database, then sends a push notification.
  * @param {string} userId - The ID of the user to notify.
@@ -165,4 +198,7 @@ module.exports = {
   deleteNotification,
   clearAllNotifications,
   createAndSendNotification,
+  getUserNotifications,
+  getUnreadCount,
+  markAllAsRead,
 };

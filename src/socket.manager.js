@@ -5,6 +5,7 @@ const chatService = require('./api/v1/chat/chat.service.js'); // NOTE: default i
 const Order = require('./models/order.model');
 const { Server } = require('socket.io');
 const Message = require('./models/message.model'); // <-- your Mongoose Message
+const User = require('./models/user.model')
 
 // If your FCM service lives elsewhere, adjust this path:
 let fcmService = null;
@@ -39,29 +40,37 @@ function isUserOnline(userId) {
 
 const initializeSocket = (io) => {
   // 1) Authenticate socket with JWT from handshake.auth.token
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     try {
-      const token = socket.handshake.auth && socket.handshake.auth.token;
+      const token = socket.handshake.auth?.token;
       if (!token) {
         return next(new Error('Authentication error: Token not provided.'));
       }
 
-      // ✅ START: ADD THIS SAFETY CHECK FROM YOUR AUTH MIDDLEWARE
       const jwtSecret = config.jwt.secret;
       if (!jwtSecret || jwtSecret === 'fallback_super_secret_key_for_dev_only_please_change') {
-        logger.error('[SOCKET_AUTH] JWT_SECRET is not configured securely for production.');
+        logger.error('[SOCKET_AUTH] JWT_SECRET is not configured securely.');
         return next(new Error('Server configuration error.'));
       }
-      // ✅ END: ADD THIS SAFETY CHECK
 
-      jwt.verify(token, jwtSecret, (err, decoded) => {
-        if (err) {
-          return next(new Error('Authentication error: Invalid token.'));
-        }
-        socket.user = decoded; // e.g., { id, role, ... }
-        next();
-      });
+      const decoded = jwt.verify(token, jwtSecret);
+
+      // ✅ STEP 1: Fetch the user from the database
+      const user = await User.findOne({ id: decoded.id });
+
+      // ✅ STEP 2: Check if the user exists and is active
+      if (!user || user.status !== 'active') {
+        return next(new Error('Authentication error: User not found or is inactive.'));
+      }
+
+      // ✅ STEP 3: Attach the sanitized, up-to-date user object to the socket
+      socket.user = user.toObject();
+      next();
+
     } catch (error) {
+      if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+        return next(new Error('Authentication error: Invalid token.'));
+      }
       logger.error('[SOCKET_AUTH] Unexpected middleware error:', { message: error.message });
       next(new Error('An unexpected server error occurred during authentication.'));
     }

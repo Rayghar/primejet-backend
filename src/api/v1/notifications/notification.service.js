@@ -3,6 +3,7 @@ const Notification = require('../../../models/notification.model');
 const User = require('../../../models/user.model');
 const HttpError = require('../../../utils/HttpError');
 const firebaseService = require('../../../services/firebase.service'); 
+const { logger } = require('../../../config/logger.config.js');
 
 /**
  * Admin sends a notification to target users (broadcast or specific).

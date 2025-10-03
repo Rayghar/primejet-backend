@@ -4,7 +4,8 @@ const User = require('../../../models/user.model');
 const Order = require('../../../models/order.model');
 const Message = require('../../../models/message.model');
 const HttpError = require('../../../utils/HttpError');
-const { notifyMessage } = require('../../../services/notification.service');
+//const { notifyMessage } = require('../../../services/notification.service');
+const pushNotificationService = require('../../../services/push-notification.service.js');
 
 // ---------------------------------------------------------------------------
 // Existing functions (kept as-is)
@@ -62,16 +63,24 @@ async function saveChatMessage({ chatId, senderId, recipientId, text }) {
     status: 'sent',
   });
 
+  
+
   // Fire push + DB notification for the recipient (if we know them)
   if (recipientId) {
-    const title = 'New message';
-    const body = text.length > 60 ? `${text.slice(0, 57)}...` : text;
-    await notifyMessage({
-      recipientId,
-      title,
-      body,
-      data: { chatId, messageId: String(msg._id), senderId },
-    });
+      const sender = await User.findOne({ id: senderId }).select('name').lean();
+      const senderName = sender ? sender.name : 'Someone';
+      
+      const notificationData = {
+          title: `New Message from ${senderName}`,
+          body: msg.text,
+          custom: {
+              type: 'new_message',
+              orderId: msg.chatId, // Assuming chatId is the orderId
+              senderId: msg.senderId,
+              screen: 'chat_screen' // For frontend deep linking
+          }
+      };
+      pushNotificationService.sendNotificationToUser(recipientId, notificationData);
   }
 
   // Normalized payload for clients

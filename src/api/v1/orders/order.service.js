@@ -13,16 +13,19 @@ const { firestore, admin, isFirebaseInitialized } = require('../../../config/fir
 const { logger } = require('../../../config/logger.config.js');
 const referralService = require('../referrals/referral.service');
 const firebaseService = require('../../../services/firebase.service');
-const notificationService = require('../notifications/notification.service');
+//const notificationService = require('../notifications/notification.service');
 const paymentService = require('../payments/payment.service'); 
 const ServiceZone = require('../../../models/serviceZone.model');
 const dotenv = require('dotenv');
 const { sha512 } = require('js-sha512');
-const { sendNotificationToUser } = require('../../../utils/notification.util');
+//const { sendNotificationToUser } = require('../../../utils/notification.util');
+//const pushNotificationService = require('../../../services/push-notification.service.js'); // ✅ Import the new service
+const pushNotificationService = require('../../../services/push-notification.service.js');
+
 dotenv.config();
 
-const FCM_FUNCTION_URL = process.env.FCM_FUNCTION_URL;
-const FUNCTIONS_SECRET_KEY = process.env.FUNCTIONS_SECRET_KEY;
+//const FCM_FUNCTION_URL = process.env.FCM_FUNCTION_URL;
+//const FUNCTIONS_SECRET_KEY = process.env.FUNCTIONS_SECRET_KEY;
 
 const initializePayment = async ({ orderId, userId, session }) => {
   logger.info(`[Order Service][initializePayment] Initializing payment for order ${orderId} and user ${userId}.`);
@@ -383,15 +386,19 @@ const driverArrivedForPickup = async (orderId, driverId) => {
   });
   await order.save();
 
-  notificationService.createAndSendNotification({
-    userId: order.customerId,
-    title: "Your Driver Has Arrived!",
-    body: "Please complete your payment in the app to proceed with your order.",
-    type: 'ORDER_UPDATE',
-    data: { orderId: order.id, screen: 'order_details' }
-  });
+  const notificationData = {
+        title: "Your Driver Has Arrived!",
+        body: "Please complete your payment in the app to proceed with your order.",
+        custom: { 
+            type: 'ORDER_UPDATE',
+            orderId: order.id, 
+            screen: 'order_details' 
+        }
+    };
+    pushNotificationService.sendNotificationToUser(order.customerId, notificationData);
 
-  return order.toObject();
+
+    return order.toObject();
 };
 
 async function updateOrderStatus({ orderId, status, paymentStatus, paymentDetails, verifiedAmount, notes = '' }) {
@@ -694,8 +701,18 @@ const driverUpdateOrderStatus = async (orderId, newStatus, notes, driverId, driv
     if (newStatus === 'Delivered') order.actualDeliveryTime = new Date();
     await order.save({ session });
     await session.commitTransaction();
+    
     if (oldStatus !== newStatus) {
-      sendOrderStatusUpdate(order.customerId, order.id, newStatus);
+        const notificationData = {
+            title: 'Order Update',
+            body: `Your order is now ${newStatus}.`,
+            custom: { 
+                type: 'ORDER_UPDATE',
+                orderId: order.id, 
+                screen: 'order_details' 
+            }
+        };
+        pushNotificationService.sendNotificationToUser(order.customerId, notificationData);
     }
     return { message: `Order status updated to ${newStatus}.`, order: order.toObject() };
   } catch (error) {
@@ -774,7 +791,16 @@ const adminUpdateOrderStatus = async (orderId, newStatus, notes, adminId, adminR
     await order.save({ session });
     await session.commitTransaction();
     if (oldStatus !== newStatus) {
-      sendOrderStatusUpdate(order.customerId, order.id, newStatus);
+        const notificationData = {
+            title: 'Order Update',
+            body: `Your order is now ${newStatus}.`,
+            custom: { 
+                type: 'ORDER_UPDATE',
+                orderId: order.id, 
+                screen: 'order_details' 
+            }
+        };
+        pushNotificationService.sendNotificationToUser(order.customerId, notificationData);
     }
     return { message: `Order ${orderId} status updated to ${newStatus}.`, order: order.toObject() };
   } catch (error) {
@@ -825,14 +851,30 @@ const adminAssignDriver = async (orderId, driverIdToAssign, adminId, adminRole) 
     logger.info(`Run ${newRun.id} created and driver ${driver.name} assigned to order ${orderId}.`);
 
     // The single, correct notification call after a successful commit.
-    sendNotificationToUser(
-      FCM_FUNCTION_URL, // Pass the FCM URL from env
-      FUNCTIONS_SECRET_KEY, // Pass the secret key from env
-      order.customerId,
-      'Driver Assigned!',
-      `Your order #${order.shortOrderId} has been assigned to a driver.`,
-      { orderId: orderId, screen: 'order_details' }
-    );
+    const customerNotificationData = {
+        title: 'Driver Assigned!',
+        body: `Your order #${order.id.substring(0, 8)} has been assigned to a driver.`,
+        custom: { 
+            type: 'ORDER_UPDATE',
+            orderId: order.id, 
+            screen: 'order_details' 
+        }
+    };
+    pushNotificationService.sendNotificationToUser(order.customerId, customerNotificationData);
+
+    // ✅ ADD a notification for the DRIVER as well
+    const driverNotificationData = {
+        title: 'New Order Assigned!',
+        body: `You have been assigned a new order: #${order.id.substring(0, 8)}.`,
+        custom: {
+            type: 'NEW_ASSIGNMENT',
+            orderId: order.id,
+            runId: newRun.id, // Include runId for driver navigation
+            screen: 'run_details' // Or wherever the driver sees their assignments
+        }
+    };
+    pushNotificationService.sendNotificationToUser(driverIdToAssign, driverNotificationData);
+
 
     const populatedOrder = await Order.findOne({ id: orderId })
       .populate('customer', 'id name email phone')

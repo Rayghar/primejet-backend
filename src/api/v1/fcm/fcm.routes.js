@@ -2,28 +2,22 @@
 const express = require('express');
 const router = express.Router();
 
-// NOTE: adjust the auth path only if your middleware lives elsewhere
 const auth = require('../../../middleware/auth.middleware');
 
-// Controller exports below match the names we use here
+// ✅ FIX: Import only the functions that are actually used.
 const {
-  updateToken, // Changed from registerToken to reflect the new route
-  // unregisterToken can be kept if you have a logout flow that uses it
+  registerToken,
+  unregisterToken,
 } = require('./fcm.controller');
 
-// ✅ FIX: Changed the route to match what the Flutter app (api_service.dart) is calling.
-// The frontend calls `PUT /api/v1/fcm/token`. This now matches that exactly.
-router.put('/token', auth(), updateToken);
-
-// ✅ FIX: This route now correctly handles POST /api/v1/fcm/register
+// This is the correct route that your Flutter app is calling.
+// POST /api/v1/fcm/register
 router.post('/register', auth(), registerToken);
 
-// This route is for logging out
+// This route is for handling token removal on user logout.
+// POST /api/v1/fcm/unregister
 router.post('/unregister', auth(), unregisterToken);
 
-// This route can be kept for handling token removal on logout, if implemented.
-// If your app's logout process calls POST /unregister, this is correct.
-// router.post('/unregister', auth(), unregisterToken);
-
+// ❌ REMOVED: The old, unused PUT /token route has been deleted.
 
 module.exports = router;

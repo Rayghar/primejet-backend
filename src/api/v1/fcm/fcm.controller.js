@@ -1,28 +1,25 @@
 // controllers/fcm.controller.js
-// Minimal controller that stores/removes a device token for the authenticated user
-
 const {
   addToken,
   removeToken,
-} = require('../../../api/v1/fcm/fcm.service'); // adjust path if your services live elsewhere
+} = require('../../../api/v1/fcm/fcm.service');
 
 /**
- * Handles `PUT /fcm/token` to register or update a device's FCM token.
+ * Handles `POST /fcm/register` to register or update a device's FCM token.
  */
-exports.updateToken = async (req, res, next) => {
+exports.registerToken = async (req, res, next) => {
   try {
     const userId = req.user?.id;
-    // Your api_service.dart sends the token in a field named 'fcmToken'.
-    const { fcmToken } = req.body || {}; 
+    const { token } = req.body || {}; // Correctly reads the 'token' field.
     
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
-    if (!fcmToken) {
-      return res.status(400).json({ error: 'fcmToken is required' });
+    if (!token) {
+      return res.status(400).json({ error: 'token is required' });
     }
 
-    await addToken(userId, fcmToken);
+    await addToken(userId, token);
     return res.status(200).json({ message: 'Token registered successfully.' });
   } catch (e) {
     return next(e);
@@ -41,7 +38,7 @@ exports.unregisterToken = async (req, res, next) => {
       return res.status(401).json({ error: 'Unauthorized' });
     }
     if (!token) {
-      return res.status(400).json({ error: 'token required' });
+      return res.status(400).json({ error: 'token is required' });
     }
 
     await removeToken(userId, token);
@@ -51,25 +48,3 @@ exports.unregisterToken = async (req, res, next) => {
   }
 };
 
-/**
- * Handles `POST /fcm/register` to register or update a device's FCM token.
- */
-exports.registerToken = async (req, res, next) => {
-  try {
-    const userId = req.user?.id;
-    // ✅ FIX: Reads the 'token' field sent by the Flutter app's api_service.
-    const { token } = req.body || {};
-    
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-    if (!token) {
-      return res.status(400).json({ error: 'token is required' });
-    }
-
-    await addToken(userId, token);
-    return res.status(200).json({ message: 'Token registered successfully.' });
-  } catch (e) {
-    return next(e);
-  }
-};

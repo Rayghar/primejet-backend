@@ -2,9 +2,9 @@
 // Lightweight wrapper around firebase-admin for sending device pushes + token registry
 const admin = require('firebase-admin');
 const mongoose = require('mongoose');
-
-// If you also save notification records, keep this import:
+const User = require('../../../models/user.model'); // 👈 IMPORTANT: Import the User model
 const Notification = require('../../../models/notification.model'); // optional; safe to keep
+const { logger } = require('../../../config/logger.config'); // Assuming logger is available here
 
 // ------------------------------------------------------------------
 // Admin initialization – supports GOOGLE_APPLICATION_CREDENTIALS_JSON
@@ -13,13 +13,8 @@ let initialized = false;
 function ensureInit() {
   if (initialized) return;
   if (!admin.apps.length) {
-    // If running on Render/Heroku with env var GOOGLE_APPLICATION_CREDENTIALS_JSON:
-    // Put the full service-account JSON string in that env var.
     const credJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
     if (!credJson) {
-      // You can also rely on GOOGLE_APPLICATION_CREDENTIALS (file path) if set in the environment.
-      // In that case, omit the explicit initializeApp here and let admin pick it up.
-      // For safety, we still try to init with an empty object to avoid “no app” errors.
       admin.initializeApp();
     } else {
       admin.initializeApp({
@@ -31,23 +26,22 @@ function ensureInit() {
 }
 
 // ------------------------------------------------------------------
-// Token storage – tiny per-user collection (userId -> [tokens])
+// Token storage – Now correctly uses the User model
 // ------------------------------------------------------------------
-const userTokensSchema = new mongoose.Schema({
-  userId: { type: String, index: true, unique: true },
-  tokens: { type: [String], default: [] },
-});
-const UserTokens =
-  mongoose.models.UserTokens || mongoose.model('UserTokens', userTokensSchema);
+
+// ❌ FIX: The separate UserTokens schema and model have been completely removed.
+// const userTokensSchema = new mongoose.Schema(...);
+// const UserTokens = mongoose.model('UserTokens', userTokensSchema);
 
 // Add a device token for the user (idempotent)
 async function addToken(userId, token) {
   ensureInit();
   if (!userId || !token) return;
-  await UserTokens.updateOne(
-    { userId },
-    { $addToSet: { tokens: token } },
-    { upsert: true }
+  logger.info(`[FCM_SERVICE] Adding token for user ${userId}`);
+  // ✅ CORRECT: Updates the fcmTokens array on the User model directly.
+  await User.updateOne(
+    { id: userId }, // Use 'id' or '_id' to match your User model schema
+    { $addToSet: { fcmTokens: token } }
   );
 }
 
@@ -55,40 +49,48 @@ async function addToken(userId, token) {
 async function removeToken(userId, token) {
   ensureInit();
   if (!userId || !token) return;
-  await UserTokens.updateOne({ userId }, { $pull: { tokens: token } });
+  logger.info(`[FCM_SERVICE] Removing token for user ${userId}`);
+  // ✅ CORRECT: Updates the fcmTokens array on the User model directly.
+  await User.updateOne(
+    { id: userId }, // Use 'id' or '_id' to match your User model schema
+    { $pull: { fcmTokens: token } }
+  );
 }
 
 // Fetch all tokens for a user
 async function getTokens(userId) {
   ensureInit();
-  const row = await UserTokens.findOne({ userId }).lean();
-  return row?.tokens || [];
+  const user = await User.findOne({ id: userId }).select('fcmTokens').lean();
+  return user?.fcmTokens || [];
 }
 
 // ------------------------------------------------------------------
 // High-level helpers for sending pushes
 // ------------------------------------------------------------------
 
-// Generic: push a “chat/new message” type notification + (optionally) persist a DB record
+// Generic: push a notification and optionally persist a DB record
 async function notifyMessage({ recipientId, title, body, data }) {
   ensureInit();
   if (!recipientId) return;
 
-  // Optional: persist notification (safe to keep; no-ops if your schema differs)
+  // Optional: persist notification
   try {
     await Notification.create({
       userId: recipientId,
-      type: 'message',
+      type: 'message', // Or another relevant type
       title: title || 'New message',
       body: body || '',
       data: data || {},
     });
-  } catch (_) {
-    // If you don’t have a notifications model wired up yet, ignore errors here
+  } catch (dbError) {
+    logger.error(`[FCM_SERVICE] Failed to save notification to DB for user ${recipientId}`, dbError);
   }
 
   const tokens = await getTokens(recipientId);
-  if (!tokens.length) return;
+  if (!tokens.length) {
+    logger.warn(`[FCM_SERVICE] No FCM tokens found for user ${recipientId}. Skipping push.`);
+    return;
+  }
 
   const message = {
     notification: { title: title || 'New message', body: body || '' },
@@ -103,8 +105,8 @@ async function notifyMessage({ recipientId, title, body, data }) {
   try {
     const resp = await admin.messaging().sendEachForMulticast(message);
 
-    // Clean up bad tokens
-    const bad = [];
+    // Clean up bad/unregistered tokens
+    const badTokens = [];
     resp.responses.forEach((r, i) => {
       if (!r.success) {
         const code = r.error?.code || '';
@@ -112,24 +114,25 @@ async function notifyMessage({ recipientId, title, body, data }) {
           code.includes('registration-token-not-registered') ||
           code.includes('invalid-argument')
         ) {
-          bad.push(tokens[i]);
+          badTokens.push(tokens[i]);
         }
       }
     });
-    if (bad.length) {
-      await UserTokens.updateOne(
-        { userId: recipientId },
-        { $pull: { tokens: { $in: bad } } }
+
+    if (badTokens.length > 0) {
+      logger.info(`[FCM_SERVICE] Cleaning up ${badTokens.length} invalid tokens for user ${recipientId}`);
+      // ✅ FIX: Cleans up tokens from the User model, not the old UserTokens collection.
+      await User.updateOne(
+        { id: recipientId },
+        { $pull: { fcmTokens: { $in: badTokens } } }
       );
     }
   } catch (e) {
-    // best effort; don’t throw
-    // console.error('[FCM] sendEachForMulticast error', e);
+    logger.error(`[FCM_SERVICE] sendEachForMulticast error for user ${recipientId}`, e);
   }
 }
 
 // Alias used by your Socket layer (keeps earlier code working)
-// Accepts the same `message` shape you were building in socket.manager
 async function pushToUser(userId, message) {
   ensureInit();
   const tokens = await getTokens(userId);
@@ -144,6 +147,7 @@ async function pushToUser(userId, message) {
     await admin.messaging().sendEachForMulticast(payload);
   } catch (e) {
     // swallow – chat flow must not break on push errors
+    logger.warn(`[FCM_SERVICE] pushToUser (socket) failed for user ${userId}`, e);
   }
 }
 

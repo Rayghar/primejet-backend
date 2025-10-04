@@ -5,7 +5,7 @@ const globalConfig = require('../config');
 
 const rateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: globalConfig.env === 'production' ? 10 : 500, // FIX: Use ternary to set 10 for production
+  max: globalConfig.env === 'production' ? 150 : 500, // FIX: Use ternary to set 10 for production
   standardHeaders: true,
   legacyHeaders: false,
   message: {

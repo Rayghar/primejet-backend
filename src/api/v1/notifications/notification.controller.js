@@ -30,8 +30,32 @@ const markAllAsRead = async (req, res, next) => {
   }
 };
 
+// ✅ FIX: Added controller function to handle marking a single notification as read.
+const markAsRead = async (req, res, next) => {
+  try {
+    const { notificationId } = req.params;
+    const result = await notificationService.markNotificationAsRead(notificationId, req.user.id);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ✅ FIX: Added controller function to handle clearing all notifications.
+const clearAll = async (req, res, next) => {
+  try {
+    const result = await notificationService.clearAllNotifications(req.user.id);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+
 module.exports = {
   getUserNotifications,
   getUnreadCount,
   markAllAsRead,
+  markAsRead,   // <-- Export the new function
+  clearAll,     // <-- Export the new function
 };

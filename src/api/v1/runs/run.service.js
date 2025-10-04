@@ -8,7 +8,7 @@ const mongoose = require('mongoose');
 const { logger } = require('../../../config/logger.config.js');
 
 // ✅ FIX: Import the notification service to be used for sending push notifications.
-const notificationService = require('../notifications/notification.service');
+const { notifyMessage } = require('../fcm/fcm.service');
 
 // Helper function to translate driver statuses to customer-facing order statuses
 const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
@@ -84,19 +84,23 @@ const driverUpdateStopStatus = async (driverId, runId, stopId, newStatus, notes)
         // ✅ FIX: Trigger a push notification to the customer if the status changed.
         if (oldStatus !== mappedStatus) {
           logger.info(`[RUN_SERVICE] Triggering notification for order ${order.id} status change to ${mappedStatus}`);
-          await notificationService.createAndSendNotification(
-            order.customerId,
-            'Order Update',
-            `Your order status is now: ${mappedStatus}`,
-            'ORDER_UPDATE',
-            { orderId: order.id, screen: 'order_details' }
-          );
+          await notifyMessage({
+            recipientId: order.customerId,
+            title: 'Order Update',
+            body: `Your order status is now: ${mappedStatus}`,
+            data: {
+              type: 'ORDER_UPDATE',
+              orderId: order.id,
+              screen: 'order_details'
+            }
+          });
         }
       }
     }
   } catch (err) {
     logger?.error?.('[RUN_SERVICE] Order status update and notification failed:', err);
   }
+
 
   try {
     const terminalStopStatuses = ['DELIVERED', 'CUSTOMER_UNAVAILABLE', 'ISSUE_REPORTED', 'CANCELED'];

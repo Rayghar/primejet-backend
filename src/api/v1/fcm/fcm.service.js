@@ -110,12 +110,20 @@ async function notifyMessage({ recipientId, title, body, data }) {
   }
 
   const message = {
-    notification: { title: title || 'New message', body: body || '' },
+    notification: { title: title || 'New message', body: body || '', sound: 'default' },
     data: Object.fromEntries(
       Object.entries(data || {}).map(([k, v]) => [k, String(v)])
     ),
     android: { priority: 'high' },
-    apns: { headers: { 'apns-priority': '10' } },
+    apns: {
+      headers: { 'apns-priority': '10', 'apns-push-type': 'alert' },
+      // ✅ FIX: The 'aps' dictionary must be nested inside a 'payload' object for APNs
+      payload: {
+        aps: {
+          sound: 'default',
+        },
+      },
+    },
     tokens,
   };
 

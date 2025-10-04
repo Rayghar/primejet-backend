@@ -4,8 +4,9 @@ const User = require('../../../models/user.model');
 const Order = require('../../../models/order.model');
 const Message = require('../../../models/message.model');
 const HttpError = require('../../../utils/HttpError');
-//const { notifyMessage } = require('../../../services/notification.service');
-const pushNotificationService = require('../../../services/push-notification.service.js');
+// ✅ FIX: Import the correct, robust fcm.service.js.
+// The path is relative to the current file's location.
+const { notifyMessage } = require('../fcm/fcm.service');
 
 // ---------------------------------------------------------------------------
 // Existing functions (kept as-is)
@@ -52,35 +53,34 @@ const getMessageHistory = async (chatId, before, limit = 50) => {
 
 /**
  * Save a chat message and trigger a notification for the known recipient.
- * (Kept the existing behavior and normalized return shape.)
  */
 async function saveChatMessage({ chatId, senderId, recipientId, text }) {
   const msg = await Message.create({
     chatId,
     senderId,
-    recipientId: recipientId || null, // ok if null until driver is assigned
+    recipientId: recipientId || null,
     text: String(text || '').slice(0, 2000).trim(),
     status: 'sent',
   });
 
-  
-
-  // Fire push + DB notification for the recipient (if we know them)
+  // Fire push notification for the recipient (if we know them)
   if (recipientId) {
       const sender = await User.findOne({ id: senderId }).select('name').lean();
       const senderName = sender ? sender.name : 'Someone';
       
-      const notificationData = {
+      // ✅ FIX: Call the correct notifyMessage function from fcm.service.js
+      // This ensures sound and high-priority display.
+      await notifyMessage({
+          recipientId: recipientId,
           title: `New Message from ${senderName}`,
           body: msg.text,
-          custom: {
+          data: {
               type: 'new_message',
-              orderId: msg.chatId, // Assuming chatId is the orderId
+              orderId: msg.chatId,
               senderId: msg.senderId,
               screen: 'chat_screen' // For frontend deep linking
           }
-      };
-      pushNotificationService.sendNotificationToUser(recipientId, notificationData);
+      });
   }
 
   // Normalized payload for clients
@@ -98,7 +98,7 @@ async function saveChatMessage({ chatId, senderId, recipientId, text }) {
 }
 
 /**
- * Threads list by last message per chat for a user (kept, with a tiny polish).
+ * Threads list by last message per chat for a user.
  */
 async function getThreadsForUser(userId, limit = 50) {
   const pipeline = [
@@ -111,7 +111,6 @@ async function getThreadsForUser(userId, limit = 50) {
 
   const threads = await Message.aggregate(pipeline).exec();
 
-  // OPTIONAL: hydrate recipient display from Order if you want
   const ids = threads.map((t) => t.chatId);
   const orders = await Order.find({ id: { $in: ids } }).lean();
   const byId = Object.fromEntries(orders.map((o) => [o.id, o]));
@@ -123,13 +122,9 @@ async function getThreadsForUser(userId, limit = 50) {
 }
 
 // ---------------------------------------------------------------------------
-// NEW HELPERS (additive) for Socket.IO manager integration
+// NEW HELPERS for Socket.IO manager integration
 // ---------------------------------------------------------------------------
 
-/**
- * Create a message with status 'sent'.
- * Used by socket.manager for immediate persistence, then broadcast/ack.
- */
 async function createMessage({ chatId, senderId, recipientId, text }) {
   const doc = await Message.create({
     chatId,
@@ -142,10 +137,6 @@ async function createMessage({ chatId, senderId, recipientId, text }) {
   return doc;
 }
 
-/**
- * Count unread (sent or delivered) for a specific user in a chat.
- * Used to emit per-thread bubbles via personal rooms (user:<id>).
- */
 async function countUnreadForUserInChat(userId, chatId) {
   return Message.countDocuments({
     chatId,
@@ -154,10 +145,6 @@ async function countUnreadForUserInChat(userId, chatId) {
   });
 }
 
-/**
- * Mark all messages to this user in a chat as 'read' (from 'sent'/'delivered').
- * Used when the user opens a chat (mark_read).
- */
 async function markChatRead(userId, chatId) {
   await Message.updateMany(
     { chatId, recipientId: userId, status: { $in: ['sent', 'delivered'] } },
@@ -165,10 +152,6 @@ async function markChatRead(userId, chatId) {
   );
 }
 
-/**
- * Idempotently set a message to 'delivered' if it’s currently 'sent'.
- * Used by socket.manager when it detects recipient presence.
- */
 async function setDeliveredIfSent(messageId) {
   await Message.updateOne(
     { _id: messageId, status: 'sent' },

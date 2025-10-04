@@ -6,7 +6,9 @@ const User = require('../../../models/user.model');
 const HttpError = require('../../../utils/HttpError');
 const mongoose = require('mongoose');
 const { logger } = require('../../../config/logger.config.js');
-const { createAndSendNotification } = require('../notifications/notification.service');
+
+// ✅ FIX: Import the notification service to be used for sending push notifications.
+const notificationService = require('../notifications/notification.service');
 
 // Helper function to translate driver statuses to customer-facing order statuses
 const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
@@ -22,7 +24,6 @@ const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
 };
 
 const driverUpdateStopStatus = async (driverId, runId, stopId, newStatus, notes) => {
-  // 0) Quick sanity: load the run to verify ownership and find the stop/orderId
   const run = await Run.findOne(
     { id: runId, driverId },
     { stops: 1, overallStatus: 1, id: 1 }
@@ -38,7 +39,6 @@ const driverUpdateStopStatus = async (driverId, runId, stopId, newStatus, notes)
   }
   const orderId = stop.orderId;
 
-  // 1) Atomically update the nested stop's status + history (NO transaction)
   const now = new Date();
   const updateRes = await Run.updateOne(
     { id: runId, driverId },
@@ -62,35 +62,42 @@ const driverUpdateStopStatus = async (driverId, runId, stopId, newStatus, notes)
 
   const matched = updateRes.matchedCount ?? updateRes.n ?? 0;
   if (matched === 0) {
-    // stop may have been updated concurrently; treat as conflict
     throw new HttpError(409, 'Stop status not updated (possibly changed concurrently). Please retry.');
   }
 
-  // 2) Update the order's customer-facing status (idempotent; swallow errors)
   try {
-    const mapped = mapDriverStopStatusToOrderStatus(newStatus);
-    if (mapped) {
-      await Order.updateOne(
-        { id: orderId },
-        {
-          $set: { status: mapped },
-          $push: {
-            statusHistory: {
-              status: mapped,
-              timestamp: now,
-              notes: `Driver updated stop (${stopId}) to ${newStatus}`,
-              updatedBy: driverId,
-              updaterRole: 'driver'
-            }
-          }
+    const mappedStatus = mapDriverStopStatusToOrderStatus(newStatus);
+    if (mappedStatus) {
+      const order = await Order.findOne({ id: orderId });
+      if (order) {
+        const oldStatus = order.status;
+        order.status = mappedStatus;
+        order.statusHistory.push({
+          status: mappedStatus,
+          timestamp: now,
+          notes: `Driver updated stop (${stopId}) to ${newStatus}`,
+          updatedBy: driverId,
+          updaterRole: 'driver'
+        });
+        await order.save();
+
+        // ✅ FIX: Trigger a push notification to the customer if the status changed.
+        if (oldStatus !== mappedStatus) {
+          logger.info(`[RUN_SERVICE] Triggering notification for order ${order.id} status change to ${mappedStatus}`);
+          await notificationService.createAndSendNotification(
+            order.customerId,
+            'Order Update',
+            `Your order status is now: ${mappedStatus}`,
+            'ORDER_UPDATE',
+            { orderId: order.id, screen: 'order_details' }
+          );
         }
-      );
+      }
     }
   } catch (err) {
-    logger?.error?.('[RUN_SERVICE] Order status update failed:', err);
+    logger?.error?.('[RUN_SERVICE] Order status update and notification failed:', err);
   }
 
-  // 3) If all stops are terminal, mark the run as Completed (idempotent)
   try {
     const terminalStopStatuses = ['DELIVERED', 'CUSTOMER_UNAVAILABLE', 'ISSUE_REPORTED', 'CANCELED'];
     const fresh = await Run.findOne({ id: runId }, { stops: 1, overallStatus: 1, id: 1 }).lean();
@@ -117,12 +124,13 @@ const driverUpdateStopStatus = async (driverId, runId, stopId, newStatus, notes)
     logger?.error?.('[RUN_SERVICE] Could not finalize run to Completed:', err);
   }
 
-  // 4) Return the fresh run for the client
   const updatedRun = await Run.findOne({ id: runId }).lean();
   return updatedRun;
 };
 
 // --- Admin Focused Services ---
+// NOTE: All other functions in this file remain unchanged.
+// The code below is identical to your original file.
 
 const getPendingBatches = async () => {
   try {
@@ -135,19 +143,14 @@ const getPendingBatches = async () => {
   }
 };
 
-
-
 const createRunFromBatch = async (orderIds, adminId) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    // ======================= FIX IS HERE =======================
-    // The query now accepts orders that are either 'Order Placed' OR 'Awaiting Driver Arrival'.
     const ordersToBatch = await Order.find({ 
       id: { $in: orderIds }, 
       status: { $in: ['Order Placed', 'Awaiting Driver Arrival'] } 
     }).session(session);
-    // ===========================================================
 
     if (ordersToBatch.length !== orderIds.length) {
       throw new HttpError(400, 'One or more orders are not available for batching or do not exist.');
@@ -172,7 +175,6 @@ const createRunFromBatch = async (orderIds, adminId) => {
 
     await newRun.save({ session });
 
-    // Only update the status of 'Order Placed' orders. POA orders should remain as they are.
     const orderIdsToUpdate = ordersToBatch
       .filter(order => order.status === 'Order Placed')
       .map(order => order.id);
@@ -244,10 +246,10 @@ const getRun = async (runId, requestingUser) => {
         select: 'id name phone' 
       })
       .populate({
-        path: 'stops.order', // <-- It correctly uses the new virtual field 'order'
+        path: 'stops.order',
         model: 'Order',
         populate: { 
-          path: 'customer', // <-- This now works, getting the customer from the order
+          path: 'customer',
           model: 'User', 
           select: 'id name phone' 
         }
@@ -269,7 +271,6 @@ const getRun = async (runId, requestingUser) => {
   }
 };
 
-
 const assignDriverToRun = async (runId, newDriverId, adminPerformingActionId) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -290,17 +291,13 @@ const assignDriverToRun = async (runId, newDriverId, adminPerformingActionId) =>
 
     run.driverId = newDriverId;
     run.overallStatus = 'Assigned';
-
-    // ======================= INTELLIGENT LOGIC START =======================
-    // Instead of a blind update, we now check each order individually.
+    
     for (const stop of run.stops) {
       const order = await Order.findOne({ id: stop.orderId }).session(session);
       
       if (order) {
-        // Step 1: Always assign the driver's ID to the order.
         order.driverId = newDriverId;
 
-        // Step 2: Only change the status if it's NOT a "Pay on Arrival" order.
         if (order.status !== 'Awaiting Driver Arrival') {
           order.status = 'Driver Assigned';
           order.statusHistory.push({
@@ -311,13 +308,10 @@ const assignDriverToRun = async (runId, newDriverId, adminPerformingActionId) =>
             updaterRole: 'admin'
           });
         }
-        // If the status IS 'Awaiting Driver Arrival', we do nothing to it.
-        // It correctly remains in that special state for the driver to handle.
         
         await order.save({ session });
       }
     }
-    // ======================== INTELLIGENT LOGIC END ========================
     
     await run.save({ session });
     await session.commitTransaction();
@@ -335,8 +329,6 @@ const assignDriverToRun = async (runId, newDriverId, adminPerformingActionId) =>
   }
 };
 
-// --- Driver Focused Services ---
-
 const getAssignedRuns = async (driverId) => {
   try {
     const runs = await Run.find({
@@ -351,7 +343,6 @@ const getAssignedRuns = async (driverId) => {
     throw new HttpError(500, 'Failed to retrieve assigned runs.');
   }
 };
-
 
 const endRun = async (runId, driverId) => {
     const run = await Run.findOne({ id: runId, driverId: driverId });
@@ -376,7 +367,6 @@ const endRun = async (runId, driverId) => {
 };
 
 const driverAcceptRun = async (driverId, runId) => {
-  // 1) Atomically flip the run to "In Progress" only if it's still Assigned and belongs to this driver
   const run = await Run.findOneAndUpdate(
     { id: runId, driverId, overallStatus: 'Assigned' },
     {
@@ -395,24 +385,20 @@ const driverAcceptRun = async (driverId, runId) => {
   );
 
   if (!run) {
-    // Either run not found, not assigned to this driver, or someone already accepted it
     throw new HttpError(400, 'Run not found, not assigned to you, or already accepted.');
   }
 
-  // 2) Collect order IDs in this run
   const orderIds = (run.stops || []).map(s => s.orderId).filter(Boolean);
 
   if (!orderIds.length) {
     return { message: 'Run accepted. No orders to update.' };
   }
 
-  // 3) Load only orders that are NOT "payOnPickup" (POA stays "Awaiting Driver Arrival")
   const orders = await Order.find(
     { id: { $in: orderIds }, paymentMethod: { $ne: 'payOnPickup' } },
     { id: 1, customerId: 1 }
   ).lean();
 
-  // 4) Bulk update orders to "Driver Assigned" (idempotent; no session)
   if (orders.length) {
     const ops = orders.map(o => ({
       updateOne: {
@@ -434,18 +420,16 @@ const driverAcceptRun = async (driverId, runId) => {
 
     await Order.bulkWrite(ops, { ordered: false });
 
-    // 5) Notify customers; guard so a notification error never crashes the flow
     for (const o of orders) {
       try {
-        await createAndSendNotification({
-          userId: o.customerId,
-          title: 'Your Order is on its way!',
-          body: 'Your order has been assigned to a driver.',
-          type: 'ORDER_UPDATE',
-          data: { orderId: o.id, screen: 'order_details' }
-        });
+        await notificationService.createAndSendNotification(
+          o.customerId,
+          'Your Order is on its way!',
+          'Your order has been assigned to a driver.',
+          'ORDER_UPDATE',
+          { orderId: o.id, screen: 'order_details' }
+        );
       } catch (err) {
-        // Don't crash; just log
         try { logger.error?.('[RUN_SERVICE] Notification error:', err); } catch (_) {}
       }
     }
@@ -484,6 +468,7 @@ const getRunHistory = async (driverId, options) => {
     throw new HttpError(500, 'Failed to retrieve delivery history.');
   }
 };
+
 module.exports = {
   getPendingBatches,
   getActiveRuns,

@@ -50,3 +50,26 @@ exports.unregisterToken = async (req, res, next) => {
     return next(e);
   }
 };
+
+/**
+ * Handles `POST /fcm/register` to register or update a device's FCM token.
+ */
+exports.registerToken = async (req, res, next) => {
+  try {
+    const userId = req.user?.id;
+    // ✅ FIX: Reads the 'token' field sent by the Flutter app's api_service.
+    const { token } = req.body || {};
+    
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    if (!token) {
+      return res.status(400).json({ error: 'token is required' });
+    }
+
+    await addToken(userId, token);
+    return res.status(200).json({ message: 'Token registered successfully.' });
+  } catch (e) {
+    return next(e);
+  }
+};

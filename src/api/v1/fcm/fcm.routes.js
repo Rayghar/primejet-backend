@@ -15,6 +15,11 @@ const {
 // The frontend calls `PUT /api/v1/fcm/token`. This now matches that exactly.
 router.put('/token', auth(), updateToken);
 
+// ✅ FIX: This route now correctly handles POST /api/v1/fcm/register
+router.post('/register', auth(), registerToken);
+
+// This route is for logging out
+router.post('/unregister', auth(), unregisterToken);
 
 // This route can be kept for handling token removal on logout, if implemented.
 // If your app's logout process calls POST /unregister, this is correct.

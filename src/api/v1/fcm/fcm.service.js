@@ -2,12 +2,12 @@
 // Lightweight wrapper around firebase-admin for sending device pushes + token registry
 const admin = require('firebase-admin');
 const mongoose = require('mongoose');
-const User = require('../../../models/user.model'); // 👈 IMPORTANT: Import the User model
-const Notification = require('../../../models/notification.model'); // optional; safe to keep
-const { logger } = require('../../../config/logger.config'); // Assuming logger is available here
+const User = require('../../../models/user.model');
+const Notification = require('../../../models/notification.model');
+const { logger } = require('../../../config/logger.config');
 
 // ------------------------------------------------------------------
-// Admin initialization – supports GOOGLE_APPLICATION_CREDENTIALS_JSON
+// Admin initialization
 // ------------------------------------------------------------------
 let initialized = false;
 function ensureInit() {
@@ -30,10 +30,12 @@ function ensureInit() {
 // ------------------------------------------------------------------
 
 // ❌ FIX: The separate UserTokens schema and model have been completely removed.
-// const userTokensSchema = new mongoose.Schema(...);
-// const UserTokens = mongoose.model('UserTokens', userTokensSchema);
 
-// Add a device token for the user (idempotent)
+/**
+ * Adds a device token to a user's profile in an idempotent way.
+ * @param {string} userId - The ID of the user.
+ * @param {string} token - The FCM device token.
+ */
 async function addToken(userId, token) {
   ensureInit();
   if (!userId || !token) return;
@@ -45,7 +47,11 @@ async function addToken(userId, token) {
   );
 }
 
-// Remove a device token for the user
+/**
+ * Removes a device token from a user's profile.
+ * @param {string} userId - The ID of the user.
+ * @param {string} token - The FCM device token.
+ */
 async function removeToken(userId, token) {
   ensureInit();
   if (!userId || !token) return;
@@ -57,7 +63,11 @@ async function removeToken(userId, token) {
   );
 }
 
-// Fetch all tokens for a user
+/**
+ * Fetches all valid FCM tokens for a given user.
+ * @param {string} userId - The ID of the user.
+ * @returns {Promise<string[]>} A list of the user's FCM tokens.
+ */
 async function getTokens(userId) {
   ensureInit();
   const user = await User.findOne({ id: userId }).select('fcmTokens').lean();
@@ -68,16 +78,23 @@ async function getTokens(userId) {
 // High-level helpers for sending pushes
 // ------------------------------------------------------------------
 
-// Generic: push a notification and optionally persist a DB record
+/**
+ * Sends a push notification to a user and handles cleanup of invalid tokens.
+ * @param {object} options - The notification options.
+ * @param {string} options.recipientId - The ID of the user to notify.
+ * @param {string} options.title - The notification title.
+ * @param {string} options.body - The notification body.
+ * @param {object} [options.data] - The data payload for the notification.
+ */
 async function notifyMessage({ recipientId, title, body, data }) {
   ensureInit();
   if (!recipientId) return;
 
-  // Optional: persist notification
+  // Persist the notification to the database (optional but recommended)
   try {
     await Notification.create({
       userId: recipientId,
-      type: 'message', // Or another relevant type
+      type: data?.type || 'message',
       title: title || 'New message',
       body: body || '',
       data: data || {},
@@ -132,7 +149,11 @@ async function notifyMessage({ recipientId, title, body, data }) {
   }
 }
 
-// Alias used by your Socket layer (keeps earlier code working)
+/**
+ * An alias for sending pushes, often used by the Socket.IO layer for compatibility.
+ * @param {string} userId - The ID of the user to send the push to.
+ * @param {object} message - The raw FCM message payload.
+ */
 async function pushToUser(userId, message) {
   ensureInit();
   const tokens = await getTokens(userId);
@@ -146,7 +167,7 @@ async function pushToUser(userId, message) {
   try {
     await admin.messaging().sendEachForMulticast(payload);
   } catch (e) {
-    // swallow – chat flow must not break on push errors
+    // Swallow error to prevent chat/other flows from breaking on push failure
     logger.warn(`[FCM_SERVICE] pushToUser (socket) failed for user ${userId}`, e);
   }
 }
@@ -156,5 +177,5 @@ module.exports = {
   removeToken,
   getTokens,
   notifyMessage,
-  pushToUser, // kept for compatibility with your socket code
+  pushToUser,
 };

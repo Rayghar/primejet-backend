@@ -426,15 +426,19 @@ const driverAcceptRun = async (driverId, runId) => {
 
     for (const o of orders) {
       try {
-        await notificationService.createAndSendNotification(
-          o.customerId,
-          'Your Order is on its way!',
-          'Your order has been assigned to a driver.',
-          'ORDER_UPDATE',
-          { orderId: o.id, screen: 'order_details' }
-        );
+        // ✅ FIX: Using the correct, unified notification service.
+        await notifyMessage({
+          recipientId: o.customerId,
+          title: 'Your Order is on its way!',
+          body: 'Your order has been assigned to a driver.',
+          data: { 
+            type: 'ORDER_UPDATE',
+            orderId: o.id, 
+            screen: 'order_details' 
+          }
+        });
       } catch (err) {
-        try { logger.error?.('[RUN_SERVICE] Notification error:', err); } catch (_) {}
+        try { logger.error?.('[RUN_SERVICE] Notification error on run accept:', err); } catch (_) {}
       }
     }
   }

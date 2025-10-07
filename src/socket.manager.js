@@ -107,10 +107,20 @@ io.use(async (socket, next) => {
     logger.info(`[SOCKET] User connected: ${userId}, Socket ID: ${socket.id}`);
     addOnline(userId, socket.id);
 
-    // 1A) Personal room used for unread bubble pushes
+    // ===== FIX: Join personal and role-based rooms START =====
     try {
+      // Personal room for direct messages and updates
       socket.join(`user:${userId}`);
-    } catch (_) {}
+      
+      // Role-based room for broadcasting (e.g., to all admins)
+      if (socket.user && socket.user.role === 'admin') {
+        socket.join('admins');
+        logger.info(`[SOCKET] Admin user ${userId} joined 'admins' room`);
+      }
+    } catch (e) {
+      logger.error(`[SOCKET] Error joining room for user ${userId}:`, e);
+    }
+    // ===== FIX: Join personal and role-based rooms END =====
 
     // 1B) Join a chat room (chatId == orderId) with authorization
     socket.on('join_room', async (orderId) => {

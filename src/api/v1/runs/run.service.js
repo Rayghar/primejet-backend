@@ -13,6 +13,7 @@ const { notifyMessage } = require('../fcm/fcm.service');
 // NOTE: The path to 'server.js' may need to be adjusted based on your project structure.
 const { Server } = require('socket.io'); // ✅ ADDED: Import Socket.IO
 // ===== FIX: Import Socket.IO server instance END =====
+const appEvents = require('../../../utils/eventEmitter');
 
 
 // Helper function to translate driver statuses to customer-facing order statuses
@@ -86,46 +87,20 @@ const driverUpdateStopStatus = async (driverId, runId, stopId, newStatus, notes)
         });
         await order.save();
 
-        // ===== FIX: Emit WebSocket events and send push notification START =====
+         // ===== FIX: Emit a single global event for the socket manager to handle =====
         const updatedOrderForEmit = await Order.findOne({ id: orderId }).populate('customer').populate('driver').lean();
-        const updatedRunForEmit = await Run.findOne({ id: runId }).populate('driver').populate({ path: 'stops.order', model: 'Order', populate: { path: 'customer', model: 'User' } }).lean();
+        const updatedRunForEmit = await Run.findOne({ id: runId }).populate('driver').lean();
 
-        if (io) {
-            // 1. Notify the CUSTOMER about their specific order update
-            if (updatedOrderForEmit && order.customerId) {
-                const customerRoom = `user:${order.customerId}`;
-                io.to(customerRoom).emit('order_update', updatedOrderForEmit);
-                logger.info(`[SOCKET] Emitted 'order_update' for order ${orderId} to room ${customerRoom}`);
-            }
-
-            // 2. Notify the DRIVER and ADMINS about the entire run update
-            if (updatedRunForEmit) {
-                const driverRoom = `user:${driverId}`;
-                io.to(driverRoom).emit('run_update', updatedRunForEmit);
-                io.to('admins').emit('run_update', updatedRunForEmit);
-                logger.info(`[SOCKET] Emitted 'run_update' to driver ${driverRoom} and admins`);
-            }
-        }
-        
-        // Push notification to customer remains as a fallback/background notification
-        if (oldStatus !== mappedStatus) {
-          logger.info(`[RUN_SERVICE] Triggering notification for order ${order.id} status change to ${mappedStatus}`);
-          await notifyMessage({
-            recipientId: order.customerId,
-            title: 'Order Update',
-            body: `Your order status is now: ${mappedStatus}`,
-            data: {
-              type: 'ORDER_UPDATE',
-              orderId: order.id,
-              screen: 'order_details'
-            }
-          });
-        }
-        // ===== FIX: Emit WebSocket events and send push notification END =====
+        appEvents.emit('orderStatusChanged', { 
+          order: updatedOrderForEmit, 
+          run: updatedRunForEmit, 
+          oldStatus: oldStatus 
+        });
+        // ===============================================================================
       }
     }
   } catch (err) {
-    logger?.error?.('[RUN_SERVICE] Order status update and notification failed:', err);
+    logger.error('[RUN_SERVICE] Order status update/event emission failed:', err);
   }
 
 

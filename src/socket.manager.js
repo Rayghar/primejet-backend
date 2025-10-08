@@ -5,6 +5,7 @@ const { logger } = require('./config/logger.config');
 const chatService = require('./api/v1/chat/chat.service.js');
 const Order = require('./models/order.model');
 const User = require('./models/user.model');
+const Run = require('./models/run.model'); // Import Run model
 const fcmService = require('./api/v1/fcm/fcm.service.js');
 
 const onlineUsers = new Map(); // userId -> Set(socketId)
@@ -16,13 +17,13 @@ function isUserOnline(userId) {
 const initializeSocket = (io) => {
   // --- Authentication Middleware ---
   io.use(async (socket, next) => {
-    const token = socket.handshake.auth?.token;
-    if (!token) {
-      return next(new Error('Authentication error: Token not provided.'));
-    }
     try {
+      const token = socket.handshake.auth?.token;
+      if (!token) return next(new Error('Authentication error: Token not provided.'));
+      
       const decoded = jwt.verify(token, config.jwt.secret);
       const user = await User.findOne({ id: decoded.id }).lean();
+
       if (!user || user.status !== 'active') {
         return next(new Error('Authentication error: User not found or is inactive.'));
       }
@@ -38,7 +39,6 @@ const initializeSocket = (io) => {
     const userId = socket.user.id;
     logger.info(`[SOCKET] User connected: ${userId}, Socket ID: ${socket.id}`);
     
-    // Add user to online map
     if (!onlineUsers.has(userId)) onlineUsers.set(userId, new Set());
     onlineUsers.get(userId).add(socket.id);
 
@@ -52,10 +52,7 @@ const initializeSocket = (io) => {
     socket.on('join_room', async (chatId) => {
       try {
         const order = await Order.findOne({ id: chatId }).lean();
-        if (!order) return;
-
-        const isParticipant = order.customerId === userId || order.driverId === userId;
-        if (isParticipant) {
+        if (order && (order.customerId === userId || order.driverId === userId)) {
           socket.join(chatId);
           logger.info(`[SOCKET] User ${userId} joined chat room: ${chatId}`);
         }
@@ -77,47 +74,27 @@ const initializeSocket = (io) => {
         const recipientId = isCustomer ? order.driverId : order.customerId;
         if (!recipientId) return;
 
-        // 1. Create and save the message using the service
-        const savedMessage = await chatService.createMessage({
-          chatId,
-          senderId: userId,
-          recipientId,
-          text,
-        });
-
-        // 2. Broadcast the message to the chat room
+        const savedMessage = await chatService.createMessage({ chatId, senderId: userId, recipientId, text });
         io.to(chatId).emit('receive_message', savedMessage);
-        logger.info(`[SOCKET] Broadcast 'receive_message' to room ${chatId}`);
         
-        // 3. Acknowledge the sender to replace temp ID
         if (tempId) {
           socket.emit('message_ack', { chatId, messageId: savedMessage._id, tempId });
         }
 
-        // 4. Handle 'delivered' status if recipient is online
         if (isUserOnline(recipientId)) {
           await chatService.setDeliveredIfSent(savedMessage._id);
           io.to(chatId).emit('message_status', { chatId, messageId: savedMessage._id, status: 'delivered' });
         }
         
-        // 5. Send a push notification to the recipient
-        const sender = socket.user;
         await fcmService.notifyMessage({
             recipientId: recipientId,
-            title: `New Message from ${sender.name}`,
+            title: `New Message from ${socket.user.name}`,
             body: savedMessage.text,
-            data: {
-                type: 'new_message',
-                orderId: chatId, // a.k.a orderId
-                senderId: sender.id,
-                screen: 'chat_screen'
-            }
+            data: { type: 'new_message', orderId: chatId, senderId: userId, screen: 'chat_screen' }
         });
-        logger.info(`[FCM] Sent chat push notification to ${recipientId}`);
 
       } catch (e) {
         logger.error('[SOCKET] send_message error', e);
-        socket.emit('message_error', { message: 'Failed to send message.' });
       }
     });
 
@@ -126,9 +103,7 @@ const initializeSocket = (io) => {
       try {
         const result = await chatService.markChatRead(userId, chatId);
         if (result.modifiedCount > 0) {
-          // Notify the room so the sender's ticks turn blue
           io.to(chatId).emit('chat_read', { chatId });
-          logger.info(`[SOCKET] Broadcast 'chat_read' to room ${chatId} for user ${userId}`);
         }
       } catch (err) {
         logger.error('[SOCKET] mark_read error', err);
@@ -145,6 +120,32 @@ const initializeSocket = (io) => {
       }
       logger.info(`[SOCKET] User disconnected: ${userId}`);
     });
+  });
+
+  // ===== FIX: Add a global listener for events from other services =====
+  // This requires a simple event emitter setup in your app's main entry point (e.g., server.js)
+  const appEvents = require('./utils/eventEmitter'); // Assuming you create this file
+
+  appEvents.on('orderStatusChanged', async ({ order, run, oldStatus }) => {
+      logger.info(`[EVENT] orderStatusChanged detected for order ${order.id}`);
+
+      // 1. Emit live socket events
+      io.to(`user:${order.customerId}`).emit('order_update', order);
+      if (run) {
+        io.to(`user:${run.driverId}`).emit('run_update', run);
+        io.to('admins').emit('run_update', run);
+      }
+
+      // 2. Send push notification if the status has meaningfully changed
+      if (oldStatus !== order.status) {
+          await fcmService.notifyMessage({
+              recipientId: order.customerId,
+              title: 'Order Update',
+              body: `Your order status is now: ${order.status}`,
+              data: { type: 'ORDER_UPDATE', orderId: order.id, screen: 'order_details' }
+          });
+          logger.info(`[FCM] Sent status update push notification for order ${order.id}`);
+      }
   });
 };
 

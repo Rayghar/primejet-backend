@@ -17,6 +17,7 @@ const { rateLimiter } = require('./middleware/rateLimit.middleware');
 const { setupMetrics } = require('./utils/metrics');
 const HttpError = require('./utils/HttpError');
 const initializeSocket = require('./socket.manager'); // ✅ ADDED: Import the socket manager
+require('./utils/eventEmitter'); // This initializes the singleton instance
 
 // --- Step 0: Startup diagnostics ---
 logger.info('[APP] Boot diagnostics', {

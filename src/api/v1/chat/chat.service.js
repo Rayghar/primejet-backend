@@ -3,176 +3,128 @@
 const User = require('../../../models/user.model');
 const Order = require('../../../models/order.model');
 const Message = require('../../../models/message.model');
+const Run = require('../../../models/run.model'); // Import Run model for context enrichment
 const HttpError = require('../../../utils/HttpError');
-// ✅ FIX: Import the correct, robust fcm.service.js.
-// The path is relative to the current file's location.
-const { notifyMessage } = require('../fcm/fcm.service');
 
-// ---------------------------------------------------------------------------
-// Existing functions (kept as-is)
-// ---------------------------------------------------------------------------
-
+/**
+ * Verifies a user is a participant in an order chat and returns authorization.
+ */
 const initiateChatSession = async (orderId, senderId) => {
-  const sender = await User.findOne({ id: senderId });
-  const order = await Order.findOne({ id: orderId })
-    .populate('customer')
-    .populate('driver');
+  const order = await Order.findOne({ id: orderId }).lean();
+  if (!order) {
+    throw new HttpError(404, 'Order not found.');
+  }
 
-  if (!sender || !order) throw new HttpError(404, 'User or Order not found.');
-
-  const isCustomer = order.customer && sender.id === order.customer.id;
-  const isDriver = order.driver && sender.id === order.driver.id;
-  if (!isCustomer && !isDriver) {
+  const isParticipant = senderId === order.customerId || senderId === order.driverId;
+  if (!isParticipant) {
     throw new HttpError(403, 'You are not authorized to chat for this order.');
   }
 
-  return { message: 'Authorization successful.', chatId: order.id };
+  const recipientId = senderId === order.customerId ? order.driverId : order.customerId;
+  return { message: 'Authorization successful.', chatId: order.id, recipientId };
 };
 
-const verifyParticipation = async (orderId, userId) => {
-  const order = await Order.findOne({ id: orderId })
-    .populate('customer')
-    .populate('driver');
-  if (!order) return false;
-  return !!(
-    (order.customer && order.customer.id === userId) ||
-    (order.driver && order.driver.id === userId)
-  );
-};
-
-const getMessageHistory = async (chatId, before, limit = 50) => {
-  const cursor = before ? new Date(before) : new Date();
-  const items = await Message.find({ chatId, createdAt: { $lt: cursor } })
-    .sort({ createdAt: -1 })
+/**
+ * Fetches message history for a given chat, sorted oldest to newest.
+ */
+const getMessageHistory = async (chatId, limit = 50) => {
+  return Message.find({ chatId })
+    .sort({ createdAt: 1 }) // oldest -> newest
     .limit(limit)
     .lean();
-
-  // newest last for UI
-  return items.reverse();
 };
 
 /**
- * Save a chat message and trigger a notification for the known recipient.
- */
-async function saveChatMessage({ chatId, senderId, recipientId, text }) {
-  const msg = await Message.create({
-    chatId,
-    senderId,
-    recipientId: recipientId || null,
-    text: String(text || '').slice(0, 2000).trim(),
-    status: 'sent',
-  });
-
-  // Fire push notification for the recipient (if we know them)
-  if (recipientId) {
-      const sender = await User.findOne({ id: senderId }).select('name').lean();
-      const senderName = sender ? sender.name : 'Someone';
-      
-      // ✅ FIX: Call the correct notifyMessage function from fcm.service.js
-      // This ensures sound and high-priority display.
-      await notifyMessage({
-          recipientId: recipientId,
-          title: `New Message from ${senderName}`,
-          body: msg.text,
-          data: {
-              type: 'new_message',
-              orderId: msg.chatId,
-              senderId: msg.senderId,
-              screen: 'chat_screen' // For frontend deep linking
-          }
-      });
-  }
-
-  // Normalized payload for clients
-  return {
-    _id: msg._id,
-    id: msg._id,
-    chatId: msg.chatId,
-    senderId: msg.senderId,
-    recipientId: msg.recipientId,
-    text: msg.text,
-    status: msg.status,
-    createdAt: msg.createdAt,
-    updatedAt: msg.updatedAt,
-  };
-}
-
-/**
- * Threads list by last message per chat for a user.
+ * Fetches all chat threads for a user, enriched with contextual data.
+ * This is the single, efficient query for the message list screen.
  */
 async function getThreadsForUser(userId, limit = 50) {
-  const pipeline = [
-    { $match: { $or: [{ senderId: userId }, { recipientId: userId }] } },
-    { $sort: { createdAt: -1 } },
-    { $group: { _id: '$chatId', lastMessage: { $first: '$$ROOT' } } },
-    { $project: { _id: 0, chatId: '$_id', lastMessage: 1 } },
-    { $limit: Number(limit) },
-  ];
+  // Find all unique chatIds the user is a part of.
+  const userChats = await Message.distinct('chatId', {
+    $or: [{ senderId: userId }, { recipientId: userId }],
+  });
 
-  const threads = await Message.aggregate(pipeline).exec();
+  const threads = await Promise.all(
+    userChats.map(async (chatId) => {
+      const [lastMessage, order, unreadCount] = await Promise.all([
+        Message.findOne({ chatId }).sort({ createdAt: -1 }).lean(),
+        Order.findOne({ id: chatId }).populate('customer', 'id name phone').populate('driver', 'id name phone').lean(),
+        Message.countDocuments({ chatId, recipientId: userId, status: { $ne: 'read' } }),
+      ]);
 
-  const ids = threads.map((t) => t.chatId);
-  const orders = await Order.find({ id: { $in: ids } }).lean();
-  const byId = Object.fromEntries(orders.map((o) => [o.id, o]));
-  return threads.map((t) => ({
-    ...t,
-    recipientName: byId[t.chatId]?.recipientName ?? 'Customer',
-    recipientPhone: byId[t.chatId]?.recipientPhone ?? null,
-  }));
+      if (!order || !lastMessage) return null;
+
+      const recipient = order.customerId === userId ? order.driver : order.customer;
+      
+      let stopNumber = null;
+      if (order.driverId === userId) {
+        const run = await Run.findOne({ 'stops.orderId': order.id }, { 'stops.$': 1 }).lean();
+        if (run && run.stops.length > 0) {
+          stopNumber = run.stops[0].sequence;
+        }
+      }
+
+      return {
+        chatId: chatId,
+        recipientId: recipient?.id,
+        recipientName: recipient?.name,
+        recipientPhoneNumber: recipient?.phone,
+        orderStatus: order.status,
+        stopNumber: stopNumber,
+        unreadCount: unreadCount,
+        lastMessage: lastMessage,
+      };
+    })
+  );
+  
+  // Filter out nulls and sort by the most recent message
+  const validThreads = threads.filter(t => t !== null);
+  validThreads.sort((a, b) => b.lastMessage.createdAt.getTime() - a.lastMessage.createdAt.getTime());
+  
+  return validThreads.slice(0, limit);
 }
 
-// ---------------------------------------------------------------------------
-// NEW HELPERS for Socket.IO manager integration
-// ---------------------------------------------------------------------------
 
+// --- Database Helper Functions for Socket.IO ---
+
+/**
+ * Creates and saves a new message document.
+ */
 async function createMessage({ chatId, senderId, recipientId, text }) {
   const doc = await Message.create({
     chatId,
     senderId,
     recipientId,
     text: String(text || '').slice(0, 2000).trim(),
-    status: 'sent',
-    createdAt: new Date(),
   });
-  return doc;
+  return doc.toObject(); // Return a plain JS object
 }
 
-async function countUnreadForUserInChat(userId, chatId) {
-  return Message.countDocuments({
-    chatId,
-    recipientId: userId,
-    status: { $in: ['sent', 'delivered'] },
-  });
-}
-
+/**
+ * Marks all messages in a chat as 'read' for a specific user.
+ */
 async function markChatRead(userId, chatId) {
-  await Message.updateMany(
+  return Message.updateMany(
     { chatId, recipientId: userId, status: { $in: ['sent', 'delivered'] } },
     { $set: { status: 'read' } }
   );
 }
 
+/**
+ * Atomically updates a message status from 'sent' to 'delivered'.
+ */
 async function setDeliveredIfSent(messageId) {
-  await Message.updateOne(
+  return Message.updateOne(
     { _id: messageId, status: 'sent' },
     { $set: { status: 'delivered' } }
   );
 }
 
-// ---------------------------------------------------------------------------
-// Exports
-// ---------------------------------------------------------------------------
 module.exports = {
-  // existing
   initiateChatSession,
-  verifyParticipation,
-  saveChatMessage,
   getMessageHistory,
   getThreadsForUser,
-
-  // new helpers for Socket.IO integration
   createMessage,
-  countUnreadForUserInChat,
   markChatRead,
   setDeliveredIfSent,
 };

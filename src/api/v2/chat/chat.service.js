@@ -1,161 +1,150 @@
-// src/api/v1/chat/chat.service.js
-const User = require('../../../models/user.model'); // To verify users exist
-const Order = require('../../../models/order.model'); // To verify order and participant context
-const firebaseService = require('../../../services/firebase.service'); // Path to your global firebase service
+// backend/api/v1/chat/chat.service.js
+
+const User = require('../../../models/user.model');
+const Order = require('../../../models/order.model');
+const Message = require('../../../models/message.model');
+const Run = require('../../../models/run.model'); // Import Run model for context enrichment
 const HttpError = require('../../../utils/HttpError');
-// const { logger } = require('../../../config/logger.config.js'); // Optional: for structured logging
+const ThreadUnread = require('../../../models/thread-unread.model'); // Import the unread model
 
 /**
- * Initiates a chat session between two users related to an order.
- * @param {string} orderId - The ID of the order context for the chat.
- * @param {string} senderId - The ID of the user initiating the chat.
- * @param {string} recipientId - The ID of the user to chat with.
- * @returns {Promise<Object>} - An object containing the chatId.
- * @throws {HttpError} - If users are not found, not related to the order, or chat initiation fails.
+ * Verifies a user is a participant in an order chat and returns authorization.
  */
-const initiateChatSession = async (orderId, senderId, recipientId) => {
-  try {
-    // 1. Validate that both sender and recipient users exist in your system
-    const [sender, recipient, order] = await Promise.all([
-      User.findOne({ id: senderId }).select('id role name'),
-      User.findOne({ id: recipientId }).select('id role name'),
-      Order.findOne({ id: orderId }).select('id customerId driverId') // Fetch relevant order participants
-    ]);
+const initiateChatSession = async (orderId, senderId) => {
+  const order = await Order.findOne({ id: orderId }).lean();
+  if (!order) {
+    throw new HttpError(404, 'Order not found.');
+  }
 
-    if (!sender) {
-      throw new HttpError(404, `Sender (user ID: ${senderId}) not found.`);
-    }
-    if (!recipient) {
-      throw new HttpError(404, `Recipient (user ID: ${recipientId}) not found.`);
-    }
-    if (!order) {
-      throw new HttpError(404, `Order (ID: ${orderId}) not found for chat context.`);
-    }
+  const isParticipant = senderId === order.customerId || senderId === order.driverId;
+  if (!isParticipant) {
+    throw new HttpError(403, 'You are not authorized to chat for this order.');
+  }
 
-    // 2. (Optional but Recommended) Add business logic:
-    //    Ensure the sender and recipient are allowed to chat in the context of this order.
-    //    For example, customer can chat with assigned driver, or admin with customer/driver.
-    const isSenderCustomer = sender.id === order.customerId;
-    const isSenderDriver = sender.id === order.driverId;
-    const isRecipientCustomer = recipient.id === order.customerId;
-    const isRecipientDriver = recipient.id === order.driverId;
+  const recipientId = senderId === order.customerId ? order.driverId : order.customerId;
+  return { message: 'Authorization successful.', chatId: order.id, recipientId };
+};
 
-    let canChat = false;
-    // Scenario 1: Customer <-> Assigned Driver for the order
-    if ((isSenderCustomer && isRecipientDriver) || (isSenderDriver && isRecipientCustomer)) {
-        if (order.driverId) { // Ensure driver is actually assigned
-            canChat = true;
-        } else if (isSenderCustomer && recipient.role === 'admin' || isSenderDriver && recipient.role === 'admin') {
-            canChat = true; // Customer/Driver can chat with Admin
+/**
+ * Fetches message history for a given chat, sorted oldest to newest.
+ */
+const getMessageHistory = async (chatId, limit = 50) => {
+  return Message.find({ chatId })
+    .sort({ createdAt: 1 }) // oldest -> newest
+    .limit(limit)
+    .lean();
+};
+
+/**
+ * Fetches all chat threads for a user, enriched with contextual data.
+ * This is the single, efficient query for the message list screen.
+ */
+async function getThreadsForUser(userId, limit = 50) {
+  // Find all unique chatIds the user is a part of.
+  const userChats = await Message.distinct('chatId', {
+    $or: [{ senderId: userId }, { recipientId: userId }],
+  });
+
+  const threads = await Promise.all(
+    userChats.map(async (chatId) => {
+      const [lastMessage, order] = await Promise.all([
+        Message.findOne({ chatId }).sort({ createdAt: -1 }).lean(),
+        Order.findOne({ id: chatId }).populate('customer', 'id name phone').populate('driver', 'id name phone').lean(),
+      ]);
+
+      if (!order || !lastMessage) return null;
+
+      // Use ThreadUnread for unread count
+      const unreadDoc = await ThreadUnread.findOne({ chatId, userId });
+      const unreadCount = unreadDoc?.unread ?? 0;
+
+      const recipient = (order.customerId === userId) ? order.driver : order.customer;
+      
+      let stopNumber = null;
+      if (order.driverId === userId) {
+        const run = await Run.findOne({ 'stops.orderId': order.id }, { 'stops.$': 1 }).lean();
+        if (run && run.stops.length > 0) {
+          stopNumber = run.stops[0].sequence;
         }
-    }
-    // Scenario 2: Admin <-> Customer or Admin <-> Driver for the order
-    else if (sender.role === 'admin' && (isRecipientCustomer || isRecipientDriver)) {
-        canChat = true;
-    }
-    else if (recipient.role === 'admin' && (isSenderCustomer || isSenderDriver)) {
-        canChat = true;
-    }
-    // Add other scenarios as needed (e.g., customer support role)
+      }
 
-    if (!canChat) {
-      // logger.warn(`[CHAT_SERVICE] Unauthorized chat attempt: sender ${senderId} (${sender.role}), recipient ${recipientId} (${recipient.role}) for order ${orderId}`);
-      throw new HttpError(403, 'These users are not authorized to chat in the context of this order.');
-    }
+      return {
+        chatId: chatId,
+        recipientId: recipient?.id,
+        recipientName: recipient?.name,
+        recipientPhoneNumber: recipient?.phone,
+        orderStatus: order.status,
+        stopNumber: stopNumber,
+        unreadCount: unreadCount,
+        lastMessage: lastMessage,
+      };
+    })
+  );
+  
+  // Filter out nulls and sort by the most recent message
+  const validThreads = threads.filter(t => t !== null);
+  validThreads.sort((a, b) => b.lastMessage.createdAt.getTime() - a.lastMessage.createdAt.getTime());
+  
+  return validThreads.slice(0, limit);
+}
 
-    // 3. Call the firebaseService to handle the Firestore interaction
-    // The firebaseService.initiateChat was already doing a good job.
-    // This service layer adds the validation and business logic before calling it.
-    const chatDetails = await firebaseService.initiateChat(orderId, senderId, recipientId);
-    // firebaseService.initiateChat returns { chatId }
 
-    // logger.info(`[CHAT_SERVICE] Chat initiated successfully between ${senderId} and ${recipientId} for order ${orderId}. ChatId: ${chatDetails.chatId}`);
-    return {
-        ...chatDetails,
-        message: `Chat session initiated with ${recipient.name}.`,
-        participants: [
-            { userId: sender.id, name: sender.name, role: sender.role },
-            { userId: recipient.id, name: recipient.name, role: recipient.role }
-        ]
-    };
-
-  } catch (error) {
-    // logger.error(`[CHAT_SERVICE] Error initiating chat session between ${senderId} and ${recipientId} for order ${orderId}:`, error);
-    if (error instanceof HttpError) {
-      throw error;
-    }
-    // Check if it's a Firebase-specific error from firebaseService
-    if (error.message && error.message.includes('Failed to initiate chat')) {
-        throw new HttpError(500, error.message); // Propagate Firebase service error
-    }
-    console.error('Unexpected error in initiateChatSession:', error); // Fallback logging
-    throw new HttpError(500, 'Failed to initiate chat session due to an unexpected error.');
-  }
-};
+// --- Database Helper Functions for Socket.IO ---
 
 /**
- * Updates the summary fields on a parent chat document in Firestore.
- * @param {string} chatId - The ID of the chat document (which is the orderId).
- * @param {string} lastMessage - The text of the last message.
- * @param {string} senderId - The ID of the user who sent the message.
- * @returns {Promise<void>}
+ * Creates and saves a new message document.
  */
-const updateLastMessage = async (chatId, lastMessage, senderId) => {
-  try {
-    await firebaseService.updateChatThreadOnNewMessage(chatId, {
-      message: lastMessage,
-      senderId: senderId,
-      timestamp: new Date(), // Use server timestamp for consistency
-    });
-    logger.info(`[CHAT_SERVICE] Successfully updated last message for chat thread ${chatId}`);
-  } catch (error) {
-    // We log the error but don't re-throw, as the message itself was already delivered.
-    logger.error(`[CHAT_SERVICE] Failed to update last message for chat thread ${chatId}`, error);
-  }
-};
+async function createMessage({ chatId, senderId, recipientId, text }) {
+  const doc = await Message.create({
+    chatId,
+    senderId,
+    recipientId,
+    text: String(text || '').slice(0, 2000).trim(),
+  });
 
+  // Increment unread count for recipient using ThreadUnread
+  await ThreadUnread.findOneAndUpdate(
+    { chatId, userId: recipientId },
+    { $inc: { unread: 1 } },
+    { upsert: true }
+  );
 
-const getMyThreads = async (userId) => {
-  try {
-    // This function calls your firebase service to get the raw chat data
-    const threadsData = await firebaseService.fetchUserChatThreads(userId);
-
-    // Now, we enrich this data with user details from our MongoDB
-    const enrichedThreads = await Promise.all(
-      threadsData.map(async (thread) => {
-        const otherParticipantId = thread.participants.find(pId => pId !== userId);
-        if (!otherParticipantId) return null;
-
-        const otherParticipant = await User.findOne({ id: otherParticipantId }).select('id name photoUrl role');
-        if (!otherParticipant) return null;
-
-        return {
-          chatId: thread.chatId,
-          orderId: thread.orderId,
-          otherParticipant: {
-            id: otherParticipant.id,
-            name: otherParticipant.name,
-            role: otherParticipant.role,
-            photoUrl: otherParticipant.photoUrl,
-          },
-          lastMessage: thread.lastMessage, // lastMessage comes from firebase service
-          hasUnreadMessages: thread.unreadCount > 0,
-        };
-      })
-    );
-
-    // Filter out any null results from users who might have been deleted
-    return enrichedThreads.filter(thread => thread !== null);
-
-  } catch (error) {
-    console.error(`Error in getMyThreads for user ${userId}:`, error);
-    throw new HttpError(500, 'Failed to retrieve message threads.');
-  }
+  return doc.toObject(); // Return a plain JS object
 }
+
+/**
+ * Marks all messages in a chat as 'read' for a specific user.
+ */
+async function markChatRead(userId, chatId) {
+  const updateResult = await Message.updateMany(
+    { chatId, recipientId: userId, status: { $in: ['sent', 'delivered'] } },
+    { $set: { status: 'read' } }
+  );
+
+  // Reset unread count
+  await ThreadUnread.updateOne(
+    { chatId, userId },
+    { $set: { unread: 0 } }
+  );
+
+  return updateResult;
+}
+
+/**
+ * Atomically updates a message status from 'sent' to 'delivered'.
+ */
+async function setDeliveredIfSent(messageId) {
+  return Message.updateOne(
+    { _id: messageId, status: 'sent' },
+    { $set: { status: 'delivered' } }
+  );
+}
+
 module.exports = {
   initiateChatSession,
-  getMyThreads,
-  updateLastMessage,
-  // Potentially add other chat-related service methods here in the future:
-  // e.g., getChatMessagesForUser, markMessagesAsRead, etc.
+  getMessageHistory,
+  getThreadsForUser,
+  createMessage,
+  markChatRead,
+  setDeliveredIfSent,
 };

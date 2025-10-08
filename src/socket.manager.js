@@ -54,45 +54,47 @@ const initializeSocket = (io) => {
         const order = await Order.findOne({ id: chatId }).lean();
         if (order && (order.customerId === userId || order.driverId === userId)) {
           socket.join(chatId);
-          logger.info(`[SOCKET] User ${userId} joined chat room: ${chatId}`);
+          logger.info(`[SOCKET] User ${userId} joined chat room ${chatId}`);
         }
-      } catch (e) {
-        logger.error('[SOCKET] join_room error', e);
+      } catch (err) {
+        logger.error('[SOCKET] join_room error', err);
       }
     });
 
-    // --- Message Handling ---
-    socket.on('send_message', async (data = {}) => {
-      const { chatId, text, tempId } = data;
-      if (!chatId || !text) return;
-
+    // --- Chat Event Handlers ---
+    socket.on('send_message', async ({ chatId, recipientId, text, tempId }) => {
       try {
-        const order = await Order.findOne({ id: chatId }).lean();
-        if (!order) return;
+        const senderId = userId;
+        const message = await chatService.createMessage({ chatId, senderId, recipientId, text });
 
-        const isCustomer = order.customerId === userId;
-        const recipientId = isCustomer ? order.driverId : order.customerId;
-        if (!recipientId) return;
+        io.to(chatId).emit('receive_message', message);
 
-        const savedMessage = await chatService.createMessage({ chatId, senderId: userId, recipientId, text });
-        io.to(chatId).emit('receive_message', savedMessage);
-        
-        if (tempId) {
-          socket.emit('message_ack', { chatId, messageId: savedMessage._id, tempId });
-        }
-
+        // Handle delivery if recipient is online
         if (isUserOnline(recipientId)) {
-          await chatService.setDeliveredIfSent(savedMessage._id);
-          io.to(chatId).emit('message_status', { chatId, messageId: savedMessage._id, status: 'delivered' });
+          await chatService.setDeliveredIfSent(message._id);
+          io.to(chatId).emit('message_delivered', { id: message._id });
         }
-        
-        await fcmService.notifyMessage({
-            recipientId: recipientId,
-            title: `New Message from ${socket.user.name}`,
-            body: savedMessage.text,
-            data: { type: 'new_message', orderId: chatId, senderId: userId, screen: 'chat_screen' }
-        });
 
+        // Acknowledge to sender
+        socket.emit('message_ack', { tempId, serverId: message._id });
+
+        // Send push notification for new message
+        try {
+          const sender = await User.findOne({ id: senderId }).lean();  // Fetch sender for nice title
+          await fcmService.notifyMessage({
+            recipientId,
+            title: `New Message from ${sender?.name || 'your contact'}`,
+            body: message.text.length > 50 ? `${message.text.substring(0, 50)}...` : message.text,
+            data: {
+              type: 'NEW_MESSAGE',
+              chatId,
+              orderId: chatId,  // For navigation
+              screen: 'chat'
+            }
+          });
+        } catch (err) {
+          logger.error('[SOCKET] Failed to send push for new message:', err);
+        }
       } catch (e) {
         logger.error('[SOCKET] send_message error', e);
       }

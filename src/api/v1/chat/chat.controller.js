@@ -1,14 +1,11 @@
+// api/v1/chat/chat.controller.js
 const chatService = require('./chat.service');
-// NOTE: Path mirrors how you import middleware in routes (../../../...)
-const Message = require('../../../models/message.model'); // adjust if your model lives elsewhere
+const HttpError = require('../../../utils/HttpError');
 
 const initiateChat = async (req, res, next) => {
   try {
     const { orderId } = req.body;
-
-    // Use req.user.id (auth middleware sets this)
     const senderId = req.user.id;
-
     const response = await chatService.initiateChatSession(orderId, senderId);
     res.status(200).json(response);
   } catch (error) {
@@ -16,47 +13,28 @@ const initiateChat = async (req, res, next) => {
   }
 };
 
-const getChatHistory = async (req, res, next) => {
-  try {
-    const { chatId } = req.params;
-    // Optional: participant check can go here via chatService if desired
-    const messages = await chatService.getMessageHistory(chatId);
-    res.status(200).json(messages);
-  } catch (error) {
-    next(error);
-  }
-};
-
 const getMyThreads = async (req, res, next) => {
   try {
-    const me = req.user.id; // set by your auth middleware
-    const { limit = 50 } = req.query;
-    const threads = await chatService.getThreadsForUser(me, limit);
-    return res.json({ threads });
+    const userId = req.user.id;
+    const threads = await chatService.getThreadsForUser(userId);
+    res.status(200).json(threads); // The service now returns the fully enriched model
   } catch (err) {
     next(err);
   }
 };
 
-/**
- * NEW: Direct "history/:chatId" handler to match frontend calls:
- * GET /api/v1/chat/history/:chatId?limit=50
- * Returns messages sorted oldest -> newest, with an upper bound on limit.
- */
 const getHistory = async (req, res, next) => {
   try {
     const { chatId } = req.params;
     const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
-    if (!chatId) return res.status(400).json({ error: 'chatId required' });
 
-    // If you want a strict participant check, you can add it here using chatService.
-
-    const items = await Message.find({ chatId })
-      .sort({ createdAt: 1 }) // oldest -> newest
-      .limit(limit)
-      .lean();
-
-    return res.json(items);
+    if (!chatId) {
+      throw new HttpError(400, 'chatId is required');
+    }
+    
+    // The service handles fetching messages sorted oldest to newest
+    const messages = await chatService.getMessageHistory(chatId, limit);
+    res.status(200).json(messages);
   } catch (e) {
     next(e);
   }
@@ -64,8 +42,6 @@ const getHistory = async (req, res, next) => {
 
 module.exports = {
   initiateChat,
-  getChatHistory,
   getMyThreads,
-  // NEW export
   getHistory,
 };

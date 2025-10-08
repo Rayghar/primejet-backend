@@ -10,6 +10,7 @@ const ThreadUnreadSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Ensures a user can only have one unread count document per chat
 ThreadUnreadSchema.index({ chatId: 1, userId: 1 }, { unique: true });
 
 module.exports = mongoose.model('ThreadUnread', ThreadUnreadSchema);

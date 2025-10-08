@@ -17,7 +17,7 @@ router.post(
 
 // Get the calling user's chat threads, enriched with recipient and order data.
 router.get(
-  '/my-threads',
+  '/threads', 
   auth(),
   chatController.getMyThreads
 );

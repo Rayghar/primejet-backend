@@ -1,44 +1,47 @@
-// src/api/v1/chat/chat.routes.js
+// File: src/api/v1/chat/chat.routes.js
 const express = require('express');
-const chatController = require('./chat.controller'); // Path to co-located controller
-const authMiddleware = require('../../../middleware/auth.middleware'); // Path to global auth middleware
-const validate = require('../../../middleware/validate.middleware'); // Path to global validate middleware
-const {
-  initiateChatSchema,
-} = require('./chat.validation'); // Path to co-located validation schemas
+const auth = require('../../../middleware/auth.middleware');
+const validate = require('../../../middleware/validate.middleware');
+const chatValidation = require('./chat.validation');
+const chatController = require('./chat.controller');
 
 const router = express.Router();
 
-console.log('[CHAT_ROUTES] Registering chat routes...');
-
-// All routes in this file are for chat functionalities.
-// They will be mounted under a base path like /api/v1/chat in app.js.
-
+/**
+ * @route   POST /api/v1/chat/initiate
+ * @desc    Authorizes a user for a chat session before they connect to the socket room.
+ * @access  Private
+ */
 router.post(
   '/initiate',
-  authMiddleware(), // Requires any authenticated user to initiate a chat
-  validate(initiateChatSchema), // Validate request body (orderId, recipientId)
+  auth(),
+  validate(chatValidation.initiateChatSchema),
   chatController.initiateChat
 );
 
-console.log('[CHAT_ROUTES] Registering chat routes...');
+/**
+ * @route   GET /api/v1/chat/threads
+ * @desc    Get the calling user's chat threads, enriched with recipient and order data.
+ * @access  Private
+ */
+// ✅ FIX: This route is changed from '/my-threads' to '/threads' to match the client's API call and fix the 404 error.
+router.get(
+  '/threads',
+  auth(),
+  chatController.getMyThreads
+);
 
-router.get('/my-threads', authMiddleware, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    console.log(`[CHAT] Fetching chat threads for userId: ${userId}`);
-    const threads = []; // Mock or query database
-    res.status(200).json(threads);
-  } catch (error) {
-    console.error(`[CHAT] Error fetching chat threads: ${error}`);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-console.log('[CHAT_ROUTES] Chat routes registered.');
-// You might add other chat-related routes here in the future, e.g.,
-// router.get('/:chatId/messages', authMiddleware(), chatController.getChatMessages);
-// router.post('/:chatId/messages', authMiddleware(), chatController.sendChatMessage);
-
+/**
+ * @route   GET /api/v1/chat/:chatId/history
+ * @desc    Get the message history for a specific chat room (order).
+ * @access  Private
+ */
+// ✅ FIX: Re-added the crucial history route needed by the chat screen to load messages.
+router.get(
+  '/:chatId/history',
+  auth(),
+  validate(chatValidation.getChatHistorySchema),
+  chatController.getHistory
+);
 
 module.exports = router;

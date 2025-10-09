@@ -67,7 +67,8 @@ const initializeSocket = (io) => {
         const senderId = userId;
         const message = await chatService.createMessage({ chatId, senderId, recipientId, text });
 
-        io.to(chatId).emit('receive_message', message);
+        // Emit to others in room (exclude sender to avoid duplicate)
+        socket.to(chatId).emit('receive_message', message);
 
         // Handle delivery if recipient is online
         if (isUserOnline(recipientId)) {
@@ -75,7 +76,7 @@ const initializeSocket = (io) => {
           io.to(chatId).emit('message_delivered', { id: message._id });
         }
 
-        // Acknowledge to sender
+        // Acknowledge to sender only
         socket.emit('message_ack', { tempId, serverId: message._id });
 
         // Send push notification for new message
@@ -124,9 +125,8 @@ const initializeSocket = (io) => {
     });
   });
 
-  // ===== FIX: Add a global listener for events from other services =====
-  // This requires a simple event emitter setup in your app's main entry point (e.g., server.js)
-  const appEvents = require('./utils/eventEmitter'); // Assuming you create this file
+  // Global listener for events from other services
+  const appEvents = require('./utils/eventEmitter'); 
 
   appEvents.on('orderStatusChanged', async ({ order, run, oldStatus }) => {
       logger.info(`[EVENT] orderStatusChanged detected for order ${order.id}`);

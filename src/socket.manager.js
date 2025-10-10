@@ -7,6 +7,7 @@ const Order = require('./models/order.model');
 const User = require('./models/user.model');
 const Run = require('./models/run.model'); // Import Run model
 const fcmService = require('./api/v1/fcm/fcm.service.js');
+const Message = require('./models/message.model');
 
 const onlineUsers = new Map(); // userId -> Set(socketId)
 
@@ -35,7 +36,7 @@ const initializeSocket = (io) => {
   });
 
   // --- Connection Handler ---
-  io.on('connection', (socket) => {
+  io.on('connection', async (socket) => {  // Made async to allow await inside
     const userId = socket.user.id;
     logger.info(`[SOCKET] User connected: ${userId}, Socket ID: ${socket.id}`);
     
@@ -47,6 +48,18 @@ const initializeSocket = (io) => {
     if (socket.user.role === 'admin') {
       socket.join('admins');
       logger.info(`[SOCKET] Admin user ${userId} joined 'admins' room`);
+    }
+
+    // Retroactively set 'delivered' for pending messages
+    try {
+      const pendingMessages = await Message.find({ recipientId: userId, status: 'sent' }).lean();
+      for (const msg of pendingMessages) {
+        await chatService.setDeliveredIfSent(msg._id);
+        io.to(msg.chatId).emit('message_delivered', { id: msg._id });
+        logger.info(`[SOCKET] Delivered pending message ${msg._id} for user ${userId}`);
+      }
+    } catch (err) {
+      logger.error('[SOCKET] Error delivering pending messages on connect:', err);
     }
 
     socket.on('join_room', async (chatId) => {

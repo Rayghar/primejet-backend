@@ -5,6 +5,7 @@ const Order = require('../../../models/order.model');
 const Message = require('../../../models/message.model');
 const Run = require('../../../models/run.model'); // Import Run model for context enrichment
 const HttpError = require('../../../utils/HttpError');
+const ThreadUnread = require('../../../models/thread-unread.model'); // Import the unread model
 
 /**
  * Verifies a user is a participant in an order chat and returns authorization.
@@ -46,15 +47,18 @@ async function getThreadsForUser(userId, limit = 50) {
 
   const threads = await Promise.all(
     userChats.map(async (chatId) => {
-      const [lastMessage, order, unreadCount] = await Promise.all([
+      const [lastMessage, order] = await Promise.all([
         Message.findOne({ chatId }).sort({ createdAt: -1 }).lean(),
         Order.findOne({ id: chatId }).populate('customer', 'id name phone').populate('driver', 'id name phone').lean(),
-        Message.countDocuments({ chatId, recipientId: userId, status: { $ne: 'read' } }),
       ]);
 
       if (!order || !lastMessage) return null;
 
-      const recipient = order.customerId === userId ? order.driver : order.customer;
+      // Use ThreadUnread for unread count
+      const unreadDoc = await ThreadUnread.findOne({ chatId, userId });
+      const unreadCount = unreadDoc?.unread ?? 0;
+
+      const recipient = (order.customerId === userId) ? order.driver : order.customer;
       
       let stopNumber = null;
       if (order.driverId === userId) {
@@ -97,6 +101,14 @@ async function createMessage({ chatId, senderId, recipientId, text }) {
     recipientId,
     text: String(text || '').slice(0, 2000).trim(),
   });
+
+  // Increment unread count for recipient using ThreadUnread
+  await ThreadUnread.findOneAndUpdate(
+    { chatId, userId: recipientId },
+    { $inc: { unread: 1 } },
+    { upsert: true }
+  );
+
   return doc.toObject(); // Return a plain JS object
 }
 
@@ -104,10 +116,18 @@ async function createMessage({ chatId, senderId, recipientId, text }) {
  * Marks all messages in a chat as 'read' for a specific user.
  */
 async function markChatRead(userId, chatId) {
-  return Message.updateMany(
+  const updateResult = await Message.updateMany(
     { chatId, recipientId: userId, status: { $in: ['sent', 'delivered'] } },
     { $set: { status: 'read' } }
   );
+
+  // Reset unread count
+  await ThreadUnread.updateOne(
+    { chatId, userId },
+    { $set: { unread: 0 } }
+  );
+
+  return updateResult;
 }
 
 /**

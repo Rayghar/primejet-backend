@@ -25,7 +25,8 @@ const getDashboardStats = async () => {
     ] = await Promise.all([
       Order.countDocuments({ createdAt: { $gte: today, $lt: tomorrow } }),
       Order.countDocuments({ status: { $in: ['Order Confirmed', 'Processing'] } }),
-      Run.countDocuments({ overallStatus: 'In Progress' }),
+      // ✅ FIX: Changed 'overallStatus' to 'status'. This was the likely cause of the 500 error.
+      Run.countDocuments({ status: 'In Progress' }),
       User.countDocuments({ role: 'customer' }),
       User.countDocuments({ role: 'driver', isAvailableOnline: true }),
     ]);
@@ -38,6 +39,7 @@ const getDashboardStats = async () => {
       activeDrivers,
     };
   } catch (error) {
+    // This console.error is important for debugging future issues.
     console.error('Error fetching dashboard stats:', error);
     throw new HttpError(500, 'Could not retrieve dashboard statistics.');
   }
@@ -106,9 +108,7 @@ const sendTargetedNotification = async (payload) => {
     }
 
     // Loop and send notification to each user.
-    // The fcmService is designed to handle fetching tokens for each user.
     for (const userId of userIds) {
-        // This reuses your existing robust notification service.
         await fcmService.sendNotificationToUser(userId, { title, body, data });
     }
 
@@ -119,6 +119,5 @@ module.exports = {
   getDashboardStats,
   getActiveGateway,
   updateActiveGateway,
-  sendTargetedNotification, // Export the service function
-
+  sendTargetedNotification,
 };

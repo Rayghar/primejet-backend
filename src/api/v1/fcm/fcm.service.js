@@ -180,10 +180,69 @@ async function pushToUser(userId, message) {
   }
 }
 
+/**
+ * NEW: Sends a push notification to a specific user.
+ * @param {string} userId - The UUID of the user to notify.
+ * @param {object} notificationData - The notification payload.
+ * @param {string} notificationData.title - The title of the notification.
+ * @param {string} notificationData.body - The body text of the notification.
+ * @param {object} [notificationData.data] - Optional data payload for deep linking.
+ */
+const sendNotificationToUser = async (userId, notificationData) => {
+  const user = await User.findOne({ id: userId }).lean();
+  if (!user || !user.fcmTokens || user.fcmTokens.length === 0) {
+    logger.warn(`[FCM] No FCM tokens found for user ${userId}. Cannot send notification.`);
+    return;
+  }
+
+  const { title, body, data } = notificationData;
+
+  const message = {
+    tokens: user.fcmTokens,
+    notification: {
+      title: title,
+      body: body,
+    },
+    data: data || {},
+    android: {
+      priority: 'high',
+    },
+    apns: {
+      payload: {
+        aps: {
+          'content-available': 1,
+          sound: 'default',
+        },
+      },
+    },
+  };
+
+  try {
+    const response = await admin.messaging().sendMulticast(message);
+    logger.info(`[FCM] Successfully sent notification to ${response.successCount} tokens for user ${userId}.`);
+    if (response.failureCount > 0) {
+      // Optional: Clean up invalid tokens from the user's record
+      const tokensToRemove = [];
+      response.responses.forEach((resp, idx) => {
+        if (!resp.success && ['messaging/registration-token-not-registered', 'messaging/invalid-registration-token'].includes(resp.error.code)) {
+          tokensToRemove.push(user.fcmTokens[idx]);
+        }
+      });
+      if (tokensToRemove.length > 0) {
+        await User.updateOne({ id: userId }, { $pullAll: { fcmTokens: tokensToRemove } });
+        logger.info(`[FCM] Cleaned up ${tokensToRemove.length} invalid tokens for user ${userId}.`);
+      }
+    }
+  } catch (error) {
+    logger.error(`[FCM] Error sending notification to user ${userId}:`, error);
+  }
+};
+
 module.exports = {
   addToken,
   removeToken,
   getTokens,
   notifyMessage,
   pushToUser,
+  sendNotificationToUser,
 };

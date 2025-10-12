@@ -4,8 +4,6 @@ const Order = require('../../../models/order.model');
 const Run = require('../../../models/run.model');
 const HttpError = require('../../../utils/HttpError');
 const { config, setActiveGateway } = require('../../../config');
-const fcmService = require('../fcm/fcm.service'); // Import the FCM service
-const ServiceZone = require('../../../models/serviceZone.model'); // Import ServiceZone model
 
 const getDashboardStats = async () => {
   try {
@@ -60,65 +58,9 @@ const updateActiveGateway = (gateway) => {
     return { message: `Active payment gateway successfully set to ${gateway}.` };
 };
 
-const sendTargetedNotification = async (payload) => {
-    const { title, body, targetType, targetUserId, targetZoneId, data } = payload;
-    let userIds = [];
-
-    switch (targetType) {
-        case 'singleUser':
-            if (!targetUserId) throw new HttpError(400, 'targetUserId is required for single user notifications.');
-            userIds.push(targetUserId);
-            break;
-        case 'allCustomers':
-            const allCustomers = await User.find({ role: 'customer' }).select('id').lean();
-            userIds = allCustomers.map(u => u.id);
-            break;
-        case 'allDrivers':
-            const allDrivers = await User.find({ role: 'driver' }).select('id').lean();
-            userIds = allDrivers.map(u => u.id);
-            break;
-        case 'allUsers':
-            const allUsers = await User.find({}).select('id').lean();
-            userIds = allUsers.map(u => u.id);
-            break;
-        case 'byZone':
-            if (!targetZoneId) throw new HttpError(400, 'targetZoneId is required for zone-based notifications.');
-            const zone = await ServiceZone.findOne({ id: targetZoneId }).lean();
-            if (!zone) throw new HttpError(404, 'Service zone not found.');
-
-            // Find users whose default address is within the zone's polygon
-            const usersInZone = await User.find({
-                role: 'customer',
-                'defaultAddress.location': {
-                    $geoWithin: {
-                        $geometry: zone.area
-                    }
-                }
-            }).select('id').lean();
-            userIds = usersInZone.map(u => u.id);
-            break;
-        default:
-            throw new HttpError(400, 'Invalid notification target type specified.');
-    }
-
-    if (userIds.length === 0) {
-        return { message: 'Notification sent successfully to 0 users (no targets found).' };
-    }
-
-    // Loop and send notification to each user.
-    // The fcmService is designed to handle fetching tokens for each user.
-    for (const userId of userIds) {
-        // This reuses your existing robust notification service.
-        await fcmService.sendNotificationToUser(userId, { title, body, data });
-    }
-
-    return { message: `Notification successfully sent to ${userIds.length} users.` };
-};
-
 module.exports = {
   getDashboardStats,
   getActiveGateway,
   updateActiveGateway,
-  sendTargetedNotification, // Export the service function
 
 };

@@ -51,5 +51,4 @@ module.exports = {
   getActivePaymentGateway,
   updateActivePaymentGateway,
   sendAdminNotification, // Export the new controller
-  sendTargetedNotification, // Export the service function  
 };

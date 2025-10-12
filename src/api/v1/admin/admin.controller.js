@@ -29,22 +29,8 @@ const updateActivePaymentGateway = (req, res, next) => {
     }
 };
 
-// ===== THIS IS THE CORRECT CONTROLLER FUNCTION =====
-const sendAdminNotification = async (req, res, next) => {
-    try {
-        // It takes the validated request body from the route...
-        const result = await adminService.sendTargetedNotification(req.body);
-        // ...and sends the result from the service back to the client.
-        res.status(200).json(result);
-    } catch (error) {
-        next(error);
-    }
-};
-// ===================================================
-
 module.exports = {
   getDashboardStats,
   getActivePaymentGateway,
   updateActivePaymentGateway,
-  sendAdminNotification, // Export the new controller function
 };

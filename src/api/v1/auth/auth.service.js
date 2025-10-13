@@ -155,19 +155,28 @@ const verifyEmailOtp = async (email, otp) => {
     return { message: 'Email verified successfully. You can now log in.' };
 };
 
+// File: src/api/v1/auth/auth.service.js
+
 const login = async (email, password) => {
     const user = await User.findOne({ email: email.toLowerCase() }).select('+password +isVerified');
     if (!user) {
-      throw new HttpError(401, 'Invalid email or password.');
+        throw new HttpError(401, 'Invalid email or password.');
     }
+
+    // ============================= FIX IS HERE =============================
+    // Check if a password is not set, which implies a social login.
+    if (!user.password) {
+        throw new HttpError(403, 'This account was created using a social provider. Please use Google Sign-In.');
+    }
+    // =====================================================================
     
     if (user.role === 'customer' && user.isVerified === false) {
-      throw new HttpError(403, 'Your account has not been verified. Please check your email for the verification code.');
+        throw new HttpError(403, 'Your account has not been verified. Please check your email for the verification code.');
     }
     
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      throw new HttpError(401, 'Invalid email or password.');
+        throw new HttpError(401, 'Invalid email or password.');
     }
     
     return generateJwtForUser(user);

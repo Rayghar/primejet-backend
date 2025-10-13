@@ -29,8 +29,17 @@ const updateActivePaymentGateway = (req, res, next) => {
     }
 };
 
+const sendCustomNotification = async (req, res, next) => {
+  try {
+    const result = await adminService.sendCustomNotification(req.body);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
 module.exports = {
   getDashboardStats,
   getActivePaymentGateway,
   updateActivePaymentGateway,
+  sendCustomNotification,
 };

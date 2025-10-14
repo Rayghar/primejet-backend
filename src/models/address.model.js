@@ -1,10 +1,8 @@
 // src/models/address.model.js
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
-addressSchema.index({ latitude: 1 });   // ✨ ADD THIS INDEX
-addressSchema.index({ longitude: 1 });  // ✨ ADD THIS INDEX
 
-
+// 1. DEFINE the schema first.
 const addressSchema = new mongoose.Schema(
   {
     id: {
@@ -15,19 +13,19 @@ const addressSchema = new mongoose.Schema(
       index: true,
     },
     userId: {
-      type: String, // Assuming this refers to the custom 'id' field in your User model
+      type: String,
       required: [true, 'User ID is required.'],
-      ref: 'User', // Links to the User model
+      ref: 'User',
       index: true,
     },
-    label: { // e.g., 'Home', 'Work', 'Other'
+    label: {
       type: String,
       required: [true, 'Address label is required.'],
       trim: true,
       minlength: [2, 'Label must be at least 2 characters.'],
       maxlength: [50, 'Label cannot exceed 50 characters.'],
     },
-    fullAddress: { // Often captured from a geocoding service or as a single line input
+    fullAddress: {
       type: String,
       required: [true, 'Full address is required.'],
       trim: true,
@@ -48,7 +46,7 @@ const addressSchema = new mongoose.Schema(
       minlength: [2, 'City must be at least 2 characters.'],
       maxlength: [50, 'City cannot exceed 50 characters.'],
     },
-    state: { // Or province/region
+    state: {
       type: String,
       required: [true, 'State/Province is required.'],
       trim: true,
@@ -59,11 +57,11 @@ const addressSchema = new mongoose.Schema(
       type: String,
       required: [true, 'Country is required.'],
       trim: true,
-      default: 'Nigeria', // Assuming a default
+      default: 'Nigeria',
       minlength: [2, 'Country must be at least 2 characters.'],
       maxlength: [50, 'Country cannot exceed 50 characters.'],
     },
-    postalCode: { // Optional
+    postalCode: {
       type: String,
       trim: true,
       maxlength: [20, 'Postal code cannot exceed 20 characters.'],
@@ -76,15 +74,14 @@ const addressSchema = new mongoose.Schema(
       type: Number,
       min: -90,
       max: 90,
-      optional: true, // Or required if you always need coordinates
+      optional: true,
     },
     longitude: {
       type: Number,
       min: -180,
       max: 180,
-      optional: true, // Or required
+      optional: true,
     },
-    // Optional: additional instructions for the driver
     deliveryInstructions: {
         type: String,
         trim: true,
@@ -92,17 +89,16 @@ const addressSchema = new mongoose.Schema(
     }
   },
   {
-    timestamps: true, // Adds createdAt and updatedAt
+    timestamps: true,
   }
 );
 
-// Compound index for user and label could be useful if labels should be unique per user
-// addressSchema.index({ userId: 1, label: 1 }, { unique: true });
+// 2. APPLY indexes to the schema after it has been defined.
+addressSchema.index({ latitude: 1 });
+addressSchema.index({ longitude: 1 });
 
-addressSchema.index({ latitude: 1 });   // ✨ ADD THIS INDEX
-addressSchema.index({ longitude: 1 });  // ✨ ADD THIS INDEX
-
-
+// 3. CREATE the model from the schema.
 const Address = mongoose.model('Address', addressSchema);
 
+// 4. EXPORT the model.
 module.exports = Address;

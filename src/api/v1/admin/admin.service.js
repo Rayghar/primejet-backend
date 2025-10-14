@@ -4,9 +4,28 @@ const Order = require('../../../models/order.model');
 const Run = require('../../../models/run.model');
 const HttpError = require('../../../utils/HttpError');
 const { config, setActiveGateway } = require('../../../config');
-const notificationService = require('../notifications/notification.service'); // 👈 Add this
-const { logger } = require('../../../config/logger.config'); // 👈 Add this for logging
+const notificationService = require('../notifications/notification.service');
+const { logger } = require('../../../config/logger.config');
+const ServiceZone = require('../../../models/serviceZone.model');
+const Address = require('../../../models/address.model');
 
+/**
+ * Helper function to check if a point is inside a polygon using the ray-casting algorithm.
+ * @param {Array<number>} point - The point to check, as [longitude, latitude].
+ * @param {Array<Array<number>>} polygon - An array of points defining the polygon's vertices.
+ * @returns {boolean} - True if the point is inside the polygon.
+ */
+const isPointInPolygon = (point, polygon) => {
+  const [x, y] = point;
+  let isInside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const [xi, yi] = polygon[i];
+    const [xj, yj] = polygon[j];
+    const intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+    if (intersect) isInside = !isInside;
+  }
+  return isInside;
+};
 
 const getDashboardStats = async () => {
   try {
@@ -16,7 +35,6 @@ const getDashboardStats = async () => {
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
-    // Perform database queries in parallel for efficiency
     const [
       totalOrdersToday,
       pendingOrders,
@@ -61,7 +79,6 @@ const updateActiveGateway = (gateway) => {
     return { message: `Active payment gateway successfully set to ${gateway}.` };
 };
 
-// ✨ NEW SERVICE FUNCTION
 const sendCustomNotification = async (payload) => {
   const { title, body, targetType, targetUserId, targetZoneId } = payload;
   let targetUsers = [];
@@ -84,40 +101,56 @@ const sendCustomNotification = async (payload) => {
         if (user) targetUsers.push(user);
       }
       break;
-     case 'byZone':
+    case 'byZone':
       if (!targetZoneId) {
         throw new HttpError(400, 'Service Zone ID is required for this target type.');
       }
-      // 1. Find the service zone's geometry from the database.
-      // This assumes the zone's GeoJSON data is stored in a field named 'area'.
+      
       const zone = await ServiceZone.findOne({ id: targetZoneId }).lean();
-      if (!zone || !zone.area || !zone.area.coordinates) {
+      if (!zone || !zone.area || !zone.area.coordinates || zone.area.coordinates.length === 0) {
         throw new HttpError(404, 'Service Zone not found or has no defined geographic area.');
       }
+      
+      const polygon = zone.area.coordinates[0];
 
-      // 2. Find all addresses that are geographically within that zone's area.
-      // This assumes the Address model has a 'location' field indexed for 2dsphere queries.
-      const addressesInZone = await Address.find({
-        location: {
-          $geoWithin: {
-            $geometry: zone.area,
-          },
-        },
-      }).select('userId').lean();
+      // 1. Calculate the bounding box for an efficient initial query
+      const longitudes = polygon.map(p => p[0]);
+      const latitudes = polygon.map(p => p[1]);
+      const minLng = Math.min(...longitudes);
+      const maxLng = Math.max(...longitudes);
+      const minLat = Math.min(...latitudes);
+      const maxLat = Math.max(...latitudes);
+
+      // 2. Query the database for all addresses within the less-precise bounding box
+      const addressesInBox = await Address.find({
+        latitude: { $gte: minLat, $lte: maxLat },
+        longitude: { $gte: minLng, $lte: maxLng },
+      }).lean();
+
+      if (addressesInBox.length === 0) {
+        break; 
+      }
+      
+      // 3. Filter the results precisely to see which are actually inside the polygon
+      const addressesInZone = addressesInBox.filter(addr => {
+        if (addr.longitude && addr.latitude) {
+          return isPointInPolygon([addr.longitude, addr.latitude], polygon);
+        }
+        return false;
+      });
 
       if (addressesInZone.length === 0) {
-        break; // No users in this zone, so we can exit the case.
+        break;
       }
-
-      // 3. Extract the unique user IDs from the addresses found.
+      
       const userIdsInZone = [...new Set(addressesInZone.map(addr => addr.userId))];
-
-      // 4. Fetch the full user objects for those IDs, ensuring they are customers.
+      
       targetUsers = await User.find({ 
         id: { $in: userIdsInZone },
-        role: 'customer' // Double-check that we are only targeting customers.
+        role: 'customer'
       }).select('id').lean();
       break;
+
     default:
       throw new HttpError(400, 'Invalid notification target type specified.');
   }
@@ -127,18 +160,14 @@ const sendCustomNotification = async (payload) => {
     return { message: 'Notification task completed, but no users matched the criteria.' };
   }
 
-  // Use a set to ensure unique user IDs
   const userIds = [...new Set(targetUsers.map(u => u.id))];
 
-  // Sequentially trigger notifications. For a very large user base,
-  // this should be moved to a background job queue (e.g., BullMQ).
   for (const userId of userIds) {
-    // We reuse the existing, stable notification service. This is the key!
     await notificationService.createAndSendNotification(
       userId,
       title,
       body,
-      'SYSTEM_ALERT', // A generic type for admin messages
+      'SYSTEM_ALERT',
       { from: 'admin' }
     );
   }
@@ -147,11 +176,9 @@ const sendCustomNotification = async (payload) => {
   return { message: `Notification has been sent to ${userIds.length} users.` };
 };
 
-
 module.exports = {
   getDashboardStats,
   getActiveGateway,
   updateActiveGateway,
-  sendCustomNotification, // 👈 Export the new function
-
+  sendCustomNotification,
 };

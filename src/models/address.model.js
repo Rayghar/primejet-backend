@@ -1,6 +1,9 @@
 // src/models/address.model.js
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
+addressSchema.index({ latitude: 1 });   // ✨ ADD THIS INDEX
+addressSchema.index({ longitude: 1 });  // ✨ ADD THIS INDEX
+
 
 const addressSchema = new mongoose.Schema(
   {
@@ -95,6 +98,10 @@ const addressSchema = new mongoose.Schema(
 
 // Compound index for user and label could be useful if labels should be unique per user
 // addressSchema.index({ userId: 1, label: 1 }, { unique: true });
+
+addressSchema.index({ latitude: 1 });   // ✨ ADD THIS INDEX
+addressSchema.index({ longitude: 1 });  // ✨ ADD THIS INDEX
+
 
 const Address = mongoose.model('Address', addressSchema);
 

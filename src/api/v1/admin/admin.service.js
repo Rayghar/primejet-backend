@@ -84,13 +84,39 @@ const sendCustomNotification = async (payload) => {
         if (user) targetUsers.push(user);
       }
       break;
-    case 'byZone':
-      // This is an assumption. It assumes you can query users based on a zone.
-      // You may need to adjust this query based on your actual User schema
-      // (e.g., if a user's address is linked to a zone).
-      // For now, we assume a direct 'zoneId' field on the User model for simplicity.
-      logger.warn(`[ADMIN_SERVICE] 'byZone' targeting is not fully implemented. Requires user schema with zone relationship.`);
-      // Example placeholder: targetUsers = await User.find({ zoneId: targetZoneId, role: 'customer' }).select('id').lean();
+     case 'byZone':
+      if (!targetZoneId) {
+        throw new HttpError(400, 'Service Zone ID is required for this target type.');
+      }
+      // 1. Find the service zone's geometry from the database.
+      // This assumes the zone's GeoJSON data is stored in a field named 'area'.
+      const zone = await ServiceZone.findOne({ id: targetZoneId }).lean();
+      if (!zone || !zone.area || !zone.area.coordinates) {
+        throw new HttpError(404, 'Service Zone not found or has no defined geographic area.');
+      }
+
+      // 2. Find all addresses that are geographically within that zone's area.
+      // This assumes the Address model has a 'location' field indexed for 2dsphere queries.
+      const addressesInZone = await Address.find({
+        location: {
+          $geoWithin: {
+            $geometry: zone.area,
+          },
+        },
+      }).select('userId').lean();
+
+      if (addressesInZone.length === 0) {
+        break; // No users in this zone, so we can exit the case.
+      }
+
+      // 3. Extract the unique user IDs from the addresses found.
+      const userIdsInZone = [...new Set(addressesInZone.map(addr => addr.userId))];
+
+      // 4. Fetch the full user objects for those IDs, ensuring they are customers.
+      targetUsers = await User.find({ 
+        id: { $in: userIdsInZone },
+        role: 'customer' // Double-check that we are only targeting customers.
+      }).select('id').lean();
       break;
     default:
       throw new HttpError(400, 'Invalid notification target type specified.');

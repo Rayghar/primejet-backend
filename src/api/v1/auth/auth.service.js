@@ -11,6 +11,7 @@ const { OAuth2Client } = require('google-auth-library');
 const { sendEmail } = require('../../../services/email.service'); 
 const Agent = require('../../../models/agent.model');
 const agentService = require('../agents/agent.service');
+const jwksClient = require('jwks-rsa'); // <<< --- ADD THIS LINE --- <<<
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-default-super-secret-key-for-dev';
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);

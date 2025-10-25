@@ -134,6 +134,19 @@ const googleMobileSignIn = async (req, res, next) => {
   }
 };
 
+const appleMobileSignIn = async (req, res, next) => {
+  try {
+    // The validation middleware already ensured req.body.idToken exists
+    const { idToken } = req.body; 
+    const result = await authService.verifyAppleIdTokenAndLogin(idToken);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+}
+
+
+
 const adminCreateUser = async (req, res, next) => {
   try {
     // req.user is the authenticated admin from the middleware
@@ -151,6 +164,7 @@ module.exports = {
   registerAdmin,
   adminCreateUser,
   googleMobileSignIn,
+  appleMobileSignIn,
   login,
   requestPasswordReset,
   verifyPasswordResetToken, // MODIFIED: Exported the new function

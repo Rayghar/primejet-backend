@@ -14,6 +14,10 @@ const agentService = require('../agents/agent.service');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-default-super-secret-key-for-dev';
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const APPLE_AUDIENCE = process.env.APPLE_SERVICE_ID; 
+const appleClient = jwksClient({
+  jwksUri: 'https://appleid.apple.com/auth/keys',
+});
 
 const generateJwtForUser = (user, isNewUser = false) => {
   const payload = { id: user.id, role: user.role };
@@ -130,6 +134,82 @@ const verifyGoogleIdTokenAndLogin = async (idToken) => {
     throw new HttpError(401, 'Invalid Google token or user could not be processed.');
   }
 };
+
+const verifyAppleIdTokenAndLogin = async (idToken) => {
+  if (!APPLE_AUDIENCE) {
+    logger.error('APPLE_SERVICE_ID is not configured in ENV.');
+    throw new HttpError(500, 'Server configuration error: Apple Sign-In not fully set up.');
+  }
+  
+  try {
+    const decodedToken = jwt.decode(idToken, { complete: true });
+    if (!decodedToken) {
+      throw new HttpError(401, 'Invalid Apple ID Token format.');
+    }
+
+    const { kid } = decodedToken.header;
+    // 1. Fetch Apple's public key that corresponds to the token's kid
+    const key = await appleClient.getSigningKey(kid);
+    const publicKey = key.getPublicKey();
+    
+    // 2. Verify the ID Token's signature and claims
+    const payload = jwt.verify(idToken, publicKey, {
+      algorithms: ['RS256', 'ES256'],
+      issuer: 'https://appleid.apple.com',
+      audience: APPLE_AUDIENCE, // Check against your Services ID
+      // NOTE: The nonce is omitted here, but is required for production security
+      // ignoreNonce: true 
+    });
+
+    const { email, sub: appleId } = payload;
+    let user = await User.findOne({ appleId }).select('+isVerified +status');
+    let isNewUser = false;
+    
+    // Handle user creation or linking
+    if (!user) {
+        // Fallback: Check if the user exists by email (for linking accounts)
+        user = await User.findOne({ email: email.toLowerCase() }).select('+isVerified +status');
+
+        if (user) {
+            // Found existing user by email, link the Apple ID
+            user.appleId = appleId;
+            user.isVerified = true; 
+            if (user.status === 'pending_verification') user.status = 'active';
+            await user.save();
+        } else {
+            // New user, create new account
+            const newUser = new User({
+                id: uuidv4(),
+                appleId,
+                name: payload.name || 'Apple User', // Try to use the name if provided in payload
+                email: email.toLowerCase(),
+                phone: null, // Phone is optional for social sign-ins
+                role: 'customer',
+                isVerified: true,
+                status: 'active',
+                password: null, // CRITICAL: Must be null to signal social login
+            });
+            await newUser.save();
+            user = newUser;
+            isNewUser = true;
+        }
+    } else {
+      // Existing user signed in with Apple ID
+      isNewUser = false;
+    }
+    
+    // Return a standard login response
+    return generateJwtForUser(user, isNewUser);
+  } catch (error) {
+    logger.error("Error verifying Apple ID token:", error.message, { stack: error.stack });
+    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+        throw new HttpError(401, `Invalid Apple Token: ${error.message}`);
+    }
+    throw new HttpError(500, 'Apple Sign-In failed due to server error.');
+  }
+};
+
+
 
 const verifyEmailOtp = async (email, otp) => {
     const user = await User.findOne({ 
@@ -296,5 +376,6 @@ module.exports = {
   verifyPasswordResetToken,
   resetPassword,
   adminCreateUser,
+  verifyAppleIdTokenAndLogin,
 
 };

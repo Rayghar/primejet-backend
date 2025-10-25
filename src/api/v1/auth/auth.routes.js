@@ -10,6 +10,7 @@ const {
   registerAdminSchema,
   loginSchema,
   requestPasswordResetSchema,
+  mobileSignInSchema,
   resetPasswordSchema,
   verifyOtpSchema,
   verifyPasswordTokenSchema // MODIFIED: Added the missing schema to the import list
@@ -33,5 +34,5 @@ router.post('/reset-password', validate(resetPasswordSchema), authController.res
 
 // --- NEW ROUTE FOR MOBILE SOCIAL LOGIN ---
 router.post('/google/mobile-signin', authController.googleMobileSignIn);
-
+router.post('/apple/mobile-signin', validate(mobileSignInSchema), authController.appleMobileSignIn); // << NEW ROUTE >>
 module.exports = router;

@@ -17,6 +17,12 @@ const userSchema = new mongoose.Schema(
       unique: true, 
       select: false 
     },
+    appleId: { 
+      type: String, 
+      sparse: true, 
+      unique: true, 
+      select: false 
+    },
     name: {
       type: String,
       required: [true, 'User name is required.'],

@@ -1,45 +1,34 @@
 // src/api/v2/auth/auth.controller.js
-const jwt = require('jsonwebtoken');
-const userService = require('../../v1/users/user.service'); // Reuse existing v1 user service for core logic
+const authService = require('../../v1/auth/auth.service'); // <-- use v1 auth service
 const HttpError = require('../../../utils/HttpError');
-const { jwt: jwtConfig } = require('../../../config'); // Import JWT configuration
 
 /**
  * @desc Authenticate user (login) for web clients.
- * @param {object} req - Express request object.
- * @param {object} res - Express response object.
- * @param {function} next - Express next middleware function.
+ * @route POST /api/v2/auth/login
  */
 const login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
 
-    // Use the existing userService to find and validate user credentials
-    const user = await userService.findUserByCredentials(email, password);
+    // Re-use v1 auth service to validate credentials & issue JWT
+    const result = await authService.login(email, password);
+    // result shape from v1: { token, userId, role, name, isNewUser?, message? }
 
-    if (!user) {
+    if (!result || !result.token) {
       throw new HttpError(401, 'Invalid email or password.');
     }
 
-    // Generate a JWT token with user ID and role
-    const token = jwt.sign(
-      { id: user.id, role: user.role, email: user.email }, // Include user ID, role, and email in token payload
-      jwtConfig.secret,
-      { expiresIn: jwtConfig.expiresIn } // Token expiration from config
-    );
-
-    // Return the token and essential user details
-    res.status(200).json({ 
-      token, 
-      user: { 
-        id: user.id, 
-        name: user.name,
-        email: user.email,
-        role: user.role,
-      }
+    // Return a consistent payload expected by the frontend
+    return res.status(200).json({
+      token: result.token,
+      user: {
+        id: result.userId,
+        name: result.name,
+        email,          // v1 service doesn’t return email; we pass through the one used to login
+        role: result.role,
+      },
     });
   } catch (error) {
-    // Pass errors to the error handling middleware
     next(error);
   }
 };

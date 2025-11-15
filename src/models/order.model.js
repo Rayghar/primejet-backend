@@ -1,36 +1,63 @@
-// src/models/order.model.js
+// File: src/models/order.model.js
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
 
-const itemSchema = new mongoose.Schema({
-  cylinderId: { type: String, required: [true, 'Cylinder ID is required.'] },
-  productName: { type: String, required: [true, 'Product name is required.'] },
-  quantity: { type: Number, required: [true, 'Item quantity is required.'], min: [1, 'Quantity must be at least 1.'] },
-  unitPrice: { type: Number, required: [true, 'Unit price is required.'], min: [0, 'Unit price cannot be negative.'] }, // Price in smallest currency unit
-  // subtotal: { type: Number, required: true } // Optionally store item subtotal if needed frequently
-}, { _id: false }); // No separate _id for sub-documents if not needed
+const itemSchema = new mongoose.Schema(
+  {
+    cylinderId: { type: String, required: [true, 'Cylinder ID is required.'] },
+    productName: { type: String, required: [true, 'Product name is required.'] },
+    quantity: {
+      type: Number,
+      required: [true, 'Item quantity is required.'],
+      min: [1, 'Quantity must be at least 1.'],
+    },
+    unitPrice: {
+      type: Number,
+      required: [true, 'Unit price is required.'],
+      min: [0, 'Unit price cannot be negative.'],
+    },
+    // Optionally store subtotal if you frequently need it
+    // subtotal: { type: Number, required: true }
+  },
+  { _id: false }
+);
 
-const statusHistorySchema = new mongoose.Schema({
-  status: { type: String, required: [true, 'Status in history is required.'] },
-  timestamp: { type: Date, required: true, default: Date.now },
-  notes: { type: String, trim: true },
-  updatedBy: { type: String }, // Optional: User ID of who made the change (customer, driver, admin)
-  updaterRole: { type: String, enum: ['customer', 'driver', 'admin', 'system'] }, // Optional
-}, { _id: false });
+const statusHistorySchema = new mongoose.Schema(
+  {
+    status: { type: String, required: [true, 'Status in history is required.'] },
+    timestamp: { type: Date, required: true, default: Date.now },
+    notes: { type: String, trim: true },
+    updatedBy: { type: String }, // User ID (customer/driver/admin/system)
+    updaterRole: { type: String, enum: ['customer', 'driver', 'admin', 'system'] },
+  },
+  { _id: false }
+);
 
-const adminNoteSchema = new mongoose.Schema({
-  note: { type: String, required: [true, 'Admin note content is required.'], trim: true },
-  adminId: { type: String, required: [true, 'Admin ID is required.'] /* ref: 'User' // if 'id' is User's primary key */ },
-  timestamp: { type: Date, required: true, default: Date.now },
-}, { _id: false });
+const adminNoteSchema = new mongoose.Schema(
+  {
+    note: { type: String, required: [true, 'Admin note content is required.'], trim: true },
+    adminId: { type: String, required: [true, 'Admin ID is required.'] },
+    timestamp: { type: Date, required: true, default: Date.now },
+  },
+  { _id: false }
+);
 
 const orderSchema = new mongoose.Schema(
   {
-    id: { type: String, required: true, unique: true, default: () => uuidv4(), index: true },
+    id: {
+      type: String,
+      required: true,
+      unique: true,
+      default: () => uuidv4(),
+      index: true,
+    },
+
     customerId: { type: String, required: true, ref: 'User', index: true },
     driverId: { type: String, ref: 'User', index: true, sparse: true },
+
     items: [itemSchema],
-    deliveryAddressSnapshot: { 
+
+    deliveryAddressSnapshot: {
       fullAddress: { type: String, required: true },
       street: { type: String },
       city: { type: String },
@@ -41,9 +68,10 @@ const orderSchema = new mongoose.Schema(
       longitude: { type: Number },
       deliveryInstructions: { type: String },
     },
+
     recipientName: { type: String, required: true },
     recipientPhone: { type: String, required: true },
-    
+
     itemsSubtotal: { type: Number, required: true, default: 0 },
     discountAmount: { type: Number, default: 0 },
     promoCodeApplied: { type: String, trim: true },
@@ -56,25 +84,28 @@ const orderSchema = new mongoose.Schema(
     grandTotal: { type: Number, required: true, default: 0 },
     finalAmountPaid: { type: Number, default: 0 },
 
-    status: { 
-        type: String, 
-        required: true, 
-        enum: [ // << MODIFIED: Added new status >>
-            'Pending Payment',
-            'Awaiting Driver Arrival',
-            'Verifying Payment',
-            'Order Placed',
-            'Driver Assigned',
-            'Processing',
-            'Out for Delivery',
-            'Delivered',
-            'Canceled',
-            'Customer Unavailable',
-            'Failed'
-        ],
-        default: 'Pending Payment',
-        index: true 
+    status: {
+      type: String,
+      required: true,
+      enum: [
+        // Kept your existing values; these align with admin flows
+        'Pending Payment',
+        'Awaiting Driver Arrival',
+        'Verifying Payment',
+        'Order Placed',
+        'Driver Assigned',
+        'Processing',
+        'Out for Delivery',
+        'Delivered',
+        'Canceled',
+        'Customer Unavailable',
+        'Failed',
+        // (optional) you can add 'Payment Verification Delayed' later in services without changing UI flows
+      ],
+      default: 'Pending Payment',
+      index: true,
     },
+
     paymentStatus: {
       type: String,
       required: [true, 'Payment status is required.'],
@@ -82,54 +113,168 @@ const orderSchema = new mongoose.Schema(
       default: 'Pending',
       index: true,
     },
-    paymentMethod: { 
-        type: String,
-        enum: ['card', 'wallet', 'stripe', 'paystack', 'payOnPickup'], // << MODIFIED: Added 'payOnPickup'
-        default: 'paystack'
+
+    paymentMethod: {
+      type: String,
+      enum: ['card', 'wallet', 'stripe', 'paystack', 'payOnPickup'], // includes payOnPickup
+      default: 'paystack',
     },
-    paymentGateway: { type: String, enum: ['stripe', 'paystack', 'wallet', null], sparse:true },
-    paymentIntentId: { type: String, trim: true, index: true, sparse:true },
-    paymentGatewayReference: { type: String, trim: true, index: true, sparse:true },
+
+    paymentGateway: { type: String, enum: ['stripe', 'paystack', 'wallet', null], sparse: true },
+    paymentIntentId: { type: String, trim: true, index: true, sparse: true },
+    paymentGatewayReference: { type: String, trim: true, index: true, sparse: true },
     paymentTransactionId: { type: String, trim: true },
 
-    isExpressDelivery: { type: Boolean, default: false },
+    // Map-friendly fields (redundant but useful for fast geo queries if needed)
     deliveryLatitude: { type: Number, min: -90, max: 90 },
     deliveryLongitude: { type: Number, min: -180, max: 180 },
+
+    // ETA and actual times
     estimatedDeliveryTime: { type: Date },
     actualDeliveryTime: { type: Date },
-    // <<<< NEW CODE: ADDED default value to statusHistory >>>>
+
+    // --- Enhancement-friendly (optional) operational timestamps ---
+    // These are non-breaking and allow SLA/metrics without changing existing flows
+    placedAt: { type: Date }, // when customer pressed "place order" successfully
+    paymentVerificationStartedAt: { type: Date },
+    paymentVerifiedAt: { type: Date },
+    driverAssignedAt: { type: Date },
+    pickedAt: { type: Date }, // when driver picks up stock/starts route
+    outForDeliveryAt: { type: Date },
+    firstAttemptAt: { type: Date },
+    deliveredAt: { type: Date },
+    canceledAt: { type: Date },
+
+    // Soft signal for monitoring delayed verification (service will set/unset)
+    paymentVerificationDelayed: { type: Boolean, default: false, index: true },
+    paymentLastCheckAt: { type: Date },
+
+    // History & notes
     statusHistory: {
-        type: [statusHistorySchema],
-        default: [] // <-- ADDED THIS LINE
+      type: [statusHistorySchema],
+      default: [], // keep your new default
     },
-    // <<<< END NEW CODE >>>>
-    adminNotes: [{ note: String, adminId: String, timestamp: {type: Date, default: Date.now}, _id: false }],
+    adminNotes: [adminNoteSchema],
+
     orderDate: { type: Date, required: true, default: Date.now, index: true },
   },
-  { timestamps: true,
+  {
+    timestamps: true,
     toJSON: { virtuals: true },
-    toObject: { virtuals: true }
+    toObject: { virtuals: true },
   }
 );
 
-// --- FIX START: Define Virtual Properties for Population ---
-
-// Virtual for the customer
+/* -------------------- Virtual Populations (customer/driver) -------------------- */
+// The User model’s primary key is 'id' (UUID) — match on foreignField 'id'
 orderSchema.virtual('customer', {
-  ref: 'User',               // The model to use
-  localField: 'customerId',  // Find in this schema where localField
-  foreignField: 'id',        // is equal to foreignField in the 'User' model
-  justOne: true              // We only expect one User
+  ref: 'User',
+  localField: 'customerId',
+  foreignField: 'id',
+  justOne: true,
 });
 
-// Virtual for the driver
 orderSchema.virtual('driver', {
   ref: 'User',
   localField: 'driverId',
   foreignField: 'id',
-  justOne: true
+  justOne: true,
 });
 
-// --- FIX END ---
+/* -------------------- UI/DTO-friendly Virtuals (safe, read-only) -------------------- */
+// Short ID for display in admin/cards
+orderSchema.virtual('shortId').get(function () {
+  const s = this.id || '';
+  return s.length > 6 ? s.slice(-6) : s;
+});
+
+// Prefer snapshot.fullAddress; fallback to concatenated bits
+orderSchema.virtual('displayAddress').get(function () {
+  const snap = this.deliveryAddressSnapshot || {};
+  if (snap.fullAddress) return snap.fullAddress;
+  const parts = [snap.street, snap.city, snap.state, snap.country].filter(Boolean);
+  return parts.join(', ');
+});
+
+// Single-line snippet (used in lists)
+orderSchema.virtual('addressSnippet').get(function () {
+  const d = this.displayAddress || '';
+  return d.length > 90 ? `${d.slice(0, 87)}…` : d;
+});
+
+// Compact location object for frontends that expect { lat, lng }
+orderSchema.virtual('deliveryLocation').get(function () {
+  const snap = this.deliveryAddressSnapshot || {};
+  const lat = snap.latitude ?? this.deliveryLatitude;
+  const lng = snap.longitude ?? this.deliveryLongitude;
+  if (typeof lat === 'number' && typeof lng === 'number') {
+    return { lat, lng };
+  }
+  return null;
+});
+
+/* -------------------- Indexes (non-breaking, help dashboards/reports) -------------------- */
+orderSchema.index({ status: 1, orderDate: -1 });
+orderSchema.index({ driverId: 1, status: 1, orderDate: -1 }, { sparse: true });
+orderSchema.index({ customerId: 1, orderDate: -1 });
+
+/* -------------------- Minimal pre-save: append status to history when it changes -------------------- */
+// This hook appends to statusHistory only when 'status' changes.
+// It will NOT override services that explicitly push history entries.
+orderSchema.pre('save', function (next) {
+  try {
+    if (this.isNew) {
+      // If no history provided, seed with initial status
+      if (!Array.isArray(this.statusHistory) || this.statusHistory.length === 0) {
+        this.statusHistory = [
+          {
+            status: this.status,
+            timestamp: this.createdAt || new Date(),
+            updatedBy: this.customerId || undefined,
+            updaterRole: 'system',
+          },
+        ];
+      }
+      // seed placedAt for fresh orders if missing
+      if (!this.placedAt) this.placedAt = this.createdAt || new Date();
+      return next();
+    }
+
+    if (this.isModified('status')) {
+      this.statusHistory = this.statusHistory || [];
+      this.statusHistory.push({
+        status: this.status,
+        timestamp: new Date(),
+        updaterRole: 'system',
+      });
+
+      // convenience time stamps for metrics (optional; services can set more precisely)
+      switch (this.status) {
+        case 'Verifying Payment':
+          if (!this.paymentVerificationStartedAt) this.paymentVerificationStartedAt = new Date();
+          break;
+        case 'Driver Assigned':
+          if (!this.driverAssignedAt) this.driverAssignedAt = new Date();
+          break;
+        case 'Out for Delivery':
+          if (!this.outForDeliveryAt) this.outForDeliveryAt = new Date();
+          break;
+        case 'Delivered':
+          if (!this.deliveredAt) this.deliveredAt = new Date();
+          if (!this.actualDeliveryTime) this.actualDeliveryTime = this.deliveredAt;
+          break;
+        case 'Canceled':
+          if (!this.canceledAt) this.canceledAt = new Date();
+          break;
+        default:
+          break;
+      }
+    }
+
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
 
 module.exports = mongoose.model('Order', orderSchema);

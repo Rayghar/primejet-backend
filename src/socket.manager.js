@@ -1,3 +1,5 @@
+// File: socket.manager.js  (updated, drop-in)
+
 const jwt = require('jsonwebtoken');
 const config = require('./config/index.js');
 const { logger } = require('./config/logger.config');
@@ -5,7 +7,7 @@ const chatService = require('./api/v1/chat/chat.service.js'); // NOTE: default i
 const Order = require('./models/order.model');
 const { Server } = require('socket.io');
 const Message = require('./models/message.model'); // <-- your Mongoose Message
-const User = require('./models/user.model')
+const User = require('./models/user.model');
 
 // If your FCM service lives elsewhere, adjust this path:
 let fcmService = null;
@@ -23,6 +25,9 @@ try {
   }
 }
 
+// ---------------------------------------------
+// Online tracking (unchanged behavior)
+// ---------------------------------------------
 const onlineUsers = new Map(); // userId -> Set(socketId)
 function addOnline(userId, socketId) {
   if (!onlineUsers.has(userId)) onlineUsers.set(userId, new Set());
@@ -38,51 +43,116 @@ function isUserOnline(userId) {
   return onlineUsers.has(userId) && onlineUsers.get(userId).size > 0;
 }
 
-const initializeSocket = (io) => {
-  // 1) Authenticate socket with JWT from handshake.auth.token
-io.use(async (socket, next) => {
-  const token = socket.handshake.auth?.token;
-  logger.info('[SOCKET_AUTH] New connection attempt...'); // Log start
+// ---------------------------------------------
+// Module-scoped io + safe emit helpers
+// ---------------------------------------------
+/** @type {Server|undefined} */
+let _io;
 
+/**
+ * Emit to all admins (sockets joined to "room:admins").
+ * Safe: does nothing if io is not ready.
+ */
+function emitAdmin(event, payload) {
   try {
-    if (!token) {
-      logger.warn('[SOCKET_AUTH] Rejected: Token not provided.');
-      return next(new Error('Authentication error: Token not provided.'));
-    }
-
-    const jwtSecret = config.jwt.secret;
-    if (!jwtSecret) { // Simplified check since we know it exists now
-      logger.error('[SOCKET_AUTH] Rejected: JWT_SECRET is missing in config.');
-      return next(new Error('Server configuration error.'));
-    }
-
-    const decoded = jwt.verify(token, jwtSecret);
-    logger.info(`[SOCKET_AUTH] Token verified for user ID: ${decoded.id}`);
-
-    // --- Start Database Debug ---
-    logger.info(`[SOCKET_AUTH] Searching database for user ID: ${decoded.id}`);
-    const user = await User.findOne({ id: decoded.id });
-    logger.info(`[SOCKET_AUTH] Database search finished for user ID: ${decoded.id}`);
-    // --- End Database Debug ---
-
-    if (!user || user.status !== 'active') {
-      logger.warn(`[SOCKET_AUTH] Rejected: User not found or inactive for ID: ${decoded.id}`);
-      return next(new Error('Authentication error: User not found or is inactive.'));
-    }
-
-    logger.info(`[SOCKET_AUTH] User authenticated successfully: ${user.id}`);
-    socket.user = user.toObject();
-    next();
-
-  } catch (error) {
-    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
-      logger.warn(`[SOCKET_AUTH] Rejected: Invalid token. Error: ${error.name}`);
-      return next(new Error('Authentication error: Invalid token.'));
-    }
-    logger.error('[SOCKET_AUTH] Unexpected middleware error:', { message: error.message });
-    next(new Error('An unexpected server error occurred during authentication.'));
+    if (!_io) return;
+    _io.to('room:admins').emit(event, payload);
+  } catch (e) {
+    logger.warn('[SOCKET] emitAdmin error:', e?.message || e);
   }
-});
+}
+
+/**
+ * Emit to a specific user’s personal room "user:<userId>".
+ */
+function emitToUser(userId, event, payload) {
+  try {
+    if (!_io || !userId) return;
+    _io.to(`user:${userId}`).emit(event, payload);
+  } catch (e) {
+    logger.warn('[SOCKET] emitToUser error:', e?.message || e);
+  }
+}
+
+/**
+ * Emit to an arbitrary room (e.g., an order/chat room).
+ */
+function emitToRoom(room, event, payload) {
+  try {
+    if (!_io || !room) return;
+    _io.to(room).emit(event, payload);
+  } catch (e) {
+    logger.warn('[SOCKET] emitToRoom error:', e?.message || e);
+  }
+}
+
+/**
+ * If user has admin privileges, join the admin room.
+ * Accepts both `user.role` and `user.roles` (array) shapes.
+ */
+function registerAdminSocket(socket, user) {
+  try {
+    const roles = Array.isArray(user?.roles) ? user.roles : [user?.role].filter(Boolean);
+    const isAdmin = roles.some(r => ['admin', 'superadmin'].includes(String(r).toLowerCase()));
+    if (isAdmin) {
+      socket.join('room:admins');
+      logger.info(`[SOCKET] Admin joined admin room: ${user?.id}`);
+    }
+  } catch (e) {
+    logger.warn('[SOCKET] registerAdminSocket error:', e?.message || e);
+  }
+}
+
+// ---------------------------------------------
+// Main initializer (default export)
+// ---------------------------------------------
+const initializeSocket = (io) => {
+  _io = io; // keep a reference for helpers
+
+  // 1) Authenticate socket with JWT from handshake.auth.token
+  io.use(async (socket, next) => {
+    const token = socket.handshake.auth?.token;
+    logger.info('[SOCKET_AUTH] New connection attempt...'); // Log start
+
+    try {
+      if (!token) {
+        logger.warn('[SOCKET_AUTH] Rejected: Token not provided.');
+        return next(new Error('Authentication error: Token not provided.'));
+      }
+
+      const jwtSecret = config.jwt.secret;
+      if (!jwtSecret) {
+        logger.error('[SOCKET_AUTH] Rejected: JWT_SECRET is missing in config.');
+        return next(new Error('Server configuration error.'));
+      }
+
+      const decoded = jwt.verify(token, jwtSecret);
+      logger.info(`[SOCKET_AUTH] Token verified for user ID: ${decoded.id}`);
+
+      // --- Start Database Debug ---
+      logger.info(`[SOCKET_AUTH] Searching database for user ID: ${decoded.id}`);
+      const user = await User.findOne({ id: decoded.id });
+      logger.info(`[SOCKET_AUTH] Database search finished for user ID: ${decoded.id}`);
+      // --- End Database Debug ---
+
+      if (!user || user.status !== 'active') {
+        logger.warn(`[SOCKET_AUTH] Rejected: User not found or inactive for ID: ${decoded.id}`);
+        return next(new Error('Authentication error: User not found or is inactive.'));
+      }
+
+      logger.info(`[SOCKET_AUTH] User authenticated successfully: ${user.id}`);
+      socket.user = user.toObject();
+      next();
+
+    } catch (error) {
+      if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+        logger.warn(`[SOCKET_AUTH] Rejected: Invalid token. Error: ${error.name}`);
+        return next(new Error('Authentication error: Invalid token.'));
+      }
+      logger.error('[SOCKET_AUTH] Unexpected middleware error:', { message: error.message });
+      next(new Error('An unexpected server error occurred during authentication.'));
+    }
+  });
 
   // Helper: check user is a participant and get counterparty
   const getParticipation = async (orderId, userUuid) => {
@@ -111,6 +181,9 @@ io.use(async (socket, next) => {
     try {
       socket.join(`user:${userId}`);
     } catch (_) {}
+
+    // 1A.1) If admin, also join admin broadcast room
+    registerAdminSocket(socket, socket.user);
 
     // 1B) Join a chat room (chatId == orderId) with authorization
     socket.on('join_room', async (orderId) => {
@@ -168,8 +241,6 @@ io.use(async (socket, next) => {
         }
 
         // ---- OPTIONAL but implemented: delivered heuristic ----
-        // If there's more than one socket in the room (me + someone else),
-        // flip to delivered and notify the room.
         try {
           const room = io.sockets.adapter.rooms.get(chatId);
           const someoneElsePresent = room && room.size > 1;
@@ -254,4 +325,11 @@ io.use(async (socket, next) => {
   });
 };
 
+// Keep backward compatibility: default export is the initializer
 module.exports = initializeSocket;
+
+// Also expose helpers for other modules (e.g., controllers/services) without breaking the default export.
+module.exports.emitAdmin = emitAdmin;
+module.exports.emitToUser = emitToUser;
+module.exports.emitToRoom = emitToRoom;
+module.exports.isUserOnline = isUserOnline;

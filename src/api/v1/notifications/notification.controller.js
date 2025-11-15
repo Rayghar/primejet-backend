@@ -1,5 +1,4 @@
 // File: src/api/v1/notifications/notification.controller.js
-
 const notificationService = require('./notification.service');
 const { logger } = require('../../../config/logger.config');
 
@@ -30,7 +29,7 @@ const markAllAsRead = async (req, res, next) => {
   }
 };
 
-// ✅ FIX: Added controller function to handle marking a single notification as read.
+// Mark a single notification as read
 const markAsRead = async (req, res, next) => {
   try {
     const { notificationId } = req.params;
@@ -41,7 +40,7 @@ const markAsRead = async (req, res, next) => {
   }
 };
 
-// ✅ FIX: Added controller function to handle clearing all notifications.
+// Clear all notifications for the user
 const clearAll = async (req, res, next) => {
   try {
     const result = await notificationService.clearAllNotifications(req.user.id);
@@ -51,11 +50,10 @@ const clearAll = async (req, res, next) => {
   }
 };
 
-
 module.exports = {
   getUserNotifications,
   getUnreadCount,
   markAllAsRead,
-  markAsRead,   // <-- Export the new function
-  clearAll,     // <-- Export the new function
+  markAsRead,
+  clearAll,
 };

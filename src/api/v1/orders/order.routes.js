@@ -1,8 +1,9 @@
-// src/api/v1/orders/order.routes.js
+// File: src/api/v1/orders/order.routes.js
 const express = require('express');
 const orderController = require('./order.controller');
 const authMiddleware = require('../../../middleware/auth.middleware');
 const validate = require('../../../middleware/validate.middleware');
+
 const {
   placeOrderSchema,
   processOrderPaymentSchema,
@@ -15,7 +16,11 @@ const router = express.Router();
 
 console.log('[ORDER_ROUTES] Registering order routes...');
 
-// --- Customer specific routes ---
+// ---------------------------------------------------------------------------
+// CUSTOMER ROUTES
+// ---------------------------------------------------------------------------
+
+// Place a new order
 router.post(
   '/',
   authMiddleware('customer'),
@@ -23,29 +28,29 @@ router.post(
   orderController.placeOrder
 );
 
-router.get(
-  '/:orderId/payment-status',
-  authMiddleware(),
-  orderController.getOrderPaymentStatus
-);
-
-router.delete(
-  '/:orderId',
+// Customer: mark that payment has been initiated (moves to "Verifying Payment")
+router.put(
+  '/:orderId/mark-as-verifying',
   authMiddleware('customer'),
-  orderController.cancelOrder
+  orderController.markAsVerifyingPayment
 );
 
-// =========================================================================
-// NEW FUNCTIONALITY: New route for processPayment
-// =========================================================================
+// Complete payment (client-initiated confirmation path)
 router.post(
   '/:orderId/payment-complete',
   authMiddleware('customer'),
   validate(processOrderPaymentSchema),
   orderController.processPayment
 );
-// =========================================================================
 
+// Cancel order (only if still pending payment)
+router.delete(
+  '/:orderId',
+  authMiddleware('customer'),
+  orderController.cancelOrder
+);
+
+// Submit feedback after delivery
 router.post(
   '/:orderId/feedback',
   authMiddleware('customer'),
@@ -53,17 +58,25 @@ router.post(
   orderController.submitFeedback
 );
 
-// =========================================================================
-// FIX: Corrected the endpoint path to match what the front-end is calling.
-// =========================================================================
+// Customer stats (consumption/recency summary)
 router.get(
-  '/me/stats', // FIX: Changed from '/me/consumption-stats' to '/me/stats'
+  '/me/stats', // kept as agreed
   authMiddleware('customer'),
   orderController.getCustomerStats
 );
-// =========================================================================
 
-// --- Driver specific routes ---
+// Payment status (any authenticated role who is authorized to view the order)
+router.get(
+  '/:orderId/payment-status',
+  authMiddleware(),
+  orderController.getOrderPaymentStatus
+);
+
+// ---------------------------------------------------------------------------
+// DRIVER ROUTES
+// ---------------------------------------------------------------------------
+
+// Driver updates order status (Processing, Out for Delivery, Delivered, etc.)
 router.put(
   '/driver/:orderId/status',
   authMiddleware('driver'),
@@ -71,13 +84,32 @@ router.put(
   orderController.driverUpdateOrderStatus
 );
 
-// --- Admin specific routes (defined before generic /:orderId to ensure correct matching) ---
+// Driver arrived at customer location (for Pay-on-Arrival or nudging customer)
+router.put(
+  '/:orderId/driver-arrived',
+  authMiddleware('driver'),
+  orderController.driverArrivedForPickup
+);
+
+// Driver self metrics (fulfillment KPIs for the authenticated driver)
+router.get(
+  '/metrics/driver/me',
+  authMiddleware('driver'),
+  orderController.getDriverFulfillmentMetrics
+);
+
+// ---------------------------------------------------------------------------
+// ADMIN ROUTES (declare BEFORE generic /:orderId to avoid shadowing)
+// ---------------------------------------------------------------------------
+
+// Admin list/search orders
 router.get(
   '/admin',
   authMiddleware('admin'),
   orderController.adminGetOrders
 );
 
+// Admin update order status
 router.put(
   '/admin/:orderId/status',
   authMiddleware('admin'),
@@ -85,6 +117,7 @@ router.put(
   orderController.adminUpdateOrderStatus
 );
 
+// Admin assign driver
 router.post(
   '/admin/:orderId/assign-driver',
   authMiddleware('admin'),
@@ -92,36 +125,43 @@ router.post(
   orderController.adminAssignDriver
 );
 
-// --- Routes accessible by authenticated users ---
+// Admin: driver fulfillment metrics for any driver (by id)
+router.get(
+  '/metrics/driver/:driverId',
+  authMiddleware('admin'),
+  orderController.getDriverFulfillmentMetrics
+);
+
+// Admin/Ops: trigger verification delay sweep (complements cron/queue)
+router.post(
+  '/ops/payment-delay-scan',
+  authMiddleware('admin'),
+  orderController.runVerificationDelayCheck
+);
+
+// ---------------------------------------------------------------------------
+// SHARED / AUTHENTICATED ROUTES
+// ---------------------------------------------------------------------------
+
+// Paginated list of orders scoped by role
 router.get(
   '/',
   authMiddleware(),
   orderController.getOrders
 );
 
+// Get a specific order (role-aware authorization in service)
 router.get(
   '/:orderId',
   authMiddleware(),
   orderController.getOrder
 );
 
+// Location history (authorized customer/driver only)
 router.get(
   '/:orderId/location-history',
   authMiddleware(),
   orderController.getLocationHistory
-);
-
-// << NEW ROUTE for the driver to trigger payment >>
-router.put(
-  '/:orderId/driver-arrived',
-  authMiddleware('driver'),
-  orderController.driverArrivedForPickup
-);
-
-router.put(
-  '/:orderId/mark-as-verifying',
-  authMiddleware('customer'),
-  orderController.markAsVerifyingPayment
 );
 
 console.log('[ORDER_ROUTES] Order routes registered.');

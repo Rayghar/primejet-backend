@@ -1,5 +1,4 @@
 // File: src/api/v1/notifications/notification.routes.js
-
 const express = require('express');
 const notificationController = require('./notification.controller');
 const authMiddleware = require('../../../middleware/auth.middleware');
@@ -8,7 +7,7 @@ const { notificationIdParamSchema } = require('./notification.validation');
 
 const router = express.Router();
 
-// Route to get all notifications for the logged-in user
+// Get all notifications for the logged-in user
 // GET /api/v1/notifications
 router.get(
   '/',
@@ -16,7 +15,7 @@ router.get(
   notificationController.getUserNotifications
 );
 
-// Route to get the count of unread notifications for the bubble
+// Get unread count (for bubble/badge)
 // GET /api/v1/notifications/unread-count
 router.get(
   '/unread-count',
@@ -24,7 +23,7 @@ router.get(
   notificationController.getUnreadCount
 );
 
-// Route to mark all notifications as read when the user opens the screen
+// Mark all as read
 // POST /api/v1/notifications/mark-all-read
 router.post(
   '/mark-all-read',
@@ -32,8 +31,7 @@ router.post(
   notificationController.markAllAsRead
 );
 
-// ✅ FIX: Added the route to mark a single notification as read.
-// This is called by the frontend when a user taps on a notification.
+// Mark a single notification as read
 // POST /api/v1/notifications/:notificationId/read
 router.post(
   '/:notificationId/read',
@@ -42,8 +40,7 @@ router.post(
   notificationController.markAsRead
 );
 
-// ✅ FIX: Added the route to delete all notifications for a user.
-// This is called by the frontend when the "Clear All" button is pressed.
+// Clear all notifications for the user
 // DELETE /api/v1/notifications/all
 router.delete(
   '/all',

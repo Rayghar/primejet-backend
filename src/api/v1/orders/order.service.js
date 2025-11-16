@@ -1247,4 +1247,7 @@ module.exports = {
   checkAndFlagVerificationDelays,      // <- call from cron/agenda every 1–2 minutes
   getCustomerStats,
   getDriverFulfillmentMetrics,
+  driverArrivedForPickup,
+
+
 };

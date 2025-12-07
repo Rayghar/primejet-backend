@@ -10,9 +10,76 @@ const { logger } = require('../../../config/logger.config.js');
 // ✅ Unified push notifications (FCM wrapper with token lookup)
 const { notifyMessage } = require('../fcm/fcm.service');
 
+// =============================================================================
+//  HELPER: GEOSPATIAL UTILS (Haversine Formula) & OPTIMIZER
+// =============================================================================
+
+/**
+ * Calculates distance between two coords in km.
+ */
+const getDistance = (lat1, lon1, lat2, lon2) => {
+  const R = 6371; // Earth radius in km
+  const dLat = deg2rad(lat2 - lat1);
+  const dLon = deg2rad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
+
+const deg2rad = (deg) => deg * (Math.PI / 180);
+
+/**
+ * Reorders stops using Nearest Neighbor algorithm relative to a start point.
+ */
+const optimizeStopsSequence = (startLat, startLng, stops) => {
+  if (!stops || stops.length === 0) return [];
+  
+  const pending = [...stops];
+  const optimized = [];
+  
+  let currentLat = startLat;
+  let currentLng = startLng;
+
+  while (pending.length > 0) {
+    let nearestIndex = -1;
+    let minDist = Infinity;
+
+    for (let i = 0; i < pending.length; i++) {
+      const stop = pending[i];
+      // Skip stops without valid coordinates, append them at the end later
+      if (!stop.latitude || !stop.longitude) continue; 
+
+      const dist = getDistance(currentLat, currentLng, stop.latitude, stop.longitude);
+      if (dist < minDist) {
+        minDist = dist;
+        nearestIndex = i;
+      }
+    }
+
+    if (nearestIndex !== -1) {
+      const nextStop = pending.splice(nearestIndex, 1)[0];
+      optimized.push(nextStop);
+      currentLat = nextStop.latitude;
+      currentLng = nextStop.longitude;
+    } else {
+      // If remaining stops have no coords, just append them
+      optimized.push(...pending);
+      break;
+    }
+  }
+
+  // Re-index the sequence
+  return optimized.map((s, index) => ({
+    ...s,
+    sequence: index + 1
+  }));
+};
+
 /**
  * Map internal driver stop statuses to customer-facing order statuses.
- * Keep this centralized so mobile + admin dashboards remain consistent.
  */
 const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
   const mapping = {
@@ -30,10 +97,6 @@ const mapDriverStopStatusToOrderStatus = (driverStopStatus) => {
 
 /**
  * Driver updates a specific stop’s status inside a run.
- * - Updates Run.stops[i].status + statusHistory
- * - Optionally mirrors to the Order.status + history (via mapping above)
- * - Auto-completes run if all stops are terminal
- * - Notifies the customer on material status change
  */
 const driverUpdateStopStatus = async (driverId, runId, stopId, newStatus, notes) => {
   // Fetch a lean snapshot for validations and quick lookups
@@ -221,12 +284,15 @@ const createRunFromBatch = async (orderIds, adminId) => {
       longitude: order.deliveryLongitude,
     }));
 
+    // Capture zone info if available for admin context
+    const primaryZone = ordersToBatch[0].serviceZoneId || 'Unknown Zone';
+
     const newRun = new Run({
       id: uuidv4(),
       overallStatus: 'Pending',
       stops,
       totalStops: stops.length,
-      notes: `Run created by admin ${adminId} with ${stops.length} stops.`,
+      notes: `Batch for Zone: ${primaryZone}. Created by admin ${adminId}.`,
     });
 
     await newRun.save({ session });
@@ -275,14 +341,20 @@ const getActiveRuns = async () => {
 
 /**
  * Orders awaiting assignment
+ * ✅ UPDATED: Added zoneId filtering support
  */
 const getUnassignedOrders = async (options) => {
-  const { page = 1, limit = 10 } = options;
+  const { page = 1, limit = 10, zoneId } = options;
   try {
     const query = {
       driverId: null,
       status: { $in: ['Order Placed', 'Pending Pickup', 'Ready for Delivery'] },
     };
+
+    // Filter by Zone if provided
+    if (zoneId) {
+      query.serviceZoneId = zoneId;
+    }
 
     const totalOrders = await Order.countDocuments(query);
     const orders = await Order.find(query)
@@ -340,8 +412,7 @@ const getRun = async (runId, requestingUser) => {
 
 /**
  * Admin: assign driver to a pending run.
- * - Updates run → Assigned
- * - Mirrors driverId onto each linked order and normalizes to “Driver Assigned”
+ * ✅ UPDATED: Includes Route Optimization & Smart Fallback
  */
 const assignDriverToRun = async (runId, newDriverId, adminPerformingActionId) => {
   const session = await mongoose.startSession();
@@ -364,6 +435,44 @@ const assignDriverToRun = async (runId, newDriverId, adminPerformingActionId) =>
       throw new HttpError(404, `Driver with ID ${newDriverId} not found or is not a driver.`);
     }
 
+    // --- OPTIMIZATION LOGIC START ---
+    let startLat, startLng;
+
+    // Check valid driver location
+    const hasDriverLoc = 
+      newDriver.currentLocation && 
+      Array.isArray(newDriver.currentLocation.coordinates) &&
+      newDriver.currentLocation.coordinates.length === 2 &&
+      newDriver.currentLocation.coordinates[0] !== 0;
+
+    if (hasDriverLoc) {
+      // Case A: Optimize from Driver
+      startLng = newDriver.currentLocation.coordinates[0];
+      startLat = newDriver.currentLocation.coordinates[1];
+    } else {
+      // Case B: Fallback to First Stop (Smart Fallback)
+      logger.warn(`[RUN_SERVICE] Driver ${newDriverId} location unknown. Optimizing from first stop.`);
+      if (run.stops && run.stops.length > 0) {
+        startLat = run.stops[0].latitude;
+        startLng = run.stops[0].longitude;
+      } else {
+        startLat = 6.5244; // Lagos fallback
+        startLng = 3.3792;
+      }
+    }
+    
+    // Mongoose array to Object for sorting
+    const rawStops = run.stops.toObject();
+    
+    // Separate valid/invalid coords for safety
+    const validStops = rawStops.filter(s => s.latitude && s.longitude);
+    const invalidStops = rawStops.filter(s => !s.latitude || !s.longitude);
+
+    const optimizedStops = optimizeStopsSequence(startLat, startLng, validStops);
+    
+    run.stops = [...optimizedStops, ...invalidStops];
+    // --- OPTIMIZATION LOGIC END ---
+
     run.driverId = newDriverId;
     run.overallStatus = 'Assigned';
 
@@ -376,7 +485,7 @@ const assignDriverToRun = async (runId, newDriverId, adminPerformingActionId) =>
           order.statusHistory.push({
             status: 'Driver Assigned',
             timestamp: new Date(),
-            notes: `Assigned to driver ${newDriver.name} (ID: ${newDriverId}) by admin.`,
+            notes: `Assigned to driver ${newDriver.name}. Sequence: ${stop.sequence}`,
             updatedBy: adminPerformingActionId,
             updaterRole: 'admin',
           });
@@ -389,7 +498,7 @@ const assignDriverToRun = async (runId, newDriverId, adminPerformingActionId) =>
     await session.commitTransaction();
 
     logger.info(
-      `[RUN_SERVICE] Run ${run.id} successfully assigned to driver ${newDriver.id}.`
+      `[RUN_SERVICE] Run ${run.id} successfully assigned to driver ${newDriver.id} with optimized route.`
     );
     return run.toObject();
   } catch (error) {

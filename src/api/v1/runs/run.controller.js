@@ -43,11 +43,13 @@ const getActiveRuns = async (req, res, next) => {
   res.status(200).json(runs);
 };
 
+// ✅ UPDATED: Extracts 'zoneId' from query params
 const getUnassignedOrders = async (req, res, next) => {
-  const { page = 1, limit = 10 } = req.query;
+  const { page = 1, limit = 10, zoneId } = req.query;
   const result = await runService.getUnassignedOrders({
     page: parseInt(page, 10),
     limit: parseInt(limit, 10),
+    zoneId: zoneId, 
   });
   res.status(200).json(result);
 };

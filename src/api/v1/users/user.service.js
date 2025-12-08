@@ -1,15 +1,14 @@
-// src/api/v1/users/user.service.js
+// File: src/api/v1/users/user.service.js
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 const User = require('../../../models/user.model');
 const HttpError = require('../../../utils/HttpError');
 const Order = require('../../../models/order.model');
 const Address = require('../../../models/address.model');
-// Import `firestore` and `isFirebaseInitialized` from firebase.config.js
 const { firestore, isFirebaseInitialized } = require('../../../config/firebase.config');
 const { logger } = require('../../../config/logger.config');
-const agentService = require('../../v1/agents/agent.service'); // Import agent service
-const referralService = require('../../v1/referrals/referral.service'); // Import referral service
+const agentService = require('../../v1/agents/agent.service');
+const referralService = require('../../v1/referrals/referral.service');
 
 const getProfile = async (userId) => {
   try {
@@ -18,14 +17,13 @@ const getProfile = async (userId) => {
       throw new HttpError(404, 'User profile not found.');
     }
 
-    // << MODIFIED: Check for any previous completed orders >>
     const pastOrderCount = await Order.countDocuments({
       customerId: userId,
       status: { $in: ['Delivered', 'Processing', 'Driver Assigned', 'Out for Delivery', 'Completed'] }
     });
 
     const userObject = user.toObject();
-    userObject.isFirstTimeCustomer = pastOrderCount === 0; // Add the new flag
+    userObject.isFirstTimeCustomer = pastOrderCount === 0;
 
     return userObject;
   } catch (error) {
@@ -36,7 +34,7 @@ const getProfile = async (userId) => {
 };
 
 const registerUser = async (userData, options = {}) => {
-  const { email, role, referredByCode, agentCode } = userData; // Includes agentCode
+  const { email, role, referredByCode, agentCode } = userData;
 
   let existingUser = await User.findOne({ email });
   if (existingUser) {
@@ -50,34 +48,29 @@ const registerUser = async (userData, options = {}) => {
     }
   }
 
-  // Handle customer-to-customer referral code if provided for a new customer
   if (role === 'customer' && referredByCode) {
-    const referrerReferral = await referralService.getReferralByCode(referredByCode); // Call referralService
+    const referrerReferral = await referralService.getReferralByCode(referredByCode);
     if (referrerReferral && referrerReferral.isActive) {
       userData.referredBy = referrerReferral.userId;
       referrerReferral.totalReferredCount = (referrerReferral.totalReferredCount || 0) + 1;
       await referrerReferral.save();
     } else {
-      logger.warn(`[USER_SERVICE] Invalid or inactive customer referral code: ${referredByCode}. User not marked as referred.`);
+      logger.warn(`[USER_SERVICE] Invalid or inactive customer referral code: ${referredByCode}.`);
     }
   }
 
-  // Handle agent referral code if provided for a new customer
   if (role === 'customer' && agentCode) {
-    const agent = await agentService.trackAgentLinkClick(agentCode, {
-      // Metadata (e.g., IP, user agent) would typically come from req.ip, req.headers['user-agent'] in the controller
-    });
+    const agent = await agentService.trackAgentLinkClick(agentCode, {});
     if (agent && agent.isActive) {
-      userData.referredByAgentId = agent.id; // Link customer to agent
+      userData.referredByAgentId = agent.id;
     } else {
-      logger.warn(`[USER_SERVICE] Invalid or inactive agent code: ${agentCode}. Customer not attributed to agent.`);
+      logger.warn(`[USER_SERVICE] Invalid or inactive agent code: ${agentCode}.`);
     }
   }
 
   const newUser = new User(userData);
   await newUser.save();
 
-  // Mark customer as registered by agent after user is saved
   if (role === 'customer' && agentCode && newUser.referredByAgentId) {
     await agentService.markCustomerRegisteredByAgent(agentCode, newUser.id);
   }
@@ -115,8 +108,6 @@ const updateProfile = async (userId, updateData) => {
     throw new HttpError(500, 'Failed to update profile due to an unexpected error.');
   }
 };
-
-
 
 const getNotificationPreferences = async (userId) => {
   try {
@@ -166,6 +157,7 @@ const updateNotificationPreferences = async (userId, preferencesData) => {
 
 // --- Admin Specific Services ---
 
+// ✅ FIXED: Now calculates totalOrders for each user in the list
 const adminGetUsers = async (options) => {
   const { role, search, page = 1, limit = 10 } = options;
   try {
@@ -180,13 +172,37 @@ const adminGetUsers = async (options) => {
       ];
     }
 
+    // 1. Fetch Users
     const users = await User.find(query)
       .select('-password')
       .skip((page - 1) * limit)
       .limit(limit)
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
 
     const totalUsers = await User.countDocuments(query);
+
+    // 2. Fetch Order Counts if role includes customers
+    if (users.length > 0 && (!role || role === 'customer')) {
+      const userIds = users.map(u => u.id);
+      
+      // Group orders by customerId
+      const orderCounts = await Order.aggregate([
+        { $match: { customerId: { $in: userIds } } },
+        { $group: { _id: "$customerId", count: { $sum: 1 } } }
+      ]);
+
+      // Create lookup map
+      const countMap = {};
+      orderCounts.forEach(item => {
+        countMap[item._id] = item.count;
+      });
+
+      // Attach counts to users
+      users.forEach(user => {
+        user.totalOrders = countMap[user.id] || 0;
+      });
+    }
 
     return {
       users,
@@ -220,6 +236,7 @@ const adminGetUser = async (userId) => {
       const customerOrders = await Order.find({ customerId: userId });
       const totalSpent = customerOrders.reduce((sum, order) => sum + (order.finalAmountPaid || 0), 0);
 
+      // Explicitly set totalOrders here for the detail view
       userObject.totalOrders = customerOrders.length;
       userObject.totalSpent = totalSpent;
       userObject.lastOrderDate = customerOrders.length > 0 ? customerOrders.sort((a, b) => b.orderDate - a.orderDate)[0].orderDate : null;
@@ -229,10 +246,8 @@ const adminGetUser = async (userId) => {
     if (user.role === 'driver') {
       const driverOrders = await Order.find({ driverId: userId, status: 'Delivered' }).sort({ orderDate: -1 });
       const totalEarnings = driverOrders.reduce((sum, order) => sum + (order.deliveryFee || 0), 0);
-      let averageRating = 0; // Default value
+      let averageRating = 0; 
 
-      // --- FIX STARTS HERE ---
-      // This block now safely attempts to get the rating without crashing if Firestore isn't available.
       if (isFirebaseInitialized && firestore) {
         try {
           const feedbackSnapshot = await firestore.collection('feedback').where('driverId', '==', userId).get();
@@ -244,17 +259,13 @@ const adminGetUser = async (userId) => {
             averageRating = parseFloat((totalRating / feedbackSnapshot.size).toFixed(2));
           }
         } catch (firebaseError) {
-          logger.warn(`[USER_SERVICE] Could not fetch driver feedback from Firestore for driver ${userId}. This is expected if Firestore is not configured. Defaulting rating to 0. Error: ${firebaseError.message}`);
-          // The averageRating will remain its default value (0)
+          logger.warn(`[USER_SERVICE] Could not fetch driver feedback: ${firebaseError.message}`);
         }
-      } else {
-        logger.warn(`[USER_SERVICE] Firebase/Firestore not initialized. Skipping driver feedback query for driver ${userId}.`);
       }
-      // --- FIX ENDS HERE ---
 
       userObject.totalDeliveriesCompleted = driverOrders.length;
       userObject.totalEarnings = totalEarnings;
-      userObject.averageRating = averageRating; // Safely defaults to 0
+      userObject.averageRating = averageRating;
       userObject.lastDeliveryDate = driverOrders.length > 0 ? driverOrders[0].orderDate : null;
       userObject.recentDeliveries = driverOrders.slice(0, 5).map(o => o.toObject());
     }
@@ -317,7 +328,6 @@ const adminUpdateUser = async (userId, updateData) => {
     updates.email = email.toLowerCase();
   }
 
-
   if (Object.keys(updates).length === 0) {
     throw new HttpError(400, 'No valid fields provided for admin update.');
   }
@@ -371,8 +381,6 @@ const deleteUserById = async (userIdToDelete) => {
     throw new HttpError(500, 'Failed to delete user.');
   }
 };
-
-// --- Driver Specific Services ---
 
 const updateDriverAvailability = async (driverId, isAvailableOnline) => {
   try {
@@ -428,11 +436,9 @@ const getDriverStats = async (driverId, period = 'allTime') => {
     }).select('deliveryFee');
     const totalRevenueMade = deliveredOrders.reduce((sum, order) => sum + (order.deliveryFee || 0), 0);
 
-    const averageRating = 4.7; // Placeholder value
-
-    const acceptanceRate = 0.92; // Placeholder value
-
-    const averageDeliveryTimeMinutes = 35.5; // Placeholder value
+    const averageRating = 4.7; 
+    const acceptanceRate = 0.92; 
+    const averageDeliveryTimeMinutes = 35.5;
 
     return {
       totalOrdersExecuted,
@@ -448,7 +454,6 @@ const getDriverStats = async (driverId, period = 'allTime') => {
     throw new HttpError(500, 'Failed to retrieve driver statistics.');
   }
 };
-
 
 module.exports = {
   getProfile,

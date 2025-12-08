@@ -50,10 +50,28 @@ const clearAll = async (req, res, next) => {
   }
 };
 
+const getAdminNotifications = async (req, res, next) => {
+  try {
+    const { page, limit, type, unreadOnly } = req.query;
+
+    const result = await notificationService.getAdminNotifications({
+      page: parseInt(page, 10) || 1,
+      limit: parseInt(limit, 10) || 20,
+      type,
+      unreadOnly: unreadOnly === 'true', // Convert query string to boolean
+    });
+
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getUserNotifications,
   getUnreadCount,
   markAllAsRead,
+  getAdminNotifications,
   markAsRead,
   clearAll,
 };

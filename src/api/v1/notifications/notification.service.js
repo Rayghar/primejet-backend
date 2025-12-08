@@ -433,6 +433,49 @@ async function markNotificationAsRead(notificationId, userId) {
 }
 
 /**
+ * Admin: Fetch paginated notifications with filters.
+ * @param {object} query
+ * @param {number} query.page
+ * @param {number} query.limit
+ * @param {string} [query.type]
+ * @param {boolean} [query.unreadOnly]
+ * @returns {Promise<object>} { items: [], total: number, pages: number }
+ */
+async function getAdminNotifications({ page = 1, limit = 20, type, unreadOnly }) {
+  const query = {};
+
+  if (type && type !== 'all') {
+    query.type = type;
+  }
+  if (unreadOnly) {
+    query.isRead = false;
+  }
+
+  const skip = (page - 1) * limit;
+
+  const [items, total] = await Promise.all([
+    Notification.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Notification.countDocuments(query),
+  ]);
+
+  return {
+    items,
+    total,
+    currentPage: page,
+    totalPages: Math.ceil(total / limit),
+    hasMore: skip + items.length < total,
+  };
+}
+
+
+
+
+
+/**
  * Mark all notifications as read for the user.
  * @param {string} userId
  * @returns {Promise<{message:string,modified:number}>}
@@ -489,4 +532,5 @@ module.exports = {
   // Deletes
   deleteNotification,
   clearAllNotifications,
+  getAdminNotifications,
 };

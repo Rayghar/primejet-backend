@@ -136,14 +136,19 @@ const googleMobileSignIn = async (req, res, next) => {
 
 const appleMobileSignIn = async (req, res, next) => {
   try {
-    // The validation middleware already ensured req.body.idToken exists
-    const { idToken } = req.body; 
+    // Handle both naming conventions
+    const idToken = req.body.idToken || req.body.identityToken; 
+    
+    if (!idToken) {
+        throw new HttpError(400, 'Apple Identity Token is required.');
+    }
+
     const result = await authService.verifyAppleIdTokenAndLogin(idToken);
     res.status(200).json(result);
   } catch (error) {
     next(error);
   }
-}
+};
 
 
 

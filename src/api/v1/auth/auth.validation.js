@@ -66,15 +66,14 @@ const verifyPasswordTokenSchema = Joi.object({
 });
 
 const mobileSignInSchema = Joi.object({
-  idToken: Joi.string().required().messages({
-    'any.required': 'ID Token is required.',
-  }),
-  // Apple may include 'name' and 'email' in the body on the first sign-in, but the ID Token is mandatory.
-  name: Joi.string().optional(), 
-  email: Joi.string().email().optional(),
-  // The client can optionally send the Authorization Code for the refresh token flow (not implemented here)
+  // Allow either idToken OR identityToken
+  idToken: Joi.string().optional(),
+  identityToken: Joi.string().optional(),
+  
+  name: Joi.string().optional().allow('', null), 
+  email: Joi.string().email().optional().allow('', null),
   authorizationCode: Joi.string().optional(),
-});
+}).or('idToken', 'identityToken'); // Require at least one
 
 
 module.exports = {

@@ -383,7 +383,7 @@ const placeOrder = async (customerId, orderData) => {
       walletAmountUsed,
       grandTotal: overallGrandTotal,
       finalAmountPaid: paymentStatusCurrent === 'Completed' ? (overallGrandTotal - walletAmountUsed) : 0,
-
+      serviceZoneId: coveringZone.id,
       status: orderStatus,
       paymentStatus: paymentStatusCurrent,
       paymentMethod: isPayOnPickup ? 'payOnPickup' : (orderData.paymentMethod || 'paystack'),

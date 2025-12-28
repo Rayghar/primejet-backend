@@ -75,7 +75,7 @@ app.use(cors({
     credentials: true 
 }));
 app.use(morgan('combined', { stream: logger.stream }));
-app.use('/api', rateLimiter);
+//app.use('/api', rateLimiter);
 app.use(require('./middleware/logger_middleware'));
 
 app.post(

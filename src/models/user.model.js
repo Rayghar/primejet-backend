@@ -11,6 +11,19 @@ const userSchema = new mongoose.Schema(
       default: () => uuidv4(),
       index: true,
     },
+
+    currentLocation: {
+      type: {
+        type: String,
+        enum: ['Point'],
+        default: 'Point',
+      },
+      coordinates: {
+        type: [Number], // Format: [longitude, latitude]
+        default: [0, 0],
+      },
+      lastUpdated: { type: Date },
+    },
     googleId: { 
       type: String, 
       sparse: true, 
@@ -172,5 +185,7 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
 };
 
 const User = mongoose.model('User', userSchema);
+userSchema.index({ currentLocation: '2dsphere' });
+module.exports = mongoose.model('User', userSchema);
 
 module.exports = User;

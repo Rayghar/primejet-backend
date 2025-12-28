@@ -401,6 +401,29 @@ const updateDriverAvailability = async (driverId, isAvailableOnline) => {
   }
 };
 
+const updateLocation = async (userId, latitude, longitude) => {
+  const lat = parseFloat(latitude);
+  const lng = parseFloat(longitude);
+
+  if (isNaN(lat) || isNaN(lng)) {
+    throw new HttpError(400, 'Invalid coordinates provided.');
+  }
+
+  // GeoJSON format is [Longitude, Latitude]
+  await User.updateOne(
+    { id: userId },
+    {
+      $set: {
+        'currentLocation.type': 'Point',
+        'currentLocation.coordinates': [lng, lat],
+        'currentLocation.lastUpdated': new Date(),
+      }
+    }
+  );
+
+  return { message: 'Location updated successfully.' };
+};
+
 const getStartDateForPeriod = (period) => {
   const now = new Date();
   if (period === 'weekly') {
@@ -428,6 +451,8 @@ const getDriverStats = async (driverId, period = 'allTime') => {
       status: { $in: ['Cancelled', 'Pickup Failed', 'Delivery Failed'] },
        ...dateQuery
     });
+
+
 
     const deliveredOrders = await Order.find({
       driverId: driverId,
@@ -469,4 +494,5 @@ module.exports = {
   updateDriverAvailability,
   getDriverStats,
   registerUser,
+  updateLocation,
 };

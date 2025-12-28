@@ -197,7 +197,51 @@ const exportReport = async ({ reportType, startDate, endDate, format = 'xlsx' })
   }
 };
 
+const getDriverPerformanceStats = async (period = 'monthly') => {
+    let dateFilter = {};
+    const now = new Date();
+    if(period === 'monthly') dateFilter = { $gte: new Date(now.setDate(now.getDate() - 30)) };
+    if(period === 'weekly') dateFilter = { $gte: new Date(now.setDate(now.getDate() - 7)) };
+
+    return await Order.aggregate([
+        { 
+            $match: { 
+                status: 'Delivered', 
+                driverAssignedAt: { $exists: true },
+                createdAt: dateFilter 
+            } 
+        },
+        {
+            $group: {
+                _id: "$driverId",
+                totalDeliveries: { $sum: 1 },
+                revenueGenerated: { $sum: "$grandTotal" },
+                avgRating: { $avg: "$feedback.rating" },
+                // Calc average minutes (Delivered - Assigned) / 60000ms
+                avgTime: { $avg: { $divide: [{ $subtract: ["$deliveredAt", "$driverAssignedAt"] }, 60000] } }
+            }
+        },
+        {
+            $lookup: { from: "users", localField: "_id", foreignField: "id", as: "driver" }
+        },
+        { $unwind: "$driver" },
+        {
+            $project: {
+                id: "$_id",
+                name: "$driver.name",
+                photoUrl: "$driver.photoUrl",
+                totalDeliveries: 1,
+                revenueGenerated: 1,
+                rating: { $ifNull: ["$avgRating", 5.0] },
+                avgDeliveryTime: { $round: ["$avgTime", 0] },
+                onTimeRate: { $literal: 95 } // Placeholder until SLA logic added
+            }
+        }
+    ]);
+};
+
 module.exports = {
   generateReport,
   exportReport, // Export the new function
+  getDriverPerformanceStats,
 };

@@ -322,6 +322,12 @@ const initializeSocket = (io) => {
       removeOnline(userId, socket.id);
       logger.info(`[SOCKET] User disconnected: ${userId}`);
     });
+
+    socket.on('update_location', (data) => {
+        // data: { driverId, lat, lng }
+        // Broadcast to all Admins listening on 'driver_location_update'
+        io.emit('driver_location_update', data);
+    });
   });
 };
 

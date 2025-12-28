@@ -70,7 +70,10 @@ app.set('trust proxy', 1);
 
 // --- Step 4: Setup Global Middleware ---
 app.use(helmet());
-app.use(cors());
+app.use(cors({
+    origin: true, 
+    credentials: true 
+}));
 app.use(morgan('combined', { stream: logger.stream }));
 app.use('/api', rateLimiter);
 app.use(require('./middleware/logger_middleware'));

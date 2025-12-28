@@ -153,6 +153,21 @@ const updateDriverAvailability = async (req, res, next) => {
   }
 };
 
+const updateLocation = async (req, res, next) => {
+  try {
+    const { latitude, longitude } = req.body;
+    
+    // req.user.id comes from the authMiddleware
+    const result = await userService.updateLocation(req.user.id, latitude, longitude);
+    
+    res.status(200).json(result);
+  } catch (error) {
+    // We log but don't crash for background updates
+    // logger.error('[USER_CONTROLLER] Location update failed', error); 
+    next(error);
+  }
+};
+
 const getDriverStats = async (req, res, next) => {
   try {
     const stats = await userService.getDriverStats(req.user.id, req.query.period);
@@ -178,5 +193,6 @@ module.exports = {
   updateDriverAvailability,
   getDriverStats,
   updateFcmToken,
+  updateLocation,
   
 };

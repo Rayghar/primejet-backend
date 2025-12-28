@@ -34,6 +34,12 @@ router.put(
     userController.updateProfile
 );
 
+router.put(
+  '/me/location',
+  authMiddleware('driver'), // Only drivers should post location
+  userController.updateLocation
+);
+
 router.get(
     '/me/notification-preferences',
     authMiddleware(),

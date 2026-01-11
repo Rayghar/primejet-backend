@@ -50,7 +50,29 @@ const exportReport = async (req, res, next) => {
   }
 };
 
+/**
+ * @desc    Get aggregated driver performance stats (deliveries, rating, revenue)
+ * @route   GET /api/v1/reports/driver-performance
+ * @access  Admin, Manager
+ */
+const getDriverPerformanceStats = async (req, res, next) => {
+  try {
+    const { period } = req.query; // e.g. 'weekly', 'monthly'
+
+    logger.info(`[REPORT_CONTROLLER] Fetching driver performance stats for period: ${period || 'monthly'}`);
+
+    // Call the service function (ensure this exists in report.service.js)
+    const stats = await reportService.getDriverPerformanceStats(period);
+
+    res.status(200).json(stats);
+  } catch (error) {
+    logger.error(`[REPORT_CONTROLLER] Error fetching driver performance stats: ${error.message}`);
+    next(new HttpError(500, 'Failed to fetch driver performance statistics.'));
+  }
+};
+
 module.exports = {
   getReport,
   exportReport, // Export the new controller
+  getDriverPerformanceStats,
 };

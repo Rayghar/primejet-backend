@@ -74,6 +74,12 @@ router.post(
 );
 
 router.get(
+    '/', 
+    authMiddleware(['admin', 'manager', 'dispatch','driver', 'cashier']), 
+    userController.getUsers
+);
+
+router.get(
     '/admin/:userId',
     authMiddleware('admin'),
     userController.adminGetUser

@@ -78,6 +78,7 @@ const authMiddleware = (requiredRole) => async (req, res, next) => {
     // Fallback for other unexpected errors
     return next(new HttpError(500, 'Authentication process failed due to an unexpected server error.'));
   }
+
 };
 
 module.exports = authMiddleware;

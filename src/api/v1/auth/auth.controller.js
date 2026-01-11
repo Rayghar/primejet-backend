@@ -163,6 +163,24 @@ const adminCreateUser = async (req, res, next) => {
   }
 };
 
+exports.guest = async (req, res, next) => {
+  try {
+    const { name, phone } = req.body;
+
+    const result = await authService.createGuest({ name, phone });
+
+    res.status(200).json({
+      success: true,
+      message: 'Guest session created',
+      token: result.token,
+      user: result.user,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+
 module.exports = {
   registerCustomer,
   registerDriver,
@@ -176,4 +194,6 @@ module.exports = {
   resetPassword,
   verifyEmailOtp,
   resendOtp,
+ 
+ 
 };

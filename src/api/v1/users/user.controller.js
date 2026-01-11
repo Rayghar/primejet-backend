@@ -177,6 +177,26 @@ const getDriverStats = async (req, res, next) => {
   }
 };
 
+const getUsers = async (req, res, next) => {
+  try {
+    const { role, isAvailableOnline } = req.query;
+    const query = {};
+
+    // 1. Filter by Role (e.g. 'driver')
+    if (role) query.role = role;
+
+    // 2. Filter by Online Status (Convert string 'true' to boolean true)
+    if (isAvailableOnline === 'true') query.isAvailableOnline = true;
+    if (isAvailableOnline === 'false') query.isAvailableOnline = false;
+
+    const users = await User.find(query).select('-password -__v').lean();
+    
+    res.status(200).json(users);
+  } catch (error) {
+    next(new HttpError(500, 'Fetching users failed.'));
+  }
+};
+
 
 
 module.exports = {
@@ -194,5 +214,6 @@ module.exports = {
   getDriverStats,
   updateFcmToken,
   updateLocation,
+  getUsers,
   
 };

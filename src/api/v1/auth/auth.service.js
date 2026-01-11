@@ -33,6 +33,38 @@ const generateJwtForUser = (user, isNewUser = false) => {
   };
 };
 
+async function createGuest({ name, phone }) {
+  if (!phone) {
+    throw new HttpError(400, 'Phone number is required for guest checkout.');
+  }
+
+  // Reuse guest if phone already exists
+  let user = await User.findOne({ phone });
+
+  if (!user) {
+    user = await User.create({
+      id: uuidv4(),
+      name: name || 'Guest Customer',
+      phone,
+      role: 'guest',
+      status: 'active',
+      isVerified: true,              // 👈 IMPORTANT
+      createdVia: 'guest_checkout',
+    });
+  }
+
+  const token = jwt.sign(
+    { id: user.id, role: user.role },
+    config.jwt.secret,
+    { expiresIn: '30d' }
+  );
+
+  return {
+    user,
+    token,
+  };
+}
+
 const registerCustomer = async (userData) => {
     const { email, password, name, phone, referralCode } = userData;
     const existingUser = await User.findOne({ email: email.toLowerCase() }).select('+isVerified');
@@ -368,6 +400,7 @@ const resetPassword = async (token, newPassword) => {
     return { message: 'Password has been reset successfully.' };
 };
 
+
 module.exports = {
   registerCustomer,
   verifyGoogleIdTokenAndLogin,
@@ -378,5 +411,6 @@ module.exports = {
   resetPassword,
   adminCreateUser,
   verifyAppleIdTokenAndLogin,
+  createGuest,
 
 };

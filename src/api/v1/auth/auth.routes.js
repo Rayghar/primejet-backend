@@ -2,6 +2,7 @@
 // ADVISORY: This version fixes the server crash by importing the missing schema.
 
 const express = require('express');
+const router = express.Router();
 const authController = require('./auth.controller');
 const validate = require('../../../middleware/validate.middleware');
 const { 
@@ -15,8 +16,6 @@ const {
   verifyOtpSchema,
   verifyPasswordTokenSchema // MODIFIED: Added the missing schema to the import list
 } = require('./auth.validation');
-
-const router = express.Router();
 
 // --- Authentication and Registration ---
 router.post('/register/customer', validate(registerCustomerSchema), authController.registerCustomer);
@@ -32,7 +31,11 @@ router.post('/request-password-reset', validate(requestPasswordResetSchema), aut
 router.post('/verify-password-token', validate(verifyPasswordTokenSchema), authController.verifyPasswordResetToken);
 router.post('/reset-password', validate(resetPasswordSchema), authController.resetPassword);
 
+// --- Guest Logins ---
+router.post('/guest', authController.guest); // ✅ MUST EXIST
+
 // --- NEW ROUTE FOR MOBILE SOCIAL LOGIN ---
 router.post('/google/mobile-signin', authController.googleMobileSignIn);
 router.post('/apple/mobile-signin', validate(mobileSignInSchema), authController.appleMobileSignIn); // << NEW ROUTE >>
+
 module.exports = router;

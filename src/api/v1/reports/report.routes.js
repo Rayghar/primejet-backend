@@ -25,6 +25,13 @@ router.get(
   reportController.exportReport
 );
 
+
+router.get(
+  '/driver-performance',
+  authMiddleware(['admin', 'manager']),
+  reportController.getDriverPerformanceStats // Ensure this controller function is imported/defined
+);
+
 console.log('[REPORT_ROUTES] Report routes registered.');
 
 module.exports = router;

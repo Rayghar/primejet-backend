@@ -507,5 +507,9 @@ module.exports = {
   resetPassword,
   adminCreateUser,
   verifyAppleIdTokenAndLogin,
+  // --- surgical add ---
+  createGuest,
+  upgradeGuest,
+  resendVerificationOtp,
 
 };

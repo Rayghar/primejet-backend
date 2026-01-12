@@ -1,6 +1,4 @@
 // File: src/api/v1/auth/auth.service.js
-// NOTE: Clinical update only (guest session + upgrade + resend verification throttle + JWT secret alignment)
-
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
@@ -8,7 +6,7 @@ const crypto = require('crypto');
 const User = require('../../../models/user.model');
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
-const globalConfig = require('../../../config'); // aligns JWT secret with auth.middleware.js
+const globalConfig = require('../../../config'); // IMPORTANT: align JWT secret with auth.middleware.js
 const referralService = require('../referrals/referral.service');
 const { OAuth2Client } = require('google-auth-library');
 const { sendEmail } = require('../../../services/email.service');
@@ -16,10 +14,9 @@ const Agent = require('../../../models/agent.model');
 const agentService = require('../agents/agent.service');
 const jwksClient = require('jwks-rsa');
 
-const JWT_SECRET =
-  (globalConfig && globalConfig.jwt && globalConfig.jwt.secret) ||
-  process.env.JWT_SECRET ||
-  'fallback_super_secret_key_for_dev_only_please_change';
+const JWT_SECRET = (globalConfig && globalConfig.jwt && globalConfig.jwt.secret)
+  ? globalConfig.jwt.secret
+  : (process.env.JWT_SECRET || 'your-default-super-secret-key-for-dev');
 
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const APPLE_AUDIENCE = process.env.APPLE_SERVICE_ID;
@@ -31,112 +28,112 @@ const appleClient = jwksClient({
 const generateJwtForUser = (user, isNewUser = false) => {
   const payload = { id: user.id, role: user.role };
   const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1d' });
-
   return {
     token,
     userId: user.id,
     role: user.role,
     name: user.name,
     isNewUser,
-    message: 'Login successful.',
+    message: 'Login successful.'
   };
 };
 
-// ====================== GUEST + RESEND THROTTLE (SURGICAL ADD) ======================
-const VERIFICATION_RESEND_COOLDOWN_SECONDS = Number(
-  process.env.VERIFICATION_RESEND_COOLDOWN_SECONDS || 60
-);
-
-// In-memory throttle: key=emailLower, value=timestamp(ms)
-// (No DB/model changes; resets on restart which is acceptable for throttle)
+// ====================== GUEST + RESEND THROTTLE (CLINICAL ADD) ======================
+const VERIFICATION_RESEND_COOLDOWN_SECONDS = Number(process.env.VERIFICATION_RESEND_COOLDOWN_SECONDS || 60);
 const resendOtpThrottle = new Map();
 
-const makeGuestEmail = () => `guest_${uuidv4()}@guest.gas2door.local`;
+const isGuestEmail = (email) =>
+  typeof email === 'string' &&
+  (email.endsWith('@guest.gas2door.ng') || email.endsWith('@guest.gas2door.local') || email.includes('@guest.'));
+
+const makeGuestEmail = (phone) => {
+  const suffix = uuidv4().slice(0, 8);
+  const safePhone = String(phone || '').replace(/[^\d+]/g, '') || 'unknown';
+  return `${safePhone}.${suffix}@guest.gas2door.ng`;
+};
+
+const makeGuestPassword = () => {
+  // Plain string; user.model pre-save hook hashes it.
+  return `G2D_g_${crypto.randomBytes(16).toString('hex')}`;
+};
 
 /**
- * Create a "guest checkout" session.
- * IMPORTANT: role is set to 'customer' so existing order routes protected by authMiddleware('customer') work unchanged.
- * We use a synthetic guest email domain + password null to distinguish guest accounts.
+ * CREATE GUEST SESSION (schema-safe)
+ * - role MUST be a valid enum -> use 'customer'
+ * - password MUST exist (schema requires it) -> random password
+ * - isVerified MUST be true so nothing blocks order flow
+ * - status active
+ * - mark "guestness" via email domain @guest.gas2door.ng
  */
 const createGuest = async (meta = {}) => {
+  const name = (meta.name || 'Guest').toString().trim() || 'Guest';
+  const phone = String(meta.phone || '').trim();
+
+  if (!phone) throw new HttpError(400, 'Phone number is required to continue as a guest.');
+
   const guestUser = new User({
     id: uuidv4(),
-    name: meta.name || 'Guest',
-    email: makeGuestEmail(),
-    phone: meta.phone || null,
-    role: 'customer', // critical for existing protected routes
-    isVerified: true, // avoid verification block for guest checkout
+    name,
+    email: makeGuestEmail(phone),
+    phone,
+    password: makeGuestPassword(),
+    role: 'customer',
+    isVerified: true,
     status: 'active',
-    password: null, // signals non-password account; do not use /login
   });
 
   await guestUser.save();
 
-  const jwtPayload = generateJwtForUser(guestUser, true);
+  const jwtResult = generateJwtForUser(guestUser, true);
   return {
-    ...jwtPayload,
-    isGuest: true,
+    ...jwtResult,
+    user: {
+      id: guestUser.id,
+      name: guestUser.name,
+      role: guestUser.role,
+      email: guestUser.email,
+      phone: guestUser.phone,
+      isGuest: true,
+    }
   };
 };
 
-/**
- * Upgrade a guest checkout session into a real customer account.
- * Accepts either:
- *  - guestUserOrId: string (user.id) OR
- *  - guestUserOrId: req.user object (must have id)
- */
-const upgradeGuest = async (guestUserOrId, upgradeData) => {
-  const guestUserId =
-    typeof guestUserOrId === 'string' ? guestUserOrId : guestUserOrId?.id;
+const upgradeGuest = async (guestUserId, upgradeData) => {
+  const { email, password, name, phone } = upgradeData;
 
-  if (!guestUserId) throw new HttpError(401, 'Authentication required.');
+  const guest = await User.findOne({ id: guestUserId }).select('+isVerified +status +role +email');
+  if (!guest) throw new HttpError(404, 'Guest session not found.');
 
-  const { email, password, name } = upgradeData;
-
-  const guest = await User.findOne({ id: guestUserId }).select(
-    '+isVerified +status +role +password +otp +otpExpires'
-  );
-
-  if (!guest) throw new HttpError(404, 'Guest account not found.');
-
-  // Identify "guest checkout" accounts safely without changing schema:
-  // - password must be null AND
-  // - email must be within the synthetic guest domain
-  const isGuestAccount =
-    !guest.password &&
-    typeof guest.email === 'string' &&
-    guest.email.endsWith('@guest.gas2door.local');
-
-  if (!isGuestAccount) {
+  // Only allow upgrade for guest-marked emails
+  if (!isGuestEmail(guest.email)) {
     throw new HttpError(400, 'Only guest checkout sessions can be upgraded.');
   }
 
-  const emailLower = email.toLowerCase();
+  const emailLower = String(email || '').toLowerCase().trim();
+  if (!emailLower) throw new HttpError(400, 'Email is required.');
+  if (!password) throw new HttpError(400, 'Password is required.');
 
   // Prevent upgrading into an already-verified account
-  const existing = await User.findOne({ email: emailLower }).select(
-    '+isVerified +role +id'
-  );
-
-  if (existing && existing.isVerified) {
+  const existing = await User.findOne({ email: emailLower }).select('+isVerified +id');
+  if (existing && existing.isVerified && existing.id !== guest.id) {
     throw new HttpError(409, 'An account with this email already exists.');
   }
-
-  // Don’t auto-merge into another account (keep clinical/safe)
   if (existing && existing.id !== guest.id) {
+    // No auto-merge here (safer)
     throw new HttpError(409, 'This email is already associated with another account.');
   }
 
-  // Generate OTP for email verification
+  // OTP for email verification
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
   const hashedOtp = await bcrypt.hash(otp, 10);
   const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
-  // IMPORTANT: keep consistent with your current design:
-  // pass plain password and rely on user.model.js pre-save hook to hash once
   guest.name = name || guest.name || 'Customer';
   guest.email = emailLower;
-  guest.password = password; // plain
+  guest.phone = phone || guest.phone || null;
+
+  // IMPORTANT: assign plain password, rely on user.model pre-save hashing
+  guest.password = password;
   guest.role = 'customer';
   guest.isVerified = false;
   guest.status = 'pending_verification';
@@ -149,31 +146,24 @@ const upgradeGuest = async (guestUserOrId, upgradeData) => {
     to: emailLower,
     subject: 'Your Gas2Door Verification Code',
     text: `Your verification code is: ${otp}.`,
-    html: `<p>Your verification code is: <strong>${otp}</strong>.</p>`,
+    html: `<p>Your verification code is: <strong>${otp}</strong>.</p>`
   });
 
   logger.info(`[AUTH_SERVICE] Upgrade OTP for ${emailLower}: ${otp}`);
 
-  // Return a clean response (optionally include token if your frontend wants it)
-  const jwtPayload = generateJwtForUser(guest, false);
   return {
-    ...jwtPayload,
-    message:
-      'Upgrade successful. A 4-digit verification code has been sent to your email.',
-    isGuest: false,
-    requiresVerification: true,
+    userId: guest.id,
+    message: 'Upgrade successful. A 4-digit verification code has been sent to your email.'
   };
 };
 
 const resendVerificationOtp = async (email) => {
-  const emailLower = email.toLowerCase();
+  const emailLower = String(email || '').toLowerCase().trim();
+  if (!emailLower) throw new HttpError(400, 'Email is required.');
 
-  const user = await User.findOne({ email: emailLower }).select(
-    '+isVerified +otp +otpExpires'
-  );
-
-  // avoid account enumeration
+  const user = await User.findOne({ email: emailLower }).select('+isVerified +otp +otpExpires');
   if (!user) {
+    // avoid account enumeration
     return { message: 'If your email is registered, a verification code will be sent.' };
   }
 
@@ -181,7 +171,6 @@ const resendVerificationOtp = async (email) => {
     return { message: 'Email is already verified.' };
   }
 
-  // Throttle
   const now = Date.now();
   const last = resendOtpThrottle.get(emailLower) || 0;
   const cooldownMs = VERIFICATION_RESEND_COOLDOWN_SECONDS * 1000;
@@ -202,27 +191,21 @@ const resendVerificationOtp = async (email) => {
     to: emailLower,
     subject: 'Your Gas2Door Verification Code',
     text: `Your verification code is: ${otp}.`,
-    html: `<p>Your verification code is: <strong>${otp}</strong>.</p>`,
+    html: `<p>Your verification code is: <strong>${otp}</strong>.</p>`
   });
 
   logger.info(`[AUTH_SERVICE] Resent OTP for ${emailLower}: ${otp}`);
-
   return { message: 'A new verification code has been sent to your email.' };
 };
-// ====================== END GUEST + RESEND THROTTLE (SURGICAL ADD) ======================
+// ====================== END GUEST + RESEND THROTTLE (CLINICAL ADD) ======================
 
 const registerCustomer = async (userData) => {
   const { email, password, name, phone, referralCode } = userData;
-
-  const existingUser = await User.findOne({ email: email.toLowerCase() }).select(
-    '+isVerified'
-  );
-
+  const existingUser = await User.findOne({ email: email.toLowerCase() }).select('+isVerified');
   if (existingUser && existingUser.isVerified) {
     throw new HttpError(409, 'An account with this email already exists.');
   }
 
-  // IMPORTANT: do NOT hash here (pre-save hook in user.model.js should hash once)
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
   const hashedOtp = await bcrypt.hash(otp, 10);
   const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
@@ -231,19 +214,17 @@ const registerCustomer = async (userData) => {
     name,
     email: email.toLowerCase(),
     phone,
-    password: password, // plain; model hook hashes
+    password: password, // plain (user.model hashes)
     role: 'customer',
     otp: hashedOtp,
     otpExpires,
     isVerified: false,
-    status: 'pending_verification',
+    status: 'pending_verification'
   };
 
   let user;
   if (existingUser) {
-    user = await User.findOneAndUpdate({ _id: existingUser._id }, userFields, {
-      new: true,
-    });
+    user = await User.findOneAndUpdate({ _id: existingUser._id }, userFields, { new: true });
   } else {
     user = new User({ ...userFields, id: uuidv4() });
     await user.save();
@@ -251,49 +232,32 @@ const registerCustomer = async (userData) => {
 
   if (referralCode && referralCode.trim().length > 0) {
     const trimmedCode = referralCode.trim().toUpperCase();
-
-    // 1. Check if the code belongs to an active agent first.
     const potentialAgent = await Agent.findOne({ agentCode: trimmedCode });
 
     if (potentialAgent && potentialAgent.isActive) {
-      // It's an agent referral. Link the user to the agent.
       user.referredByAgentId = potentialAgent.id;
-      logger.info(
-        `[AUTH_SERVICE] Attributing new user ${email} to agent ${potentialAgent.id} via code ${trimmedCode}.`
-      );
+      logger.info(`[AUTH_SERVICE] Attributing new user ${email} to agent ${potentialAgent.id} via code ${trimmedCode}.`);
     } else {
-      // 2. If not an agent, fallback to the customer-to-customer referral logic.
-      logger.info(
-        `[AUTH_SERVICE] Code ${trimmedCode} not found for an active agent. Checking for customer referral.`
-      );
+      logger.info(`[AUTH_SERVICE] Code ${trimmedCode} not found for an active agent. Checking for customer referral.`);
       await referralService.processCodeOnRegistration(user, trimmedCode);
     }
   }
 
   await user.save();
 
-  // Update agent stats after user is saved
   if (user.referredByAgentId) {
-    await agentService.markCustomerRegisteredByAgent(
-      referralCode.trim().toUpperCase(),
-      user.id
-    );
+    await agentService.markCustomerRegisteredByAgent(referralCode.trim().toUpperCase(), user.id);
   }
 
   await sendEmail({
     to: email,
     subject: 'Your Gas2Door Verification Code',
     text: `Your verification code is: ${otp}.`,
-    html: `<p>Your verification code is: <strong>${otp}</strong>.</p>`,
+    html: `<p>Your verification code is: <strong>${otp}</strong>.</p>`
   });
 
   logger.info(`[AUTH_SERVICE] OTP for ${email}: ${otp}`);
-
-  return {
-    userId: user.id,
-    message:
-      'Registration successful. A 4-digit verification code has been sent to your email.',
-  };
+  return { userId: user.id, message: 'Registration successful. A 4-digit verification code has been sent to your email.' };
 };
 
 const verifyGoogleIdTokenAndLogin = async (idToken) => {
@@ -303,13 +267,12 @@ const verifyGoogleIdTokenAndLogin = async (idToken) => {
       audience: [
         process.env.GOOGLE_CLIENT_ID,
         process.env.GOOGLE_ANDROID_CLIENT_ID,
-        process.env.GOOGLE_IOS_CLIENT_ID,
-      ].filter((id) => id),
+        process.env.GOOGLE_IOS_CLIENT_ID
+      ].filter(id => id),
     });
 
     const payload = ticket.getPayload();
     const { email, name, sub: googleId } = payload;
-
     let user = await User.findOne({ email: email });
 
     if (user) {
@@ -334,7 +297,7 @@ const verifyGoogleIdTokenAndLogin = async (idToken) => {
     await newUser.save();
     return generateJwtForUser(newUser, true);
   } catch (error) {
-    logger.error('Error verifying Google ID token:', error);
+    logger.error("Error verifying Google ID token:", error);
     throw new HttpError(401, 'Invalid Google token or user could not be processed.');
   }
 };
@@ -347,12 +310,9 @@ const verifyAppleIdTokenAndLogin = async (idToken) => {
 
   try {
     const decodedToken = jwt.decode(idToken, { complete: true });
-    if (!decodedToken) {
-      throw new HttpError(401, 'Invalid Apple ID Token format.');
-    }
+    if (!decodedToken) throw new HttpError(401, 'Invalid Apple ID Token format.');
 
     const { kid } = decodedToken.header;
-
     const key = await appleClient.getSigningKey(kid);
     const publicKey = key.getPublicKey();
 
@@ -363,7 +323,6 @@ const verifyAppleIdTokenAndLogin = async (idToken) => {
     });
 
     const { email, sub: appleId } = payload;
-
     let user = await User.findOne({ appleId }).select('+isVerified +status');
     let isNewUser = false;
 
@@ -387,18 +346,15 @@ const verifyAppleIdTokenAndLogin = async (idToken) => {
           status: 'active',
           password: null,
         });
-
         await newUser.save();
         user = newUser;
         isNewUser = true;
       }
-    } else {
-      isNewUser = false;
     }
 
     return generateJwtForUser(user, isNewUser);
   } catch (error) {
-    logger.error('Error verifying Apple ID token:', error.message, { stack: error.stack });
+    logger.error("Error verifying Apple ID token:", error.message, { stack: error.stack });
     if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
       throw new HttpError(401, `Invalid Apple Token: ${error.message}`);
     }
@@ -409,17 +365,13 @@ const verifyAppleIdTokenAndLogin = async (idToken) => {
 const verifyEmailOtp = async (email, otp) => {
   const user = await User.findOne({
     email: email.toLowerCase(),
-    otpExpires: { $gt: Date.now() },
+    otpExpires: { $gt: Date.now() }
   }).select('+otp +isVerified');
 
-  if (!user) {
-    throw new HttpError(400, 'Verification code is invalid or has expired.');
-  }
+  if (!user) throw new HttpError(400, 'Verification code is invalid or has expired.');
 
   const isMatch = await bcrypt.compare(otp, user.otp);
-  if (!isMatch) {
-    throw new HttpError(400, 'Invalid verification code provided.');
-  }
+  if (!isMatch) throw new HttpError(400, 'Invalid verification code provided.');
 
   user.isVerified = true;
   user.status = 'active';
@@ -431,41 +383,30 @@ const verifyEmailOtp = async (email, otp) => {
 };
 
 const login = async (email, password) => {
-  const user = await User.findOne({ email: email.toLowerCase() }).select(
-    '+password +isVerified'
-  );
+  const user = await User.findOne({ email: email.toLowerCase() }).select('+password +isVerified');
+  if (!user) throw new HttpError(401, 'Invalid email or password.');
 
-  if (!user) {
-    throw new HttpError(401, 'Invalid email or password.');
+  // Block password login for guest-marked accounts (safety)
+  if (isGuestEmail(user.email)) {
+    throw new HttpError(403, 'This is a guest checkout session. Please upgrade your account to log in.');
   }
 
-  // If a password is not set, this implies a social login OR guest checkout account.
   if (!user.password) {
-    // Keep original behavior, but make message safer for guest/social
-    throw new HttpError(
-      403,
-      'This account cannot use password login. Please use the appropriate sign-in method.'
-    );
+    throw new HttpError(403, 'This account was created using a social provider. Please use Google Sign-In.');
   }
 
   if (user.role === 'customer' && user.isVerified === false) {
-    throw new HttpError(
-      403,
-      'Your account has not been verified. Please check your email for the verification code.'
-    );
+    throw new HttpError(403, 'Your account has not been verified. Please check your email for the verification code.');
   }
 
   const isMatch = await bcrypt.compare(password, user.password);
-  if (!isMatch) {
-    throw new HttpError(401, 'Invalid email or password.');
-  }
+  if (!isMatch) throw new HttpError(401, 'Invalid email or password.');
 
   return generateJwtForUser(user);
 };
 
 const requestPasswordReset = async (email) => {
   const user = await User.findOne({ email: email.toLowerCase() });
-
   if (!user) {
     logger.warn(`Password reset requested for non-existent email: ${email}.`);
     return { message: 'If your email is registered, you will receive a 6-digit reset code.' };
@@ -481,7 +422,7 @@ const requestPasswordReset = async (email) => {
     to: email,
     subject: 'Your Gas2Door Password Reset Code',
     text: `Your password reset code is: ${resetToken}. It will expire in 10 minutes.`,
-    html: `<p>Your password reset code is: <strong>${resetToken}</strong>. It will expire in 10 minutes.</p>`,
+    html: `<p>Your password reset code is: <strong>${resetToken}</strong>. It will expire in 10 minutes.</p>`
   });
 
   logger.info(`Password Reset Code for ${email}: ${resetToken}`);
@@ -496,9 +437,7 @@ const adminCreateUser = async (newUserData, requestingUser) => {
   const { email, password, name, phone, role } = newUserData;
 
   const existingUser = await User.findOne({ email: email.toLowerCase() });
-  if (existingUser) {
-    throw new HttpError(409, 'An account with this email already exists.');
-  }
+  if (existingUser) throw new HttpError(409, 'An account with this email already exists.');
 
   const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -517,69 +456,57 @@ const adminCreateUser = async (newUserData, requestingUser) => {
 
   const userJson = newUser.toJSON();
   delete userJson.password;
-
   return userJson;
 };
 
 const verifyPasswordResetToken = async (email, token) => {
   const user = await User.findOne({
     email: email.toLowerCase(),
-    passwordResetExpires: { $gt: Date.now() },
+    passwordResetExpires: { $gt: Date.now() }
   }).select('+passwordResetToken');
 
-  if (!user) {
-    throw new HttpError(400, 'Reset code is invalid or has expired.');
-  }
+  if (!user) throw new HttpError(400, 'Reset code is invalid or has expired.');
 
   const isMatch = await bcrypt.compare(token, user.passwordResetToken);
-  if (!isMatch) {
-    throw new HttpError(400, 'Invalid reset code provided.');
-  }
+  if (!isMatch) throw new HttpError(400, 'Invalid reset code provided.');
 
   const finalResetToken = crypto.randomBytes(32).toString('hex');
   user.passwordResetToken = crypto.createHash('sha256').update(finalResetToken).digest('hex');
   user.passwordResetExpires = Date.now() + 10 * 60 * 1000;
   await user.save();
 
-  return {
-    message: 'Code verified successfully.',
-    resetToken: finalResetToken,
-  };
+  return { message: 'Code verified successfully.', resetToken: finalResetToken };
 };
 
 const resetPassword = async (token, newPassword) => {
   const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
-
   const user = await User.findOne({
     passwordResetToken: hashedToken,
     passwordResetExpires: { $gt: Date.now() },
   });
 
-  if (!user) {
-    throw new HttpError(400, 'Password reset token is invalid or has expired.');
-  }
+  if (!user) throw new HttpError(400, 'Password reset token is invalid or has expired.');
 
   user.password = newPassword;
   user.passwordResetToken = undefined;
   user.passwordResetExpires = undefined;
 
   await user.save();
-
   return { message: 'Password has been reset successfully.' };
 };
 
 module.exports = {
   registerCustomer,
   verifyGoogleIdTokenAndLogin,
+  verifyAppleIdTokenAndLogin,
   verifyEmailOtp,
   login,
   requestPasswordReset,
   verifyPasswordResetToken,
   resetPassword,
   adminCreateUser,
-  verifyAppleIdTokenAndLogin,
 
-  // --- surgical add ---
+  // guest flow
   createGuest,
   upgradeGuest,
   resendVerificationOtp,

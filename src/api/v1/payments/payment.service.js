@@ -4,6 +4,7 @@ const sha512 = require('js-sha512').sha512;
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
 const orderService = require('../orders/order.service'); // Keep this import for webhooks
+const powerService = require('../utilities/power.service');
 const dotenv = require('dotenv');
 
 dotenv.config();
@@ -91,6 +92,47 @@ const processWebhookEvent = async (eventData, eventType) => {
     monnifyStatus: paymentStatus,
     monnifyResponseMessage: responseMessage,
   };
+
+  // --- START: Power Integration Logic ---
+  // We must determine if this is a GAS order or a POWER order before proceeding.
+  // Power orders require vending; Gas orders require delivery fulfillment.
+  let targetOrder = null;
+  try {
+    targetOrder = await orderService.getOrder(orderId);
+  } catch (e) {
+    logger.warn(`[Payment Service] Could not fetch order ${orderId} for type check. Proceeding as standard order.`);
+  }
+
+  if (targetOrder && targetOrder.type === 'POWER') {
+    if (paymentStatus === 'PAID') {
+      logger.info(`[Payment Service] POWER Order detected (${orderId}). Initiating Vending Sequence.`);
+      
+      try {
+        // 1. Mark Payment as Completed & Status as Processing (Vending in progress)
+        await orderService.updateOrderStatus({
+          orderId: orderId,
+          status: 'Processing', 
+          paymentStatus: 'Completed',
+          paymentDetails: paymentDetails,
+          verifiedAmount: finalAmountForOrder,
+          notes: updateNotes + ' [System] Initiating Electricity Vending.',
+        });
+
+        // 2. Trigger Vending Service
+        // This will call the Utility API (Baxi) and update status to 'Completed' (with Token) or 'Vending Failed'
+        await powerService.vendPower(orderId);
+        
+        logger.info(`[Payment Service] Vending sequence triggered successfully for ${orderId}.`);
+        return; // EXIT HERE: Do not proceed to standard Gas logic
+      } catch (powerError) {
+        logger.error(`[Payment Service] Error during Power processing loop: ${powerError.message}`);
+        // We do not throw here to avoid crashing the webhook response, 
+        // as the order status likely has been updated to 'Vending Failed' inside vendPower if applicable.
+        return;
+      }
+    }
+  }
+  // --- END: Power Integration Logic ---
 
   try {
     logger.debug(`[Payment Service][processWebhookEvent] Calling orderService.updateOrderStatus with: Order ID: ${orderId}, New Status: ${newOrderStatus}, New Payment Status: ${newPaymentStatus}, Verified Amount: ${finalAmountForOrder}, Notes: ${updateNotes}.`);

@@ -58,7 +58,7 @@ const financialsRoutes = require('./api/v2/financials/financials.routes');
 const financeRoutes = require('./api/v2/finance/finanace.routes');
 const zoneRoutes = require('./api/v1/zones/zone.routes');
 const fcmRoutes = require('./api/v1/fcm/fcm.routes');
-
+const powerRoutes = require('./api/v1/utilities/power.routes'); // Add this import
 // --- Step 2: Import All v2 Route Handlers ---
 const v2ApiRoutes = require('./api/v2/index');
 
@@ -110,6 +110,7 @@ app.use('/api/v1/orchestration', runOrchestrationRoutesV1);
 app.use('/api/v1/voice', voiceRoutesV1);
 app.use('/api/v1/zones', zoneRoutes);
 app.use('/api/v1/fcm', fcmRoutes);
+app.use('/api/v1/power', powerRoutes); // Register the route
 logger.info('[APP] API v1 routes setup complete.');
 
 app.use('/api/v2', v2ApiRoutes);

@@ -55,6 +55,19 @@ const orderSchema = new mongoose.Schema(
     customerId: { type: String, required: true, ref: 'User', index: true },
     driverId: { type: String, ref: 'User', index: true, sparse: true },
 
+    // =================================================================
+    // 🛡️ SAFE UPDATE: Type Field with Default
+    // Why this is safe: Mongoose applies 'GAS' to any doc missing this field
+    // BEFORE validation runs. Old orders automatically become 'GAS'.
+    // =================================================================
+    type: {
+      type: String,
+      enum: ['GAS', 'DELIVERY', 'POWER'],
+      default: 'GAS', 
+      required: true,
+      index: true 
+    },
+
     items: [itemSchema],
 
     deliveryAddressSnapshot: {
@@ -100,6 +113,8 @@ const orderSchema = new mongoose.Schema(
         'Canceled',
         'Customer Unavailable',
         'Failed',
+        // --- NEW STATUS ADDED: Safe to append to Enum ---
+        'Vending Failed', 
         // (optional) you can add 'Payment Verification Delayed' later in services without changing UI flows
       ],
       default: 'Pending Payment',
@@ -148,6 +163,17 @@ const orderSchema = new mongoose.Schema(
     // Soft signal for monitoring delayed verification (service will set/unset)
     paymentVerificationDelayed: { type: Boolean, default: false, index: true },
     paymentLastCheckAt: { type: Date },
+
+    // =================================================================
+    // 🛡️ SAFE UPDATE: Metadata
+    // Using a Map is safe because if empty/undefined, it defaults to {}
+    // It does not enforce schema structure, preventing validation errors
+    // =================================================================
+    metadata: {
+      type: Map,
+      of: String,
+      default: {}
+    },
 
     // History & notes
     statusHistory: {

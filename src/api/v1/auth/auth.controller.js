@@ -1,10 +1,10 @@
 // File: src/api/v1/auth/auth.controller.js
-// ADVISORY: This version adds the missing 'verifyPasswordResetToken' function to resolve the server crash.
+// NOTE: Surgical update to add guest + upgrade + resend-verification handlers
+// without breaking existing flows.
 
 const authService = require('./auth.service');
 const authValidation = require('./auth.validation');
 const HttpError = require('../../../utils/HttpError');
-
 
 const registerAdmin = async (req, res, next) => {
   try {
@@ -42,18 +42,21 @@ const verifyEmailOtp = async (req, res, next) => {
   }
 };
 
+/**
+ * Legacy resend handler (kept to avoid breaking existing clients).
+ * NOTE: This is not a true resend; it re-runs registerCustomer.
+ */
 const resendOtp = async (req, res, next) => {
-    try {
-        const { email } = req.body;
-        // In a real app, you would have a dedicated resend service.
-        // For now, re-running register will generate and send a new OTP.
-        const result = await authService.registerCustomer({ email, ...req.body });
-        res.status(200).json({ message: 'A new verification code has been sent.' });
-    } catch (error) {
-        next(error);
-    }
+  try {
+    const { email } = req.body;
+    // In a real app, you would have a dedicated resend service.
+    // For now, re-running register will generate and send a new OTP.
+    await authService.registerCustomer({ email, ...req.body });
+    res.status(200).json({ message: 'A new verification code has been sent.' });
+  } catch (error) {
+    next(error);
+  }
 };
-
 
 const registerCustomer = async (req, res, next) => {
   try {
@@ -95,7 +98,7 @@ const requestPasswordReset = async (req, res, next) => {
 };
 
 // =======================================================================
-// NEW: Added the missing controller function for password token verification.
+// Controller function for password token verification.
 // =======================================================================
 const verifyPasswordResetToken = async (req, res, next) => {
   try {
@@ -120,12 +123,11 @@ const resetPassword = async (req, res, next) => {
   }
 };
 
-
 const googleMobileSignIn = async (req, res, next) => {
   try {
     const { idToken } = req.body;
     if (!idToken) {
-        throw new HttpError(400, 'Google ID Token is required.');
+      throw new HttpError(400, 'Google ID Token is required.');
     }
     const result = await authService.verifyGoogleIdTokenAndLogin(idToken);
     res.status(200).json(result);
@@ -137,10 +139,10 @@ const googleMobileSignIn = async (req, res, next) => {
 const appleMobileSignIn = async (req, res, next) => {
   try {
     // Handle both naming conventions
-    const idToken = req.body.idToken || req.body.identityToken; 
-    
+    const idToken = req.body.idToken || req.body.identityToken;
+
     if (!idToken) {
-        throw new HttpError(400, 'Apple Identity Token is required.');
+      throw new HttpError(400, 'Apple Identity Token is required.');
     }
 
     const result = await authService.verifyAppleIdTokenAndLogin(idToken);
@@ -149,8 +151,6 @@ const appleMobileSignIn = async (req, res, next) => {
     next(error);
   }
 };
-
-
 
 const adminCreateUser = async (req, res, next) => {
   try {
@@ -163,23 +163,66 @@ const adminCreateUser = async (req, res, next) => {
   }
 };
 
-exports.guest = async (req, res, next) => {
+// =======================================================================
+// NEW (Option A): Guest session + upgrade + resend verification (throttled)
+// These are intentionally minimal to avoid touching existing logic.
+// =======================================================================
+
+/**
+ * POST /api/v1/auth/guest
+ * Creates a guest user and returns JWT payload via generateJwtForUser()
+ */
+const guest = async (req, res, next) => {
   try {
-    const { name, phone } = req.body;
-
-    const result = await authService.createGuest({ name, phone });
-
-    res.status(200).json({
-      success: true,
-      message: 'Guest session created',
-      token: result.token,
-      user: result.user,
-    });
-  } catch (err) {
-    next(err);
+    // allow optional meta fields (name/phone/etc) but keep resilient
+    const result = await authService.createGuest(req.body || {});
+    res.status(201).json(result);
+  } catch (error) {
+    next(error);
   }
 };
 
+/**
+ * POST /api/v1/auth/guest/upgrade (auth required)
+ * Upgrades the currently authenticated guest user to customer.
+ * Requires authMiddleware to populate req.user.
+ */
+const guestUpgrade = async (req, res, next) => {
+  try {
+    if (!req.user || !req.user.id) {
+      throw new HttpError(401, 'Authentication required.');
+    }
+
+    // Optional: validate payload if schema exists; otherwise minimal check
+    // If you later add schema in auth.validation.js, wire it here.
+    const { email, password } = req.body || {};
+    if (!email || !password) {
+      throw new HttpError(400, 'Email and password are required.');
+    }
+
+    const result = await authService.upgradeGuest(req.user.id, req.body);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /api/v1/auth/resend-verification
+ * Sends a new verification OTP (throttled in service).
+ */
+const resendVerification = async (req, res, next) => {
+  try {
+    const { email } = req.body || {};
+    if (!email) {
+      throw new HttpError(400, 'Email is required.');
+    }
+    const result = await authService.resendVerificationOtp(email);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
 
 module.exports = {
   registerCustomer,
@@ -190,10 +233,13 @@ module.exports = {
   appleMobileSignIn,
   login,
   requestPasswordReset,
-  verifyPasswordResetToken, // MODIFIED: Exported the new function
+  verifyPasswordResetToken,
   resetPassword,
   verifyEmailOtp,
   resendOtp,
- 
- 
+
+  // --- Option A additions ---
+  guest,
+  guestUpgrade,
+  resendVerification,
 };

@@ -33,37 +33,134 @@ const generateJwtForUser = (user, isNewUser = false) => {
   };
 };
 
-async function createGuest({ name, phone }) {
-  if (!phone) {
-    throw new HttpError(400, 'Phone number is required for guest checkout.');
+// ====================== GUEST + RESEND THROTTLE (SURGICAL ADD) ======================
+const VERIFICATION_RESEND_COOLDOWN_SECONDS = Number(process.env.VERIFICATION_RESEND_COOLDOWN_SECONDS || 60);
+
+// In-memory throttle: key=emailLower, value=timestamp(ms)
+// (No DB/model changes; resets on restart which is acceptable for throttle)
+const resendOtpThrottle = new Map();
+
+const makeGuestEmail = () => {
+  // Avoid null email risk if your schema requires email/unique index
+  return `guest_${uuidv4()}@guest.gas2door.local`;
+};
+
+const createGuest = async (meta = {}) => {
+  // meta can contain optional name/phone/deviceId; we keep minimal
+  const guestUser = new User({
+    id: uuidv4(),
+    name: meta.name || 'Guest',
+    email: makeGuestEmail(),
+    phone: meta.phone || null,
+    role: 'guest',
+    isVerified: true,   // guests should not be blocked by verification logic
+    status: 'active',
+    password: null,     // signals non-password account; do not use /login
+  });
+
+  await guestUser.save();
+  return generateJwtForUser(guestUser, true);
+};
+
+const upgradeGuest = async (guestUserId, upgradeData) => {
+  const { email, password, name, phone } = upgradeData;
+
+  const guest = await User.findOne({ id: guestUserId }).select('+isVerified +status +role');
+  if (!guest) throw new HttpError(404, 'Guest account not found.');
+  if (guest.role !== 'guest') throw new HttpError(400, 'Only guest accounts can be upgraded.');
+
+  const emailLower = email.toLowerCase();
+
+  // Prevent upgrading into an already-verified account
+  const existing = await User.findOne({ email: emailLower }).select('+isVerified +role');
+  if (existing && existing.isVerified) {
+    throw new HttpError(409, 'An account with this email already exists.');
+  }
+  if (existing && existing.id !== guest.id) {
+    // safest behavior: don’t merge automatically in this sensitive file
+    throw new HttpError(409, 'This email is already associated with another account.');
   }
 
-  // Reuse guest if phone already exists
-  let user = await User.findOne({ phone });
+  // Generate OTP for email verification
+  const otp = Math.floor(1000 + Math.random() * 9000).toString();
+  const hashedOtp = await bcrypt.hash(otp, 10);
+  const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
-  if (!user) {
-    user = await User.create({
-      id: uuidv4(),
-      name: name || 'Guest Customer',
-      phone,
-      role: 'guest',
-      status: 'active',
-      isVerified: true,              // 👈 IMPORTANT
-      createdVia: 'guest_checkout',
-    });
-  }
+  // IMPORTANT: keep consistent with your current design:
+  // pass plain password and rely on user.model.js pre-save hook
+  guest.name = name || guest.name || 'Customer';
+  guest.email = emailLower;
+  guest.phone = phone || guest.phone || null;
+  guest.password = password; // plain
+  guest.role = 'customer';
+  guest.isVerified = false;
+  guest.status = 'pending_verification';
+  guest.otp = hashedOtp;
+  guest.otpExpires = otpExpires;
 
-  const token = jwt.sign(
-    { id: user.id, role: user.role },
-    config.jwt.secret,
-    { expiresIn: '30d' }
-  );
+  await guest.save();
 
+  await sendEmail({
+    to: emailLower,
+    subject: 'Your Gas2Door Verification Code',
+    text: `Your verification code is: ${otp}.`,
+    html: `<p>Your verification code is: <strong>${otp}</strong>.</p>`,
+  });
+
+  logger.info(`[AUTH_SERVICE] Upgrade OTP for ${emailLower}: ${otp}`);
+
+  // return token for upgraded account (still pending verification)
   return {
-    user,
-    token,
+    userId: guest.id,
+    message: 'Upgrade successful. A 4-digit verification code has been sent to your email.'
   };
-}
+};
+
+const resendVerificationOtp = async (email) => {
+  const emailLower = email.toLowerCase();
+
+  const user = await User.findOne({ email: emailLower }).select('+isVerified +otp +otpExpires');
+  if (!user) {
+    // avoid account enumeration
+    return { message: 'If your email is registered, a verification code will be sent.' };
+  }
+
+  if (user.isVerified) {
+    return { message: 'Email is already verified.' };
+  }
+
+  // Throttle
+  const now = Date.now();
+  const last = resendOtpThrottle.get(emailLower) || 0;
+  const cooldownMs = VERIFICATION_RESEND_COOLDOWN_SECONDS * 1000;
+
+  if (now - last < cooldownMs) {
+    const waitSec = Math.ceil((cooldownMs - (now - last)) / 1000);
+    throw new HttpError(429, `Please wait ${waitSec}s before requesting another code.`);
+  }
+
+  const otp = Math.floor(1000 + Math.random() * 9000).toString();
+  user.otp = await bcrypt.hash(otp, 10);
+  user.otpExpires = new Date(Date.now() + 10 * 60 * 1000);
+  await user.save();
+
+  resendOtpThrottle.set(emailLower, now);
+
+  await sendEmail({
+    to: emailLower,
+    subject: 'Your Gas2Door Verification Code',
+    text: `Your verification code is: ${otp}.`,
+    html: `<p>Your verification code is: <strong>${otp}</strong>.</p>`,
+  });
+
+  logger.info(`[AUTH_SERVICE] Resent OTP for ${emailLower}: ${otp}`);
+
+  return { message: 'A new verification code has been sent to your email.' };
+};
+// ====================== END GUEST + RESEND THROTTLE (SURGICAL ADD) ======================
+
+
+
 
 const registerCustomer = async (userData) => {
     const { email, password, name, phone, referralCode } = userData;
@@ -400,7 +497,6 @@ const resetPassword = async (token, newPassword) => {
     return { message: 'Password has been reset successfully.' };
 };
 
-
 module.exports = {
   registerCustomer,
   verifyGoogleIdTokenAndLogin,
@@ -411,6 +507,5 @@ module.exports = {
   resetPassword,
   adminCreateUser,
   verifyAppleIdTokenAndLogin,
-  createGuest,
 
 };

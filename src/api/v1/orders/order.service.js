@@ -101,6 +101,7 @@ async function getAdminRecipients() {
  * Core Getters
  * ------------------------------------------------------------------------------------------------- */
 
+// ✅ MOVED HERE to avoid circular dependency
 const initializePayment = async ({ orderId, userId, session }) => {
   logger.info(`[Order Service][initializePayment] Initializing payment for order ${orderId} and user ${userId}.`);
   try {
@@ -226,7 +227,7 @@ const getOrders = async (options) => {
 };
 
 /* -------------------------------------------------------------------------------------------------
- * Place Order  ✅ Admin Alert + timestamps
+ * Place Order  ✅ UPDATED FOR POWER COMPATIBILITY
  * ------------------------------------------------------------------------------------------------- */
 
 const placeOrder = async (customerId, orderData) => {
@@ -234,94 +235,146 @@ const placeOrder = async (customerId, orderData) => {
   session.startTransaction();
   try {
     logger.info(`[ORDER_PLACE_START] Customer: ${customerId}, Data: ${JSON.stringify(orderData)}`);
+    
+    // === SAFETY SWITCH: Detect Order Type ===
+    const isPower = orderData.type === 'POWER';
+    
     const {
       deliveryAddressId, items, recipientName, recipientPhone, isExpress,
       useWalletBalance, promoCodeApplied, paymentMethod,
+      totalAmount, subTotal, serviceFee, metadata // Power specific fields
     } = orderData;
 
-    if (!deliveryAddressId) throw new HttpError(400, 'Delivery address ID is required.');
-    const deliveryAddress = await Address.findOne({ id: deliveryAddressId, userId: customerId }).session(session);
-    if (!deliveryAddress || typeof deliveryAddress.longitude !== 'number' || typeof deliveryAddress.latitude !== 'number') {
-      throw new HttpError(400, 'Delivery address is invalid or missing location coordinates.');
-    }
-
-    const deliveryPoint = { type: 'Point', coordinates: [deliveryAddress.longitude, deliveryAddress.latitude] };
-
-    const coveringZone = await ServiceZone.findOne({
-      isActive: true,
-      area: { $geoIntersects: { $geometry: deliveryPoint } },
-    }).session(session);
-
-    if (!coveringZone) {
-      const cfg = await Config.findOne().session(session);
-      const message = cfg?.outOfZoneDefaultMessage || 'Sorry, we do not currently service this address.';
-      throw new HttpError(400, message);
-    }
-
-    if (typeof coveringZone.deliveryFee !== 'number' || typeof coveringZone.expressSurcharge !== 'number') {
-      throw new HttpError(500, 'Service area pricing is not configured correctly. Please contact support.');
-    }
+    let deliveryAddress, coveringZone, deliveryFee, itemsSubtotal, grandTotal;
+    let deliveryAddressSnapshot;
+    let discountAmount = 0.0;
+    let vatAmount = 0;
+    let serviceFeeAmount = 0;
 
     const user = await User.findOne({ id: customerId })
       .select('name phone walletBalance defaultAddressId role referredBy referredByUserId')
       .session(session);
     if (!user) throw new HttpError(404, 'User placing order not found.');
 
-    const config = await Config.findOne().session(session);
-    if (!config || !config.feeSettings) throw new HttpError(500, 'System configuration for fees is not available.');
-
-    const priceOverrideMap = new Map(
-      (coveringZone.priceOverrides || []).map(override => [override.cylinderId, override.newPrice])
-    );
-
-    const itemsSubtotal = items.reduce((sum, item) => {
-      const effectivePrice = priceOverrideMap.get(item.cylinderId) ?? item.unitPrice;
-      return sum + (item.quantity * effectivePrice);
-    }, 0);
-
-    let discountAmount = 0.0;
-    if (promoCodeApplied) {
-      const promotion = await Promotion.findOne({
-        promoCode: promoCodeApplied.toUpperCase(),
-        isActive: true,
-        validFrom: { $lte: new Date() },
-        validUntil: { $gte: new Date() },
-      }).session(session);
-
-      if (promotion) {
-        if (promotion.minOrderAmount != null && itemsSubtotal < promotion.minOrderAmount) {
-          logger.info(`[PROMO_NOT_APPLIED] Subtotal ${itemsSubtotal} < min ${promotion.minOrderAmount}`);
-        } else {
-          if (promotion.type === 'Percentage Discount') discountAmount = itemsSubtotal * (promotion.value / 100);
-          else if (promotion.type === 'Fixed Amount') discountAmount = promotion.value;
-          discountAmount = Math.min(discountAmount, itemsSubtotal);
+    // --- BRANCH 1: GAS / DELIVERY ORDERS (Legacy Flow - Unchanged) ---
+    if (!isPower) {
+        if (!deliveryAddressId) throw new HttpError(400, 'Delivery address ID is required.');
+        
+        deliveryAddress = await Address.findOne({ id: deliveryAddressId, userId: customerId }).session(session);
+        if (!deliveryAddress || typeof deliveryAddress.longitude !== 'number' || typeof deliveryAddress.latitude !== 'number') {
+          throw new HttpError(400, 'Delivery address is invalid or missing location coordinates.');
         }
-      } else {
-        logger.warn('[PROMO_INVALID] Code: ' + promoCodeApplied);
-        throw new HttpError(400, 'Invalid or expired promo code.');
-      }
+
+        const deliveryPoint = { type: 'Point', coordinates: [deliveryAddress.longitude, deliveryAddress.latitude] };
+
+        coveringZone = await ServiceZone.findOne({
+          isActive: true,
+          area: { $geoIntersects: { $geometry: deliveryPoint } },
+        }).session(session);
+
+        if (!coveringZone) {
+          const cfg = await Config.findOne().session(session);
+          const message = cfg?.outOfZoneDefaultMessage || 'Sorry, we do not currently service this address.';
+          throw new HttpError(400, message);
+        }
+
+        if (typeof coveringZone.deliveryFee !== 'number' || typeof coveringZone.expressSurcharge !== 'number') {
+          throw new HttpError(500, 'Service area pricing is not configured correctly. Please contact support.');
+        }
+
+        const config = await Config.findOne().session(session);
+        if (!config || !config.feeSettings) throw new HttpError(500, 'System configuration for fees is not available.');
+
+        const priceOverrideMap = new Map(
+          (coveringZone.priceOverrides || []).map(override => [override.cylinderId, override.newPrice])
+        );
+
+        itemsSubtotal = items.reduce((sum, item) => {
+          const effectivePrice = priceOverrideMap.get(item.cylinderId) ?? item.unitPrice;
+          return sum + (item.quantity * effectivePrice);
+        }, 0);
+
+        if (promoCodeApplied) {
+          const promotion = await Promotion.findOne({
+            promoCode: promoCodeApplied.toUpperCase(),
+            isActive: true,
+            validFrom: { $lte: new Date() },
+            validUntil: { $gte: new Date() },
+          }).session(session);
+
+          if (promotion) {
+            if (promotion.minOrderAmount != null && itemsSubtotal < promotion.minOrderAmount) {
+              logger.info(`[PROMO_NOT_APPLIED] Subtotal ${itemsSubtotal} < min ${promotion.minOrderAmount}`);
+            } else {
+              if (promotion.type === 'Percentage Discount') discountAmount = itemsSubtotal * (promotion.value / 100);
+              else if (promotion.type === 'Fixed Amount') discountAmount = promotion.value;
+              discountAmount = Math.min(discountAmount, itemsSubtotal);
+            }
+          } else {
+            logger.warn('[PROMO_INVALID] Code: ' + promoCodeApplied);
+            throw new HttpError(400, 'Invalid or expired promo code.');
+          }
+        }
+
+        const subtotalAfterDiscount = itemsSubtotal - discountAmount;
+        vatAmount = subtotalAfterDiscount > 0 ? subtotalAfterDiscount * (config.feeSettings.vatPercentage / 100) : 0;
+        serviceFeeAmount = subtotalAfterDiscount > 0 ? subtotalAfterDiscount * (config.feeSettings.serviceFeePercentage / 100) : 0;
+
+        // Delivery fee + multi-cylinder surcharge
+        deliveryFee = isExpress
+          ? coveringZone.deliveryFee + coveringZone.expressSurcharge
+          : coveringZone.deliveryFee;
+
+        const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
+        if (totalQuantity > 1) {
+          const surchargePercentage = 0.50; // could be config-driven
+          const surchargePerItem = coveringZone.deliveryFee * surchargePercentage;
+          deliveryFee += (totalQuantity - 1) * surchargePerItem;
+        }
+
+        grandTotal = subtotalAfterDiscount + vatAmount + serviceFeeAmount + deliveryFee;
+
+        deliveryAddressSnapshot = {
+          fullAddress: deliveryAddress.fullAddress,
+          street: deliveryAddress.street,
+          city: deliveryAddress.city,
+          state: deliveryAddress.state,
+          country: deliveryAddress.country,
+          postalCode: deliveryAddress.postalCode,
+          latitude: deliveryAddress.latitude,
+          longitude: deliveryAddress.longitude,
+          deliveryInstructions: deliveryAddress.deliveryInstructions,
+        };
+    } 
+    
+    // --- BRANCH 2: POWER ORDERS (New Flow) ---
+    else {
+        // Skip Address/Zone validation
+        // Use amounts passed from power.service.js directly (trusted source)
+        itemsSubtotal = subTotal || 0;
+        deliveryFee = 0;
+        grandTotal = totalAmount; // This includes the convenience fee
+        serviceFeeAmount = serviceFee || 0;
+        
+        // Mock Address Snapshot to satisfy Schema Requirement
+        deliveryAddressSnapshot = {
+            fullAddress: `Electricity Token - ${metadata?.meterNumber || 'Prepaid'}`,
+            street: 'Digital',
+            city: 'Digital',
+            state: 'N/A',
+            country: 'Nigeria',
+            latitude: 0,
+            longitude: 0,
+            postalCode: '000000',
+            deliveryInstructions: 'Digital delivery'
+        };
     }
 
-    const subtotalAfterDiscount = itemsSubtotal - discountAmount;
-    const vatAmount = subtotalAfterDiscount > 0 ? subtotalAfterDiscount * (config.feeSettings.vatPercentage / 100) : 0;
-    const serviceFeeAmount = subtotalAfterDiscount > 0 ? subtotalAfterDiscount * (config.feeSettings.serviceFeePercentage / 100) : 0;
-
-    // Delivery fee + multi-cylinder surcharge
-    let deliveryFee = isExpress
-      ? coveringZone.deliveryFee + coveringZone.expressSurcharge
-      : coveringZone.deliveryFee;
-
-    const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
-    if (totalQuantity > 1) {
-      const surchargePercentage = 0.50; // could be config-driven
-      const surchargePerItem = coveringZone.deliveryFee * surchargePercentage;
-      deliveryFee += (totalQuantity - 1) * surchargePerItem;
-    }
-
-    const overallGrandTotal = subtotalAfterDiscount + vatAmount + serviceFeeAmount + deliveryFee;
-
-    let totalBeforeWallet = overallGrandTotal;
+    // --- SHARED LOGIC (Wallet, Object Creation) ---
+    
+    let totalBeforeWallet = grandTotal;
     let walletAmountUsed = 0;
+    
     if (useWalletBalance && user.walletBalance > 0) {
       walletAmountUsed = Math.min(user.walletBalance, totalBeforeWallet);
       totalBeforeWallet -= walletAmountUsed;
@@ -331,7 +384,7 @@ const placeOrder = async (customerId, orderData) => {
     let paymentStatusCurrent = 'Pending';
     let isPayOnPickup = false;
 
-    if (paymentMethod === 'payOnPickup') {
+    if (paymentMethod === 'payOnPickup' && !isPower) { // Power cannot be PayOnPickup
       const pastOrderCount = await Order.countDocuments({ customerId: customerId, status: 'Delivered' }).session(session);
       if (pastOrderCount > 0) {
         logger.warn('[PAY_ON_PICKUP_FAIL] Not first order');
@@ -350,27 +403,20 @@ const placeOrder = async (customerId, orderData) => {
       paymentStatusCurrent = 'Completed';
     }
 
-    const deliveryAddressSnapshot = {
-      fullAddress: deliveryAddress.fullAddress,
-      street: deliveryAddress.street,
-      city: deliveryAddress.city,
-      state: deliveryAddress.state,
-      country: deliveryAddress.country,
-      postalCode: deliveryAddress.postalCode,
-      latitude: deliveryAddress.latitude,
-      longitude: deliveryAddress.longitude,
-      deliveryInstructions: deliveryAddress.deliveryInstructions,
-    };
-
     const now = new Date();
     const newOrder = new Order({
       id: uuidv4(),
       customerId,
-      deliveryAddressId,
-      deliveryAddressSnapshot,
-      items,
+      // Use the conditional snapshot determined above
+      deliveryAddressId: isPower ? null : deliveryAddressId, 
+      deliveryAddressSnapshot, 
+      
+      items: items || [],
       recipientName: recipientName || user.name,
       recipientPhone: recipientPhone || user.phone,
+
+      type: isPower ? 'POWER' : 'GAS', // Set Type
+      metadata: metadata || {},        // Set Metadata
 
       isExpressDelivery: isExpress || false,
       itemsSubtotal,
@@ -381,19 +427,23 @@ const placeOrder = async (customerId, orderData) => {
       serviceFeeAmount,
       deliveryFee,
       walletAmountUsed,
-      grandTotal: overallGrandTotal,
-      finalAmountPaid: paymentStatusCurrent === 'Completed' ? (overallGrandTotal - walletAmountUsed) : 0,
-      serviceZoneId: coveringZone.id,
+      grandTotal,
+      finalAmountPaid: paymentStatusCurrent === 'Completed' ? (grandTotal - walletAmountUsed) : 0,
+      
+      // Only set ServiceZone if Gas
+      serviceZoneId: coveringZone ? coveringZone.id : undefined, 
+      
       status: orderStatus,
       paymentStatus: paymentStatusCurrent,
       paymentMethod: isPayOnPickup ? 'payOnPickup' : (orderData.paymentMethod || 'paystack'),
 
       statusHistory: [{ status: orderStatus, timestamp: now, notes: 'Order created.' }],
-      deliveryLatitude: deliveryAddress.latitude,
-      deliveryLongitude: deliveryAddress.longitude,
+      
+      // Use snapshot lat/lng (0,0 for Power)
+      deliveryLatitude: deliveryAddressSnapshot.latitude,
+      deliveryLongitude: deliveryAddressSnapshot.longitude,
+      
       orderDate: now,
-
-      // ✅ Enhancement-friendly timestamps
       placedAt: now,
     });
 
@@ -428,6 +478,7 @@ const placeOrder = async (customerId, orderData) => {
         status: savedOrder.status,
         paymentStatus: savedOrder.paymentStatus,
         placedAt: savedOrder.placedAt,
+        type: savedOrder.type // Added type to payload
       };
 
       // Socket broadcast: live dashboards
@@ -1249,5 +1300,6 @@ module.exports = {
   getDriverFulfillmentMetrics,
   driverArrivedForPickup,
 
-
+  // ✅ New Export: Payment initialization
+  initializePayment,
 };

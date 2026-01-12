@@ -1,11 +1,13 @@
 // File: src/api/v1/auth/auth.routes.js
-// ADVISORY: This version fixes the server crash by importing the missing schema.
+// ADVISORY: Surgical update to add guest + guest upgrade + resend verification routes
+// while preserving existing routes and validation wiring.
 
 const express = require('express');
-const router = express.Router();
 const authController = require('./auth.controller');
 const validate = require('../../../middleware/validate.middleware');
-const { 
+const authMiddleware = require('../../../middleware/auth.middleware'); // protects authenticated routes
+
+const {
   registerCustomerSchema,
   registerDriverSchema,
   registerAdminSchema,
@@ -14,8 +16,14 @@ const {
   mobileSignInSchema,
   resetPasswordSchema,
   verifyOtpSchema,
-  verifyPasswordTokenSchema // MODIFIED: Added the missing schema to the import list
+  verifyPasswordTokenSchema,
+  // OPTIONAL: If you later add these schemas, you can wire them in.
+  // guestSchema,
+  // guestUpgradeSchema,
+  // resendVerificationSchema,
 } = require('./auth.validation');
+
+const router = express.Router();
 
 // --- Authentication and Registration ---
 router.post('/register/customer', validate(registerCustomerSchema), authController.registerCustomer);
@@ -31,11 +39,24 @@ router.post('/request-password-reset', validate(requestPasswordResetSchema), aut
 router.post('/verify-password-token', validate(verifyPasswordTokenSchema), authController.verifyPasswordResetToken);
 router.post('/reset-password', validate(resetPasswordSchema), authController.resetPassword);
 
-// --- Guest Logins ---
-router.post('/guest', authController.guest); // ✅ MUST EXIST
-
-// --- NEW ROUTE FOR MOBILE SOCIAL LOGIN ---
+// --- Mobile Social Login ---
 router.post('/google/mobile-signin', authController.googleMobileSignIn);
-router.post('/apple/mobile-signin', validate(mobileSignInSchema), authController.appleMobileSignIn); // << NEW ROUTE >>
+router.post('/apple/mobile-signin', validate(mobileSignInSchema), authController.appleMobileSignIn);
+
+// ===================================================================
+// Option A: Guest session + upgrade + resend verification (throttled)
+// ===================================================================
+
+// Create guest session (no auth required)
+// If you later add a schema, wrap with validate(guestSchema)
+router.post('/guest', authController.guest);
+
+// Upgrade guest -> customer (auth required)
+// If you later add a schema, use validate(guestUpgradeSchema) before controller
+router.post('/guest/upgrade', authMiddleware, authController.guestUpgrade);
+
+// Resend verification OTP (throttled in service)
+// If you later add a schema, wrap with validate(resendVerificationSchema)
+router.post('/resend-verification', authController.resendVerification);
 
 module.exports = router;

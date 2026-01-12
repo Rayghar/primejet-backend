@@ -1,6 +1,4 @@
 // File: src/api/v1/auth/auth.validation.js
-// ADVISORY: Surgical update — keeps all existing schemas intact and adds ONLY
-// the new schemas needed for Option A (guest + guest upgrade + resend verification).
 
 const Joi = require('joi');
 
@@ -54,9 +52,6 @@ const verifyOtpSchema = Joi.object({
   }),
 });
 
-// =======================================================================
-// Password reset token schema (existing)
-// =======================================================================
 const verifyPasswordTokenSchema = Joi.object({
   email: Joi.string().email().required(),
   token: Joi.string().length(6).pattern(/^\d+$/).required().messages({
@@ -67,48 +62,30 @@ const verifyPasswordTokenSchema = Joi.object({
 });
 
 const mobileSignInSchema = Joi.object({
-  // Allow either idToken OR identityToken
   idToken: Joi.string().optional(),
   identityToken: Joi.string().optional(),
-
   name: Joi.string().optional().allow('', null),
   email: Joi.string().email().optional().allow('', null),
   authorizationCode: Joi.string().optional(),
-}).or('idToken', 'identityToken'); // Require at least one
+}).or('idToken', 'identityToken');
 
-// =======================================================================
-// NEW (Option A): Guest + Upgrade + Resend Verification schemas
-// These are intentionally permissive to avoid breaking clients.
-// =======================================================================
+// NEW: Resend verification email OTP (throttled in service)
+const resendVerificationSchema = Joi.object({
+  email: Joi.string().email().required(),
+});
 
-/**
- * POST /api/v1/auth/guest
- * Optional metadata only (we keep minimal requirements).
- */
+// NEW: Guest session creation
 const guestSchema = Joi.object({
-  name: Joi.string().min(1).max(50).optional().allow('', null),
-  phone: Joi.string().pattern(/^\+?\d{10,15}$/).optional().allow('', null),
-  deviceId: Joi.string().max(128).optional().allow('', null),
-}).unknown(true); // allow extra fields safely
+  name: Joi.string().min(2).max(50).required(),
+  phone: Joi.string().pattern(/^\+?\d{10,15}$/).required(),
+});
 
-/**
- * POST /api/v1/auth/guest/upgrade  (auth required)
- * Requires email + password; other fields optional.
- */
+// NEW: Guest upgrade -> customer
 const guestUpgradeSchema = Joi.object({
   email: Joi.string().email().max(254).required(),
-  password: Joi.string().min(6).required(),
-  name: Joi.string().min(2).max(50).optional().allow('', null),
-  phone: Joi.string().pattern(/^\+?\d{10,15}$/).optional().allow('', null),
-}).unknown(true);
-
-/**
- * POST /api/v1/auth/resend-verification
- * Requires email only.
- */
-const resendVerificationSchema = Joi.object({
-  email: Joi.string().email().max(254).required(),
-}).unknown(true);
+  password: Joi.string().min(8).required(),
+  name: Joi.string().min(2).max(50).optional(),
+});
 
 module.exports = {
   registerCustomerSchema,
@@ -120,9 +97,7 @@ module.exports = {
   verifyOtpSchema,
   verifyPasswordTokenSchema,
   mobileSignInSchema,
-
-  // Option A additions
+  resendVerificationSchema,
   guestSchema,
   guestUpgradeSchema,
-  resendVerificationSchema,
 };

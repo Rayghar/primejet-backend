@@ -1,58 +1,79 @@
-// src/api/v1/users/address.routes.js
 const express = require('express');
-const addressController = require('./address.controller'); // Path to co-located controller
-const authMiddleware = require('../../../middleware/auth.middleware'); // Path to global auth middleware
-const validate = require('../../../middleware/validate.middleware'); // Path to global validate middleware
+const addressController = require('./address.controller');
+const authMiddleware = require('../../../middleware/auth.middleware');
+const validate = require('../../../middleware/validate.middleware');
 const {
   createAddressSchema,
   updateAddressSchema,
-  // addressIdParamSchema, // We'll primarily use body validation here; param validation can be in controller/service
-} = require('./address.validation'); // Path to co-located validation schemas
+} = require('./address.validation');
 
 const router = express.Router();
 
 console.log('[ADDRESS_ROUTES] Registering address routes...');
 
-// Routes for the authenticated user's addresses
-// These will be mounted under a base path like /api/v1/addresses in app.js
+/**
+ * =========================================================
+ * GOOGLE PLACES ROUTES (MUST COME FIRST)
+ * =========================================================
+ * These MUST be before `/:addressId` routes
+ */
 
+// Autocomplete (used by web address input)
+router.get(
+  '/places/autocomplete',
+  authMiddleware('customer'),
+  addressController.placesAutocomplete
+);
+
+// Place details → resolve lat/lng
+router.get(
+  '/places/details/:placeId',
+  authMiddleware('customer'),
+  addressController.placeDetails
+);
+
+/**
+ * =========================================================
+ * USER ADDRESS ROUTES
+ * =========================================================
+ */
+
+// Get all addresses for logged-in user
 router.get(
   '/',
-  authMiddleware('customer'), // Only customers can get their addresses
+  authMiddleware('customer'),
   addressController.getAddresses
 );
 
+// Create address (supports frontend + backend geocoding)
 router.post(
   '/',
   authMiddleware('customer'),
-  validate(createAddressSchema), // Validate request body for creating an address
+  validate(createAddressSchema),
   addressController.createAddress
 );
 
+// Update address
 router.put(
   '/:addressId',
   authMiddleware('customer'),
-  // Optional: validate(addressIdParamSchema, 'params') if you want to validate addressId format here
-  validate(updateAddressSchema), // Validate request body for updating an address
+  validate(updateAddressSchema),
   addressController.updateAddress
 );
 
+// Delete address
 router.delete(
   '/:addressId',
   authMiddleware('customer'),
   addressController.deleteAddress
 );
 
+// Set default address
 router.post(
   '/:addressId/default',
   authMiddleware('customer'),
-  // Optional: validate(addressIdParamSchema, 'params')
   addressController.setDefaultAddress
 );
-
-router.get('/places/autocomplete', authMiddleware(), addressController.placesAutocomplete);
-router.get('/places/details/:placeId', authMiddleware(), addressController.placeDetails);
-
 
 console.log('[ADDRESS_ROUTES] Address routes registered.');
 

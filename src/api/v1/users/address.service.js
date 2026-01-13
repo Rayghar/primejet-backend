@@ -319,6 +319,44 @@ const deleteAddress = async (userId, addressIdToDelete) => {
   }
 };
 
+const GOOGLE_PLACES_AUTOCOMPLETE =
+  'https://maps.googleapis.com/maps/api/place/autocomplete/json';
+const GOOGLE_PLACES_DETAILS =
+  'https://maps.googleapis.com/maps/api/place/details/json';
+
+const placesAutocomplete = async (input) => {
+  const key = process.env.GOOGLE_MAPS_API_KEY;
+
+  const res = await axios.get(GOOGLE_PLACES_AUTOCOMPLETE, {
+    params: {
+      input,
+      key,
+      components: 'country:ng',
+    },
+  });
+
+  return res.data;
+};
+
+const placeDetails = async (placeId) => {
+  const key = process.env.GOOGLE_MAPS_API_KEY;
+
+  const res = await axios.get(GOOGLE_PLACES_DETAILS, {
+    params: {
+      place_id: placeId,
+      key,
+    },
+  });
+
+  const result = res.data.result;
+
+  return {
+    fullAddress: result.formatted_address,
+    latitude: result.geometry.location.lat,
+    longitude: result.geometry.location.lng,
+  };
+};
+
 module.exports = {
   // existing
   getAddresses,
@@ -329,4 +367,6 @@ module.exports = {
 
   // new (for web checkout + parity with mobile)
   resolveAddress,
+  placesAutocomplete,
+  placeDetails,
 };

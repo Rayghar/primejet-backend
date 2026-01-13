@@ -62,10 +62,32 @@ const setDefaultAddress = async (req, res, next) => {
   }
 };
 
+exports.placesAutocomplete = async (req, res, next) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    const data = await addressService.placesAutocomplete(q);
+    return res.status(200).json(data);
+  } catch (e) {
+    next(e);
+  }
+};
+
+exports.placeDetails = async (req, res, next) => {
+  try {
+    const placeId = String(req.params.placeId || '').trim();
+    const data = await addressService.placeDetails(placeId);
+    return res.status(200).json(data);
+  } catch (e) {
+    next(e);
+  }
+};
+
+
 module.exports = {
   getAddresses,
   createAddress,
   updateAddress,
   setDefaultAddress,
   deleteAddress,
+  
 };

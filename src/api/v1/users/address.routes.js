@@ -50,6 +50,10 @@ router.post(
   addressController.setDefaultAddress
 );
 
+router.get('/places/autocomplete', authMiddleware(), addressController.placesAutocomplete);
+router.get('/places/details/:placeId', authMiddleware(), addressController.placeDetails);
+
+
 console.log('[ADDRESS_ROUTES] Address routes registered.');
 
 module.exports = router;

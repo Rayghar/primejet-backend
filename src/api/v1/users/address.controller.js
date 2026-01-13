@@ -62,23 +62,36 @@ const setDefaultAddress = async (req, res, next) => {
   }
 };
 
-exports.placesAutocomplete = async (req, res, next) => {
+/**
+ * GET /places/autocomplete
+ * Proxy to Google Places Autocomplete (same idea as mobile)
+ */
+const placesAutocomplete = async (req, res, next) => {
   try {
-    const q = String(req.query.q || '').trim();
-    const data = await addressService.placesAutocomplete(q);
-    return res.status(200).json(data);
-  } catch (e) {
-    next(e);
+    const { input } = req.query;
+
+    if (!input || input.length < 3) {
+      return res.status(200).json({ predictions: [] });
+    }
+
+    const result = await addressService.placesAutocomplete(input);
+    res.json(result);
+  } catch (err) {
+    next(err);
   }
 };
 
-exports.placeDetails = async (req, res, next) => {
+/**
+ * GET /places/details/:placeId
+ * Resolve placeId → lat/lng + formatted address
+ */
+const placeDetails = async (req, res, next) => {
   try {
-    const placeId = String(req.params.placeId || '').trim();
-    const data = await addressService.placeDetails(placeId);
-    return res.status(200).json(data);
-  } catch (e) {
-    next(e);
+    const { placeId } = req.params;
+    const result = await addressService.placeDetails(placeId);
+    res.json(result);
+  } catch (err) {
+    next(err);
   }
 };
 
@@ -89,5 +102,8 @@ module.exports = {
   updateAddress,
   setDefaultAddress,
   deleteAddress,
+
+  placesAutocomplete,
+  placeDetails,
   
 };

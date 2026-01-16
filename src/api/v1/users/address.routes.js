@@ -21,14 +21,14 @@ console.log('[ADDRESS_ROUTES] Registering address routes...');
 // Autocomplete (used by web address input)
 router.get(
   '/places/autocomplete',
-  authMiddleware('customer'),
+  //authMiddleware('customer'),
   addressController.placesAutocomplete
 );
 
 // Place details → resolve lat/lng
 router.get(
   '/places/details/:placeId',
-  authMiddleware('customer'),
+  //authMiddleware('customer'),
   addressController.placeDetails
 );
 

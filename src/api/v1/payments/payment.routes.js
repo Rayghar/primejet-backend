@@ -5,7 +5,7 @@ const paymentController = require('./payment.controller');
 const validate = require('../../../middleware/validate.middleware');
 const { initializePaymentSchema, verifyPaymentSchema } = require('./payment.validation');
 const router = express.Router();
-
+const authMiddleware = require('../../../middleware/auth.middleware'); // Ensure this is imported
 console.log('[PAYMENT_ROUTES] Registering payment routes...');
 
 // Route for the Monnify webhook (server-to-server communication)
@@ -30,6 +30,13 @@ router.get(
   '/verify',
   validate(verifyPaymentSchema),
   paymentController.verifyPayment
+);
+
+router.post(
+  '/initialize',
+  authMiddleware(), // <--- ADD THIS. It populates req.user so the controller doesn't crash.
+  validate(initializePaymentSchema),
+  paymentController.initializePaymentForOrder
 );
 
 console.log('[PAYMENT_ROUTES] Payment routes registered.');

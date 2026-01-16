@@ -18,12 +18,6 @@ router.post(
 
 // New Route: For the frontend to initiate a payment session
 // This route is called by your client-side app to start a payment.
-router.post(
-  '/initialize',
-  validate(initializePaymentSchema),
-  paymentController.initializePaymentForOrder
-);
-
 // New Route: For the frontend to verify a payment after completion
 // This is an optional client-side verification route.
 router.get(

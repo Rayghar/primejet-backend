@@ -102,12 +102,13 @@ async function getAdminRecipients() {
  * ------------------------------------------------------------------------------------------------- */
 
 // ✅ MOVED HERE to avoid circular dependency
-const initializePayment = async ({ orderId, userId }) => {
-  // 1. Validate Order & User
-  const order = await Order.findOne({ id: orderId }); // Or _id depending on your DB
+// ✅ UPDATED: Accepts session to see uncommitted orders
+const initializePayment = async ({ orderId, userId, session = null }) => {
+  // 1. Validate Order & User (Use session if provided!)
+  const order = await Order.findOne({ id: orderId }).session(session);
   if (!order) throw new HttpError(404, 'Order not found.');
 
-  const user = await User.findOne({ id: userId });
+  const user = await User.findOne({ id: userId }).session(session);
   if (!user) throw new HttpError(404, 'User not found.');
 
   // 2. Load Config
@@ -118,8 +119,13 @@ const initializePayment = async ({ orderId, userId }) => {
   const apiKey = process.env.MONNIFY_API_KEY;
   const secretKey = process.env.MONNIFY_SECRET_KEY;
   const contractCode = process.env.MONNIFY_CONTRACT_CODE;
+  
+  // Validate Env Vars to prevent vague errors
+  if (!apiKey || !secretKey || !contractCode) {
+     throw new HttpError(500, "Payment gateway configuration is missing.");
+  }
 
-  // 3. Authenticate with Monnify (Get Access Token)
+  // 3. Authenticate with Monnify
   try {
     const authString = Buffer.from(`${apiKey}:${secretKey}`).toString('base64');
     
@@ -132,40 +138,42 @@ const initializePayment = async ({ orderId, userId }) => {
     const accessToken = loginRes.data.responseBody.accessToken;
 
     // 4. Initialize Transaction
-    // Ensure amount is in the format Monnify expects (Naira, not Kobo)
-    // If your DB stores 215125 (Kobo), divide by 100. If 215125 (Naira), keep as is.
-    // Based on your logs, 215125 looks like Naira.
     const amountToCharge = order.finalAmountPaid || order.totalAmount || order.total;
+
+    // Ensure Redirect URL is valid
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
 
     const initRes = await axios.post(
       `${baseUrl}/api/v1/merchant/transactions/init-transaction`,
       {
         amount: amountToCharge,
         customerName: user.name || "Valued Customer",
-        customerEmail: user.email || "info@primejetgas.com", // Fallback email
-        paymentReference: orderId, // Crucial: Link Monnify ref to Order ID
+        customerEmail: user.email || "info@primejetgas.com", 
+        paymentReference: orderId, 
         paymentDescription: `Gas Refill Order ${orderId}`,
         currencyCode: "NGN",
         contractCode: contractCode,
-        redirectUrl: `${process.env.FRONTEND_URL}/track/${orderId}`,
+        redirectUrl: `${frontendUrl}/track/${orderId}`, // ✅ Robust URL
         paymentMethods: ["CARD", "ACCOUNT_TRANSFER"]
       },
       { headers: { Authorization: `Bearer ${accessToken}` } }
     );
 
-    // 5. Return REAL URL to Frontend
-    const { checkoutUrl } = initRes.data.responseBody;
+    const { checkoutUrl, transactionReference } = initRes.data.responseBody;
 
     return { 
       success: true, 
-      checkoutUrl: checkoutUrl 
+      checkoutUrl,
+      accessCode: transactionReference 
     };
 
   } catch (error) {
     logger.error(`[OrderService] Monnify Error: ${error.message}`, { 
       response: error.response?.data 
     });
-    throw new HttpError(502, 'Failed to initialize payment gateway.');
+    // Return specific error message if possible
+    const msg = error.response?.data?.responseMessage || 'Failed to initialize payment gateway.';
+    throw new HttpError(502, msg);
   }
 };
 
@@ -503,15 +511,22 @@ const placeOrder = async (customerId, orderData) => {
     const savedOrder = await newOrder.save({ session });
 
     let accessCode = null;
-    let checkoutUrl = null; // 
+    let checkoutUrl = null; 
     if (grandTotalToPayByGateway > 0 && !isPayOnPickup) {
       try {
-        const paymentResult = await initializePayment({ orderId: savedOrder.id, userId: customerId, session });
+        // ✅ PASS THE SESSION HERE
+        const paymentResult = await initializePayment({ 
+            orderId: savedOrder.id, 
+            userId: customerId, 
+            session // <--- Critical: Pass the active transaction session
+        });
+        
         checkoutUrl = paymentResult.checkoutUrl;
         accessCode = paymentResult.accessCode;
       } catch (error) {
         logger.error('[PAYMENT_INIT_FAIL] Order: ' + savedOrder.id + ' Error: ' + error.message);
-        throw new HttpError(500, 'Order was created, but payment could not be initialized.');
+        // We throw 500 here, which is what you saw in the logs
+        throw new HttpError(500, `Order created, but payment failed: ${error.message}`);
       }
     }
 

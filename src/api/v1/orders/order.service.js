@@ -3,7 +3,7 @@
 const { v4: uuidv4 } = require('uuid');
 const mongoose = require('mongoose');
 const dotenv = require('dotenv');
-
+const axios = require('axios');
 const Order = require('../../../models/order.model');
 const User = require('../../../models/user.model');
 const Run = require('../../../models/run.model');
@@ -503,9 +503,11 @@ const placeOrder = async (customerId, orderData) => {
     const savedOrder = await newOrder.save({ session });
 
     let accessCode = null;
+    let checkoutUrl = null; // 
     if (grandTotalToPayByGateway > 0 && !isPayOnPickup) {
       try {
         const paymentResult = await initializePayment({ orderId: savedOrder.id, userId: customerId, session });
+        checkoutUrl = paymentResult.checkoutUrl;
         accessCode = paymentResult.accessCode;
       } catch (error) {
         logger.error('[PAYMENT_INIT_FAIL] Order: ' + savedOrder.id + ' Error: ' + error.message);
@@ -551,6 +553,7 @@ const placeOrder = async (customerId, orderData) => {
     return {
       order: savedOrder.toObject({ virtuals: true }),
       accessCode,
+      checkoutUrl,
       paymentNeeded: grandTotalToPayByGateway > 0 && !isPayOnPickup,
       grandTotalToPay: grandTotalToPayByGateway,
       message: 'Order placed successfully.',

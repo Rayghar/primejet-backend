@@ -45,11 +45,24 @@ const handleMonnifyWebhook = (req, res, next) => { // Can be non-async now
 // Handler for initiating a payment session
 const initializePaymentForOrder = async (req, res, next) => {
   try {
+    // 1. Log the incoming request to verify it reached here
+    console.log("[PAYMENT_CTRL] Initializing payment for User:", req.user?.id);
+    console.log("[PAYMENT_CTRL] Body:", req.body);
+
     const { orderId } = req.body;
-    const result = await orderService.initializePayment({ orderId, userId: req.user.id, session: null }); 
+    
+    // 2. Call the service
+    const result = await orderService.initializePayment({ 
+      orderId, 
+      userId: req.user.id, 
+      session: null 
+    }); 
+
+    console.log("[PAYMENT_CTRL] Service result:", result);
     res.status(200).json(result);
   } catch (error) {
-    logger.error(`[Payment Controller] Error initializing payment for order:`, { error: error.message, stack: error.stack });
+    // 3. Log the ACTUAL error message and stack trace
+    console.error(`[PAYMENT_CTRL] CRITICAL ERROR:`, error); 
     next(error);
   }
 };

@@ -102,22 +102,70 @@ async function getAdminRecipients() {
  * ------------------------------------------------------------------------------------------------- */
 
 // ✅ MOVED HERE to avoid circular dependency
-const initializePayment = async ({ orderId, userId, session }) => {
-  logger.info(`[Order Service][initializePayment] Initializing payment for order ${orderId} and user ${userId}.`);
+const initializePayment = async ({ orderId, userId }) => {
+  // 1. Validate Order & User
+  const order = await Order.findOne({ id: orderId }); // Or _id depending on your DB
+  if (!order) throw new HttpError(404, 'Order not found.');
+
+  const user = await User.findOne({ id: userId });
+  if (!user) throw new HttpError(404, 'User not found.');
+
+  // 2. Load Config
+  const baseUrl = process.env.NODE_ENV === 'production' 
+    ? 'https://api.monnify.com' 
+    : 'https://sandbox.monnify.com';
+    
+  const apiKey = process.env.MONNIFY_API_KEY;
+  const secretKey = process.env.MONNIFY_SECRET_KEY;
+  const contractCode = process.env.MONNIFY_CONTRACT_CODE;
+
+  // 3. Authenticate with Monnify (Get Access Token)
   try {
-    const order = await getOrder(orderId, { id: userId, role: 'customer' }, session);
-    const user = await User.findOne({ id: userId }).session(session);
-    if (!order || !user) {
-      throw new HttpError(404, 'Order or user not found for payment initialization.');
-    }
-    // Replace with real gateway init when wiring actual payment
-    const dummyAccessCode = 'dummy-auth-url-' + uuidv4();
-    logger.info(`[Order Service][initializePayment] Successfully initialized dummy payment for order ${orderId}.`);
-    return { accessCode: dummyAccessCode };
+    const authString = Buffer.from(`${apiKey}:${secretKey}`).toString('base64');
+    
+    const loginRes = await axios.post(
+      `${baseUrl}/api/v1/auth/login`, 
+      {}, 
+      { headers: { Authorization: `Basic ${authString}` } }
+    );
+
+    const accessToken = loginRes.data.responseBody.accessToken;
+
+    // 4. Initialize Transaction
+    // Ensure amount is in the format Monnify expects (Naira, not Kobo)
+    // If your DB stores 215125 (Kobo), divide by 100. If 215125 (Naira), keep as is.
+    // Based on your logs, 215125 looks like Naira.
+    const amountToCharge = order.finalAmountPaid || order.totalAmount || order.total;
+
+    const initRes = await axios.post(
+      `${baseUrl}/api/v1/merchant/transactions/init-transaction`,
+      {
+        amount: amountToCharge,
+        customerName: user.name || "Valued Customer",
+        customerEmail: user.email || "info@primejetgas.com", // Fallback email
+        paymentReference: orderId, // Crucial: Link Monnify ref to Order ID
+        paymentDescription: `Gas Refill Order ${orderId}`,
+        currencyCode: "NGN",
+        contractCode: contractCode,
+        redirectUrl: `${process.env.FRONTEND_URL}/track/${orderId}`,
+        paymentMethods: ["CARD", "ACCOUNT_TRANSFER"]
+      },
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+
+    // 5. Return REAL URL to Frontend
+    const { checkoutUrl } = initRes.data.responseBody;
+
+    return { 
+      success: true, 
+      checkoutUrl: checkoutUrl 
+    };
+
   } catch (error) {
-    logger.error(`[Order Service][initializePayment] Failed: ${error.message}`, { stack: error.stack });
-    if (error instanceof HttpError) throw error;
-    throw new HttpError(500, 'Payment initialization failed.');
+    logger.error(`[OrderService] Monnify Error: ${error.message}`, { 
+      response: error.response?.data 
+    });
+    throw new HttpError(502, 'Failed to initialize payment gateway.');
   }
 };
 

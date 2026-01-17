@@ -120,9 +120,8 @@ const initializePayment = async ({ orderId, userId, session = null }) => {
   const secretKey = process.env.MONNIFY_SECRET_KEY;
   const contractCode = process.env.MONNIFY_CONTRACT_CODE;
   
-  // Validate Env Vars to prevent vague errors
   if (!apiKey || !secretKey || !contractCode) {
-     throw new HttpError(500, "Payment gateway configuration is missing.");
+      throw new HttpError(500, "Payment gateway configuration is missing.");
   }
 
   // 3. Authenticate with Monnify
@@ -138,23 +137,25 @@ const initializePayment = async ({ orderId, userId, session = null }) => {
     const accessToken = loginRes.data.responseBody.accessToken;
 
     // 4. Initialize Transaction
-    const amountToCharge = order.grandTotal - (order.walletAmountUsed || 0);
+    // ✅ FIX: Calculate Amount (DB stores Kobo, Monnify needs Naira)
+    const rawAmount = order.grandTotal - (order.walletAmountUsed || 0);
+    const amountToCharge = rawAmount / 100; 
 
     // Ensure Redirect URL is valid
     const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
-   
-    const uniquePaymentRef = `${orderId}_${Date.now()}`;
+    
+    // ✅ FIX: Use orderId as reference so Webhook can find the order later
     const initRes = await axios.post(
       `${baseUrl}/api/v1/merchant/transactions/init-transaction`,
       {
         amount: amountToCharge,
         customerName: user.name || "Valued Customer",
         customerEmail: user.email || "info@primejetgas.com", 
-        paymentReference: uniquePaymentRef, 
+        paymentReference: orderId, 
         paymentDescription: `Gas Refill Order ${orderId}`,
         currencyCode: "NGN",
         contractCode: contractCode,
-        redirectUrl: `${frontendUrl}/track/${orderId}`, // ✅ Robust URL
+        redirectUrl: `${frontendUrl}/track/${orderId}`,
         paymentMethods: ["CARD", "ACCOUNT_TRANSFER"]
       },
       { headers: { Authorization: `Bearer ${accessToken}` } }
@@ -162,25 +163,24 @@ const initializePayment = async ({ orderId, userId, session = null }) => {
 
     const { checkoutUrl, transactionReference } = initRes.data.responseBody;
 
+    // 5. Return Data required for Frontend Popup
     return { 
       success: true, 
       checkoutUrl: checkoutUrl,
       paymentReference: orderId,
-      apiKey: apiKey, // This is the Public Key (Safe)
+      apiKey: apiKey, // Public Key for Frontend SDK
       contractCode: contractCode,
       customerName: user.name || "Customer",
       customerEmail: user.email || "info@primejetgas.com",
-      amount: amountToCharge,
+      amount: amountToCharge, // Send the Naira amount to frontend
       currency: "NGN",
       accessCode: transactionReference 
-
     };
 
   } catch (error) {
     logger.error(`[OrderService] Monnify Error: ${error.message}`, { 
       response: error.response?.data 
     });
-    // Return specific error message if possible
     const msg = error.response?.data?.responseMessage || 'Failed to initialize payment gateway.';
     throw new HttpError(502, msg);
   }

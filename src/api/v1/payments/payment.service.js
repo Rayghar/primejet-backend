@@ -45,7 +45,7 @@ const processWebhookEvent = async (eventData, eventType) => {
   logger.debug(`[Payment Service][processWebhookEvent] Full Event Data received: ${JSON.stringify(eventData)}`);
 
   const { paymentReference, paymentStatus, transactionReference, amountPaid, paymentMethod, responseMessage } = eventData;
-  const orderId = paymentReference;
+  const orderId = paymentReference.split('_')[0];
 
   logger.debug(`[Payment Service][processWebhookEvent] Extracted: Order ID: ${orderId}, Payment Status: ${paymentStatus}, Transaction Ref: ${transactionReference}`);
 

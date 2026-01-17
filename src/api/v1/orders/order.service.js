@@ -142,14 +142,15 @@ const initializePayment = async ({ orderId, userId, session = null }) => {
 
     // Ensure Redirect URL is valid
     const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
-
+   
+    const uniquePaymentRef = `${orderId}_${Date.now()}`;
     const initRes = await axios.post(
       `${baseUrl}/api/v1/merchant/transactions/init-transaction`,
       {
         amount: amountToCharge,
         customerName: user.name || "Valued Customer",
         customerEmail: user.email || "info@primejetgas.com", 
-        paymentReference: orderId, 
+        paymentReference: uniquePaymentRef, 
         paymentDescription: `Gas Refill Order ${orderId}`,
         currencyCode: "NGN",
         contractCode: contractCode,

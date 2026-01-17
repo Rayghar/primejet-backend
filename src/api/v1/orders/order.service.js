@@ -164,8 +164,16 @@ const initializePayment = async ({ orderId, userId, session = null }) => {
 
     return { 
       success: true, 
-      checkoutUrl,
+      checkoutUrl: checkoutUrl,
+      paymentReference: orderId,
+      apiKey: apiKey, // This is the Public Key (Safe)
+      contractCode: contractCode,
+      customerName: user.name || "Customer",
+      customerEmail: user.email || "info@primejetgas.com",
+      amount: amountToCharge,
+      currency: "NGN",
       accessCode: transactionReference 
+
     };
 
   } catch (error) {

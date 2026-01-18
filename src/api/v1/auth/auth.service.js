@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const User = require('../../../models/user.model');
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
-const globalConfig = require('../../../config'); // IMPORTANT: align JWT secret with auth.middleware.js
+const globalConfig = require('../../../config');
 const referralService = require('../referrals/referral.service');
 const { OAuth2Client } = require('google-auth-library');
 const { sendEmail } = require('../../../services/email.service');
@@ -38,7 +38,7 @@ const generateJwtForUser = (user, isNewUser = false) => {
   };
 };
 
-// ====================== GUEST + RESEND THROTTLE (CLINICAL ADD) ======================
+// ====================== GUEST + RESEND THROTTLE ======================
 const VERIFICATION_RESEND_COOLDOWN_SECONDS = Number(process.env.VERIFICATION_RESEND_COOLDOWN_SECONDS || 60);
 const resendOtpThrottle = new Map();
 
@@ -46,24 +46,21 @@ const isGuestEmail = (email) =>
   typeof email === 'string' &&
   (email.endsWith('@guest.gas2door.ng') || email.endsWith('@guest.gas2door.local') || email.includes('@guest.'));
 
+// [MODIFIED]: Removed random UUID suffix to ensure 1 Phone Number = 1 Guest Account
 const makeGuestEmail = (phone) => {
-  const suffix = uuidv4().slice(0, 8);
   const safePhone = String(phone || '').replace(/[^\d+]/g, '') || 'unknown';
-  return `${safePhone}.${suffix}@guest.gas2door.ng`;
+  return `${safePhone}@guest.gas2door.ng`;
 };
 
 const makeGuestPassword = () => {
-  // Plain string; user.model pre-save hook hashes it.
   return `G2D_g_${crypto.randomBytes(16).toString('hex')}`;
 };
 
 /**
- * CREATE GUEST SESSION (schema-safe)
- * - role MUST be a valid enum -> use 'customer'
- * - password MUST exist (schema requires it) -> random password
- * - isVerified MUST be true so nothing blocks order flow
- * - status active
- * - mark "guestness" via email domain @guest.gas2door.ng
+ * CREATE OR RETRIEVE GUEST SESSION
+ * [UPDATED LOGIC]: Checks for existing phone number first.
+ * If found -> Resumes session (Guest Login).
+ * If not found -> Creates new guest (Guest Registration).
  */
 const createGuest = async (meta = {}) => {
   const name = (meta.name || 'Guest').toString().trim() || 'Guest';
@@ -71,11 +68,47 @@ const createGuest = async (meta = {}) => {
 
   if (!phone) throw new HttpError(400, 'Phone number is required to continue as a guest.');
 
-  const guestUser = new User({
+  // Clean phone number for consistent lookup
+  const safePhone = phone.replace(/[^\d+]/g, '');
+
+  // 1. Check if user exists with this phone number
+  let guestUser = await User.findOne({ phone: safePhone });
+
+  // 2. Resume Session Logic
+  if (guestUser) {
+    // SECURITY CHECK: Only allow resumption if it is indeed a Guest account.
+    // We prevent hijacking fully registered accounts via the guest flow.
+    if (!isGuestEmail(guestUser.email)) {
+      throw new HttpError(409, 'This phone number is registered. Please Login to continue.');
+    }
+
+    // Update name if provided (and different), effectively "refreshing" the guest details
+    if (name !== 'Guest' && guestUser.name !== name) {
+      guestUser.name = name;
+      await guestUser.save();
+    }
+
+    // Generate token for existing user
+    const jwtResult = generateJwtForUser(guestUser, false);
+    return {
+      ...jwtResult,
+      user: {
+        id: guestUser.id,
+        name: guestUser.name,
+        role: guestUser.role,
+        email: guestUser.email,
+        phone: guestUser.phone,
+        isGuest: true,
+      }
+    };
+  }
+
+  // 3. Create New Guest Logic (If no user found)
+  guestUser = new User({
     id: uuidv4(),
     name,
-    email: makeGuestEmail(phone),
-    phone,
+    email: makeGuestEmail(safePhone), // Deterministic email based on phone
+    phone: safePhone,
     password: makeGuestPassword(),
     role: 'customer',
     isVerified: true,
@@ -104,7 +137,6 @@ const upgradeGuest = async (guestUserId, upgradeData) => {
   const guest = await User.findOne({ id: guestUserId }).select('+isVerified +status +role +email');
   if (!guest) throw new HttpError(404, 'Guest session not found.');
 
-  // Only allow upgrade for guest-marked emails
   if (!isGuestEmail(guest.email)) {
     throw new HttpError(400, 'Only guest checkout sessions can be upgraded.');
   }
@@ -113,17 +145,14 @@ const upgradeGuest = async (guestUserId, upgradeData) => {
   if (!emailLower) throw new HttpError(400, 'Email is required.');
   if (!password) throw new HttpError(400, 'Password is required.');
 
-  // Prevent upgrading into an already-verified account
   const existing = await User.findOne({ email: emailLower }).select('+isVerified +id');
   if (existing && existing.isVerified && existing.id !== guest.id) {
     throw new HttpError(409, 'An account with this email already exists.');
   }
   if (existing && existing.id !== guest.id) {
-    // No auto-merge here (safer)
     throw new HttpError(409, 'This email is already associated with another account.');
   }
 
-  // OTP for email verification
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
   const hashedOtp = await bcrypt.hash(otp, 10);
   const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
@@ -132,7 +161,6 @@ const upgradeGuest = async (guestUserId, upgradeData) => {
   guest.email = emailLower;
   guest.phone = phone || guest.phone || null;
 
-  // IMPORTANT: assign plain password, rely on user.model pre-save hashing
   guest.password = password;
   guest.role = 'customer';
   guest.isVerified = false;
@@ -163,7 +191,6 @@ const resendVerificationOtp = async (email) => {
 
   const user = await User.findOne({ email: emailLower }).select('+isVerified +otp +otpExpires');
   if (!user) {
-    // avoid account enumeration
     return { message: 'If your email is registered, a verification code will be sent.' };
   }
 
@@ -197,7 +224,7 @@ const resendVerificationOtp = async (email) => {
   logger.info(`[AUTH_SERVICE] Resent OTP for ${emailLower}: ${otp}`);
   return { message: 'A new verification code has been sent to your email.' };
 };
-// ====================== END GUEST + RESEND THROTTLE (CLINICAL ADD) ======================
+// ====================== END GUEST + RESEND THROTTLE ======================
 
 const registerCustomer = async (userData) => {
   const { email, password, name, phone, referralCode } = userData;
@@ -214,7 +241,7 @@ const registerCustomer = async (userData) => {
     name,
     email: email.toLowerCase(),
     phone,
-    password: password, // plain (user.model hashes)
+    password: password, 
     role: 'customer',
     otp: hashedOtp,
     otpExpires,
@@ -386,7 +413,6 @@ const login = async (email, password) => {
   const user = await User.findOne({ email: email.toLowerCase() }).select('+password +isVerified');
   if (!user) throw new HttpError(401, 'Invalid email or password.');
 
-  // Block password login for guest-marked accounts (safety)
   if (isGuestEmail(user.email)) {
     throw new HttpError(403, 'This is a guest checkout session. Please upgrade your account to log in.');
   }
@@ -443,6 +469,7 @@ const adminCreateUser = async (newUserData, requestingUser) => {
 
   const newUser = new User({
     id: uuidv4(),
+    name,
     name,
     email: email.toLowerCase(),
     phone,

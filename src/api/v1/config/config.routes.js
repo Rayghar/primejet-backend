@@ -12,7 +12,7 @@ console.log('[CONFIG_ROUTES] Registering system configuration routes...');
 // GET /api/v1/config - Get general system configuration (for any authenticated user)
 router.get(
   '/',
-  authMiddleware(), 
+  //authMiddleware(), 
   configController.getSystemConfig
 );
 

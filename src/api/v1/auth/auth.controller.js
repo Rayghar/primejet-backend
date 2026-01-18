@@ -161,7 +161,7 @@ const upgradeGuest = async (req, res, next) => {
       throw new HttpError(400, error.details.map(d => d.message).join(', '));
     }
     // req.user should be set by authMiddleware
-    const result = await authService.upgradeGuest(req.user, value);
+    const result = await authService.upgradeGuest(req.user.id, value);
     res.status(200).json(result);
   } catch (error) {
     next(error);

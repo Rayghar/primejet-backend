@@ -138,7 +138,7 @@ const initializePayment = async ({ orderId, userId, session = null }) => {
     const accessToken = loginRes.data.responseBody.accessToken;
 
     // 4. Initialize Transaction
-    const amountToCharge = order.grandTotal - (order.walletAmountUsed || 0);
+    const amountToCharge = (order.grandTotal - (order.walletAmountUsed || 0))/100;
 
     // Ensure Redirect URL is valid
     const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";

@@ -144,6 +144,7 @@ const initializePayment = async ({ orderId, userId, session = null }) => {
     // Ensure Redirect URL is valid
     const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
     
+    const uniquePaymentRef = `${orderId}_${Date.now()}`;
     // ✅ FIX: Use orderId as reference so Webhook can find the order later
     const initRes = await axios.post(
       `${baseUrl}/api/v1/merchant/transactions/init-transaction`,
@@ -151,7 +152,7 @@ const initializePayment = async ({ orderId, userId, session = null }) => {
         amount: amountToCharge,
         customerName: user.name || "Valued Customer",
         customerEmail: user.email || "info@primejetgas.com", 
-        paymentReference: orderId, 
+        paymentReference: uniquePaymentRef, // <--- Used unique ref here 
         paymentDescription: `Gas Refill Order ${orderId}`,
         currencyCode: "NGN",
         contractCode: contractCode,
@@ -167,7 +168,7 @@ const initializePayment = async ({ orderId, userId, session = null }) => {
     return { 
       success: true, 
       checkoutUrl: checkoutUrl,
-      paymentReference: orderId,
+      paymentReference: uniquePaymentRef, // <--- Used unique ref here
       apiKey: apiKey, // Public Key for Frontend SDK
       contractCode: contractCode,
       customerName: user.name || "Customer",

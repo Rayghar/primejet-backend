@@ -25,6 +25,27 @@ const appleClient = jwksClient({
   jwksUri: 'https://appleid.apple.com/auth/keys',
 });
 
+// --- [TRACE FIX] SAFE EMAIL SENDER ---
+// Prevents the server from hanging for 3 minutes if SMTP is blocked/slow.
+const sendEmailSafely = async (emailOptions) => {
+    logger.info(`[TRACE] Sending email to: ${emailOptions.to}`);
+    
+    // Create a timeout promise that rejects after 8 seconds
+    const timeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Email server timed out (8s limit)")), 8000)
+    );
+
+    try {
+        // Race the actual send against the timeout
+        await Promise.race([sendEmail(emailOptions), timeout]);
+        logger.info(`[TRACE] Email sent successfully.`);
+    } catch (e) {
+        logger.error(`[TRACE] Email Failed: ${e.message}`);
+        // Throw a specific error so the frontend knows it's an email issue
+        throw new HttpError(503, "Verification email failed to send. Please try again or contact support.");
+    }
+};
+
 const generateJwtForUser = (user, isNewUser = false) => {
   const payload = { id: user.id, role: user.role };
   const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1d' });
@@ -41,7 +62,7 @@ const generateJwtForUser = (user, isNewUser = false) => {
 const VERIFICATION_RESEND_COOLDOWN_SECONDS = Number(process.env.VERIFICATION_RESEND_COOLDOWN_SECONDS || 60);
 const resendOtpThrottle = new Map();
 
-const isGuestEmail = (email) =>
+const isGuestilEma = (email) =>
   typeof email === 'string' &&
   (email.endsWith('@guest.gas2door.ng') || email.endsWith('@guest.gas2door.local') || email.includes('@guest.'));
 
@@ -133,12 +154,13 @@ const createGuest = async (meta = {}) => {
 };
 
 const upgradeGuest = async (guestUserId, upgradeData) => {
+  logger.info(`[TRACE] upgradeGuest started for UserID: ${guestUserId}`);
+
   const { email, password, name, phone } = upgradeData;
 
   const guest = await User.findOne({ id: guestUserId }).select('+isVerified +status +role +email');
   if (!guest) throw new HttpError(404, 'Guest session not found.');
 
-  // Only upgrade users who are currently guests
   if (!isGuestEmail(guest.email)) {
     throw new HttpError(400, 'This account is already upgraded.');
   }
@@ -147,33 +169,34 @@ const upgradeGuest = async (guestUserId, upgradeData) => {
   if (!emailLower) throw new HttpError(400, 'Email is required.');
   if (!password) throw new HttpError(400, 'Password is required.');
 
-  // Check if target email is taken
+  // Check collision
   const existing = await User.findOne({ email: emailLower }).select('+isVerified +id');
   if (existing && existing.id !== guest.id) {
-    throw new HttpError(409, 'An account with this email already exists. Please contact support to merge.');
+    throw new HttpError(409, 'An account with this email already exists.');
   }
 
-  // Generate verification OTP
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
   const hashedOtp = await bcrypt.hash(otp, 10);
   const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
-  // Update User Record
+  // Update DB
+  logger.info(`[TRACE] Updating guest record in DB...`);
   guest.name = name || guest.name;
   guest.email = emailLower;
-  // Note: We don't overwrite phone usually as it's the anchor, but can if user explicitly changes it
   if (phone) guest.phone = phone; 
 
-  guest.password = password; // Will be hashed by pre-save hook
+  guest.password = password;
   guest.role = 'customer';
-  guest.isVerified = false; // Require email verification now
+  guest.isVerified = false; // Must verify email now
   guest.status = 'pending_verification';
   guest.otp = hashedOtp;
   guest.otpExpires = otpExpires;
 
   await guest.save();
+  logger.info(`[TRACE] Guest record updated. Sending Email...`);
 
-  await sendEmail({
+  // ✅ FIX: Send Email Safely
+  await sendEmailSafely({
     to: emailLower,
     subject: 'Gas2Door Verification Code',
     text: `Your verification code is: ${otp}.`,
@@ -188,11 +211,13 @@ const upgradeGuest = async (guestUserId, upgradeData) => {
 
 const resendVerificationOtp = async (email) => {
   const emailLower = String(email || '').toLowerCase().trim();
+  logger.info(`[TRACE] Resending OTP to: ${emailLower}`);
+
   if (!emailLower) throw new HttpError(400, 'Email is required.');
 
   const user = await User.findOne({ email: emailLower }).select('+isVerified +otp +otpExpires');
-  if (!user) return { message: 'If your email is registered, a code has been sent.' };
-  if (user.isVerified) return { message: 'Email is already verified.' };
+  if (!user) return { message: 'If registered, code sent.' };
+  if (user.isVerified) return { message: 'Email already verified.' };
 
   const now = Date.now();
   const last = resendOtpThrottle.get(emailLower) || 0;
@@ -209,7 +234,8 @@ const resendVerificationOtp = async (email) => {
 
   resendOtpThrottle.set(emailLower, now);
 
-  await sendEmail({
+  // ✅ FIX: Send Email Safely
+  await sendEmailSafely({
     to: emailLower,
     subject: 'Gas2Door Verification Code',
     text: `Your verification code is: ${otp}.`,

@@ -157,15 +157,13 @@ const createGuest = async (req, res, next) => {
 const upgradeGuest = async (req, res, next) => {
   try {
     const { error, value } = authValidation.guestUpgradeSchema.validate(req.body);
-    if (error) {
-      throw new HttpError(400, error.details.map(d => d.message).join(', '));
-    }
-    // req.user should be set by authMiddleware
+    if (error) throw new HttpError(400, error.details.map(d => d.message).join(', '));
+    
+    // ✅ FIX: Use req.user.id (String) not req.user (Object)
+    console.log(`[AUTH_CTRL] upgradeGuest called by User ID: ${req.user.id}`);
     const result = await authService.upgradeGuest(req.user.id, value);
     res.status(200).json(result);
-  } catch (error) {
-    next(error);
-  }
+  } catch (error) { next(error); }
 };
 
 const adminCreateUser = async (req, res, next) => {

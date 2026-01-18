@@ -71,9 +71,15 @@ app.set('trust proxy', 1);
 // --- Step 4: Setup Global Middleware ---
 app.use(helmet());
 app.use(cors({
-    origin: true, 
-    credentials: true 
+  origin: true, // Or specific array: ['http://localhost:3000', 'https://gas2door.com']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  credentials: true,
+  optionsSuccessStatus: 204
 }));
+
+app.options(/(.*)/, cors());
+
 app.use(morgan('combined', { stream: logger.stream }));
 //app.use('/api', rateLimiter);
 app.use(require('./middleware/logger_middleware'));

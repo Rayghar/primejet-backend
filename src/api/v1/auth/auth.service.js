@@ -38,7 +38,6 @@ const generateJwtForUser = (user, isNewUser = false) => {
   };
 };
 
-// ====================== GUEST + RESEND THROTTLE ======================
 const VERIFICATION_RESEND_COOLDOWN_SECONDS = Number(process.env.VERIFICATION_RESEND_COOLDOWN_SECONDS || 60);
 const resendOtpThrottle = new Map();
 
@@ -46,7 +45,7 @@ const isGuestEmail = (email) =>
   typeof email === 'string' &&
   (email.endsWith('@guest.gas2door.ng') || email.endsWith('@guest.gas2door.local') || email.includes('@guest.'));
 
-// [MODIFIED]: Removed random UUID suffix to ensure 1 Phone Number = 1 Guest Account
+// ✅ FIX: Deterministic Email. 1 Phone = 1 Guest Account.
 const makeGuestEmail = (phone) => {
   const safePhone = String(phone || '').replace(/[^\d+]/g, '') || 'unknown';
   return `${safePhone}@guest.gas2door.ng`;
@@ -57,61 +56,63 @@ const makeGuestPassword = () => {
 };
 
 /**
- * CREATE OR RETRIEVE GUEST SESSION
- * [UPDATED LOGIC]: Checks for existing phone number first.
- * If found -> Resumes session (Guest Login).
- * If not found -> Creates new guest (Guest Registration).
+ * CREATE OR RESUME GUEST SESSION
+ * 1. Sanitizes phone.
+ * 2. Checks DB for user with that phone.
+ * 3. If found & is guest -> Returns login token (Resume).
+ * 4. If not found -> Creates new guest (Register).
  */
 const createGuest = async (meta = {}) => {
   const name = (meta.name || 'Guest').toString().trim() || 'Guest';
   const phone = String(meta.phone || '').trim();
 
-  if (!phone) throw new HttpError(400, 'Phone number is required to continue as a guest.');
+  if (!phone) throw new HttpError(400, 'Phone number is required for guest checkout.');
 
-  // Clean phone number for consistent lookup
+  // 1. Clean Phone
   const safePhone = phone.replace(/[^\d+]/g, '');
 
-  // 1. Check if user exists with this phone number
+  // 2. Check for existing user
   let guestUser = await User.findOne({ phone: safePhone });
 
-  // 2. Resume Session Logic
   if (guestUser) {
-    // SECURITY CHECK: Only allow resumption if it is indeed a Guest account.
-    // We prevent hijacking fully registered accounts via the guest flow.
+    // 3. Resume Session
+    // Security: Only allow auto-login if it is actually a guest account.
     if (!isGuestEmail(guestUser.email)) {
-      throw new HttpError(409, 'This phone number is registered. Please Login to continue.');
+        // If it's a real user, we shouldn't auto-login them as guest easily, 
+        // but for checkout flow convenience, we can return a limited token OR throw error.
+        // Best practice: Ask them to login.
+        throw new HttpError(409, 'This phone number is already registered. Please log in.');
     }
 
-    // Update name if provided (and different), effectively "refreshing" the guest details
+    // Refresh name if provided
     if (name !== 'Guest' && guestUser.name !== name) {
-      guestUser.name = name;
-      await guestUser.save();
+        guestUser.name = name;
+        await guestUser.save();
     }
 
-    // Generate token for existing user
     const jwtResult = generateJwtForUser(guestUser, false);
     return {
-      ...jwtResult,
-      user: {
-        id: guestUser.id,
-        name: guestUser.name,
-        role: guestUser.role,
-        email: guestUser.email,
-        phone: guestUser.phone,
-        isGuest: true,
-      }
+        ...jwtResult,
+        user: {
+            id: guestUser.id,
+            name: guestUser.name,
+            role: guestUser.role,
+            email: guestUser.email,
+            phone: guestUser.phone,
+            isGuest: true,
+        }
     };
   }
 
-  // 3. Create New Guest Logic (If no user found)
+  // 4. Create New Guest
   guestUser = new User({
     id: uuidv4(),
     name,
-    email: makeGuestEmail(safePhone), // Deterministic email based on phone
+    email: makeGuestEmail(safePhone),
     phone: safePhone,
     password: makeGuestPassword(),
     role: 'customer',
-    isVerified: true,
+    isVerified: true, // Guests are auto-verified to allow ordering
     status: 'active',
   });
 
@@ -137,33 +138,35 @@ const upgradeGuest = async (guestUserId, upgradeData) => {
   const guest = await User.findOne({ id: guestUserId }).select('+isVerified +status +role +email');
   if (!guest) throw new HttpError(404, 'Guest session not found.');
 
+  // Only upgrade users who are currently guests
   if (!isGuestEmail(guest.email)) {
-    throw new HttpError(400, 'Only guest checkout sessions can be upgraded.');
+    throw new HttpError(400, 'This account is already upgraded.');
   }
 
   const emailLower = String(email || '').toLowerCase().trim();
   if (!emailLower) throw new HttpError(400, 'Email is required.');
   if (!password) throw new HttpError(400, 'Password is required.');
 
+  // Check if target email is taken
   const existing = await User.findOne({ email: emailLower }).select('+isVerified +id');
-  if (existing && existing.isVerified && existing.id !== guest.id) {
-    throw new HttpError(409, 'An account with this email already exists.');
-  }
   if (existing && existing.id !== guest.id) {
-    throw new HttpError(409, 'This email is already associated with another account.');
+    throw new HttpError(409, 'An account with this email already exists. Please contact support to merge.');
   }
 
+  // Generate verification OTP
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
   const hashedOtp = await bcrypt.hash(otp, 10);
   const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
-  guest.name = name || guest.name || 'Customer';
+  // Update User Record
+  guest.name = name || guest.name;
   guest.email = emailLower;
-  guest.phone = phone || guest.phone || null;
+  // Note: We don't overwrite phone usually as it's the anchor, but can if user explicitly changes it
+  if (phone) guest.phone = phone; 
 
-  guest.password = password;
+  guest.password = password; // Will be hashed by pre-save hook
   guest.role = 'customer';
-  guest.isVerified = false;
+  guest.isVerified = false; // Require email verification now
   guest.status = 'pending_verification';
   guest.otp = hashedOtp;
   guest.otpExpires = otpExpires;
@@ -172,16 +175,14 @@ const upgradeGuest = async (guestUserId, upgradeData) => {
 
   await sendEmail({
     to: emailLower,
-    subject: 'Your Gas2Door Verification Code',
+    subject: 'Gas2Door Verification Code',
     text: `Your verification code is: ${otp}.`,
     html: `<p>Your verification code is: <strong>${otp}</strong>.</p>`
   });
 
-  logger.info(`[AUTH_SERVICE] Upgrade OTP for ${emailLower}: ${otp}`);
-
   return {
     userId: guest.id,
-    message: 'Upgrade successful. A 4-digit verification code has been sent to your email.'
+    message: 'Upgrade successful. Please check your email for the verification code.'
   };
 };
 
@@ -190,21 +191,15 @@ const resendVerificationOtp = async (email) => {
   if (!emailLower) throw new HttpError(400, 'Email is required.');
 
   const user = await User.findOne({ email: emailLower }).select('+isVerified +otp +otpExpires');
-  if (!user) {
-    return { message: 'If your email is registered, a verification code will be sent.' };
-  }
-
-  if (user.isVerified) {
-    return { message: 'Email is already verified.' };
-  }
+  if (!user) return { message: 'If your email is registered, a code has been sent.' };
+  if (user.isVerified) return { message: 'Email is already verified.' };
 
   const now = Date.now();
   const last = resendOtpThrottle.get(emailLower) || 0;
   const cooldownMs = VERIFICATION_RESEND_COOLDOWN_SECONDS * 1000;
 
   if (now - last < cooldownMs) {
-    const waitSec = Math.ceil((cooldownMs - (now - last)) / 1000);
-    throw new HttpError(429, `Please wait ${waitSec}s before requesting another code.`);
+    throw new HttpError(429, `Please wait before requesting another code.`);
   }
 
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
@@ -216,14 +211,14 @@ const resendVerificationOtp = async (email) => {
 
   await sendEmail({
     to: emailLower,
-    subject: 'Your Gas2Door Verification Code',
+    subject: 'Gas2Door Verification Code',
     text: `Your verification code is: ${otp}.`,
     html: `<p>Your verification code is: <strong>${otp}</strong>.</p>`
   });
 
-  logger.info(`[AUTH_SERVICE] Resent OTP for ${emailLower}: ${otp}`);
-  return { message: 'A new verification code has been sent to your email.' };
+  return { message: 'Verification code sent.' };
 };
+
 // ====================== END GUEST + RESEND THROTTLE ======================
 
 const registerCustomer = async (userData) => {

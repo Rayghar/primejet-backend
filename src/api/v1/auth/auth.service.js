@@ -62,7 +62,7 @@ const generateJwtForUser = (user, isNewUser = false) => {
 const VERIFICATION_RESEND_COOLDOWN_SECONDS = Number(process.env.VERIFICATION_RESEND_COOLDOWN_SECONDS || 60);
 const resendOtpThrottle = new Map();
 
-const isGuestilEma = (email) =>
+const isGuestEmail = (email) =>
   typeof email === 'string' &&
   (email.endsWith('@guest.gas2door.ng') || email.endsWith('@guest.gas2door.local') || email.includes('@guest.'));
 

@@ -5,7 +5,8 @@ const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
 const orderService = require('../orders/order.service');
 const notificationService = require('../notifications/notification.service');
-// ✅ CRITICAL: Import Order model directly to bypass service-layer auth checks during webhook/vending
+
+// ✅ CRITICAL: Import Order model directly to bypass service-layer auth checks during vending
 const Order = require('../../../models/order.model');
 
 /**
@@ -15,7 +16,7 @@ const Order = require('../../../models/order.model');
  * VTpass uses header-based API key auth:
  *  - POST requests: api-key + secret-key
  *  - GET requests:  api-key + public-key
- * See: https://www.vtpass.com/documentation/authentication/
+ * Docs: https://www.vtpass.com/documentation/authentication/
  */
 const VTPASS_BASE_URL = (process.env.VTPASS_BASE_URL || 'https://vtpass.com/api').replace(/\/+$/, '');
 const VTPASS_API_KEY = process.env.VTPASS_API_KEY;
@@ -25,8 +26,22 @@ const VTPASS_PUBLIC_KEY = process.env.VTPASS_PUBLIC_KEY;
 const CONVENIENCE_FEE = parseFloat(process.env.POWER_CONVENIENCE_FEE || '100');
 const VTPASS_TIMEOUT_MS = parseInt(process.env.VTPASS_TIMEOUT_MS || '20000', 10);
 
-// Map common aliases to VTpass serviceIDs.
-// ✅ IMPORTANT: Include Flutter codes like ikeja_electric_prepaid.
+/**
+ * ✅ HARD Timeout guard
+ * Sometimes upstream calls may hang and cause Render 499.
+ * This guarantees we ALWAYS return within VTPASS_TIMEOUT_MS.
+ */
+const withHardTimeout = (promise, ms, label = 'Operation') => {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    ),
+  ]);
+};
+
+// ✅ Map common aliases to VTpass serviceIDs.
+// ✅ IMPORTANT: Include Flutter UI codes like ikeja_electric_prepaid.
 const DISCO_TO_SERVICE_ID = {
   // --- Flutter UI values (underscore style) ---
   'ikeja_electric_prepaid': 'ikeja-electric',
@@ -106,13 +121,6 @@ function ensureVtpassKeysPresent(isPostRequest) {
   if (!isPostRequest && !VTPASS_PUBLIC_KEY) throw new HttpError(500, 'VTpass Public key is not configured on the server');
 }
 
-/**
- * VTpass Request ID format rules (summary):
- * - MUST be 12+ chars
- * - First 12 chars MUST be numeric: YYYYMMDDHHmm (Africa/Lagos / GMT+1)
- * - Can append any alphanumeric suffix
- * See: https://www.vtpass.com/documentation/how-to-generate-request-id/
- */
 function generateVtpassRequestId() {
   const dt = new Date();
   const parts = new Intl.DateTimeFormat('en-GB', {
@@ -133,7 +141,7 @@ function generateVtpassRequestId() {
   const ii = get('minute');
 
   const prefix = `${yyyy}${mm}${dd}${HH}${ii}`; // 12 digits
-  const suffix = crypto.randomBytes(8).toString('hex'); // alphanumeric
+  const suffix = crypto.randomBytes(8).toString('hex');
   return `${prefix}${suffix}`;
 }
 
@@ -167,14 +175,18 @@ const validateMeter = async (meterNumber, discoCode, meterType = 'prepaid') => {
 
     logger.info(`[PowerService][VTpass] Validating meter: ${meterNumber} (${serviceID}, ${type})`);
 
-    const response = await axios.post(
-      `${VTPASS_BASE_URL}/merchant-verify`,
-      {
-        billersCode: String(meterNumber).trim(),
-        serviceID,
-        type,
-      },
-      { headers: vtpassHeadersForPost(), timeout: VTPASS_TIMEOUT_MS }
+    const response = await withHardTimeout(
+      axios.post(
+        `${VTPASS_BASE_URL}/merchant-verify`,
+        {
+          billersCode: String(meterNumber).trim(),
+          serviceID,
+          type,
+        },
+        { headers: vtpassHeadersForPost(), timeout: VTPASS_TIMEOUT_MS }
+      ),
+      VTPASS_TIMEOUT_MS,
+      'VTpass merchant-verify'
     );
 
     const payload = response?.data;
@@ -199,7 +211,8 @@ const validateMeter = async (meterNumber, discoCode, meterType = 'prepaid') => {
     const msg = error?.response?.data ? JSON.stringify(error.response.data) : error.message;
     logger.error(`[PowerService][VTpass] Meter validation failed: ${msg}`);
     if (error instanceof HttpError) throw error;
-    throw new HttpError(400, 'Unable to verify meter details. Please check the number and Disco.');
+
+    throw new HttpError(400, error.message || 'Unable to verify meter details. Please check the number and Disco.');
   }
 };
 
@@ -258,7 +271,6 @@ const vendPower = async (orderIdOrMongoId) => {
 
   const orderId = order.id;
 
-  // Idempotency check
   if (['Completed', 'Delivered'].includes(order.status) || order.paymentStatus === 'Completed') {
     logger.warn(`[PowerService] Order ${orderId} already completed.`);
     const token = order.metadata ? order.metadata.get('token') : null;
@@ -277,21 +289,23 @@ const vendPower = async (orderIdOrMongoId) => {
     const amountToVend = order.subTotal || (order.grandTotal - CONVENIENCE_FEE);
     const request_id = generateVtpassRequestId();
 
-    logger.info(
-      `[PowerService][VTpass] PAY request_id=${request_id} serviceID=${serviceID} billersCode=${billersCode} amount=${amountToVend} type=${variation_code}`
-    );
+    logger.info(`[PowerService][VTpass] PAY request_id=${request_id} serviceID=${serviceID} billersCode=${billersCode} amount=${amountToVend} type=${variation_code}`);
 
-    const response = await axios.post(
-      `${VTPASS_BASE_URL}/pay`,
-      {
-        request_id,
-        serviceID,
-        billersCode,
-        variation_code,
-        amount: amountToVend,
-        phone,
-      },
-      { headers: vtpassHeadersForPost(), timeout: VTPASS_TIMEOUT_MS }
+    const response = await withHardTimeout(
+      axios.post(
+        `${VTPASS_BASE_URL}/pay`,
+        {
+          request_id,
+          serviceID,
+          billersCode,
+          variation_code,
+          amount: amountToVend,
+          phone,
+        },
+        { headers: vtpassHeadersForPost(), timeout: VTPASS_TIMEOUT_MS }
+      ),
+      VTPASS_TIMEOUT_MS,
+      'VTpass pay'
     );
 
     const payload = response?.data;
@@ -301,6 +315,8 @@ const vendPower = async (orderIdOrMongoId) => {
       const status = String(tx.status || '').toLowerCase();
 
       const token =
+        payload.token ||
+        payload.purchased_code ||
         payload.content?.tokens?.token ||
         payload.content?.token ||
         tx.token ||
@@ -308,6 +324,7 @@ const vendPower = async (orderIdOrMongoId) => {
         null;
 
       const units =
+        payload.units ||
         payload.content?.tokens?.units ||
         payload.content?.units ||
         tx.units ||
@@ -334,7 +351,7 @@ const vendPower = async (orderIdOrMongoId) => {
           await notificationService.createAndSendNotification(
             order.customerId,
             'Power Token Generated',
-            token ? `Your token is: ${token}${units ? ` (${units}kWh)` : ''}.` : 'Your electricity purchase was successful.',
+            token ? `Your token is: ${token}${units ? ` (${units})` : ''}.` : 'Your electricity purchase was successful.',
             'POWER_ORDER',
             { orderId, token }
           );
@@ -371,16 +388,20 @@ const vendPower = async (orderIdOrMongoId) => {
 };
 
 /**
- * Transaction Status Requery (VTpass)
+ * Requery VTpass transaction status
  */
 const requeryVtpass = async (requestId) => {
   try {
     if (!requestId) throw new HttpError(400, 'request_id is required');
 
-    const response = await axios.post(
-      `${VTPASS_BASE_URL}/requery`,
-      { request_id: String(requestId).trim() },
-      { headers: vtpassHeadersForPost(), timeout: VTPASS_TIMEOUT_MS }
+    const response = await withHardTimeout(
+      axios.post(
+        `${VTPASS_BASE_URL}/requery`,
+        { request_id: String(requestId).trim() },
+        { headers: vtpassHeadersForPost(), timeout: VTPASS_TIMEOUT_MS }
+      ),
+      VTPASS_TIMEOUT_MS,
+      'VTpass requery'
     );
 
     return response.data;

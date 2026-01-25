@@ -4,14 +4,12 @@ const router = express.Router();
 const powerController = require('./power.controller');
 const auth = require('../../../middleware/auth.middleware');
 
-// Protected Routes
+// Protected routes
 router.post('/validate', auth, powerController.validateMeter);
 router.post('/order', auth, powerController.createOrder);
 
-// Admin-only retry (controller enforces role)
+// Admin retry + requery
 router.post('/retry', auth, powerController.retryVending);
-
-// Requery VTpass transaction status (useful for ops/pending fixes)
 router.post('/requery', auth, powerController.requery);
 
 module.exports = router;

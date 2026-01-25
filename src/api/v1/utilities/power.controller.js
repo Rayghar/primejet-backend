@@ -2,7 +2,6 @@
 const powerService = require('./power.service');
 const orderService = require('../orders/order.service');
 const HttpError = require('../../../utils/HttpError');
-const { logger } = require('../../../config/logger.config');
 
 const validateMeter = async (req, res, next) => {
   try {
@@ -25,16 +24,16 @@ const validateMeter = async (req, res, next) => {
 
 const createOrder = async (req, res, next) => {
   try {
-    const userId = req.user.id; // From Auth Middleware
+    const userId = req.user.id; // from auth middleware
     const order = await powerService.createPendingOrder(userId, req.body);
 
-    // ✅ SAFETY FIX: Always return UUID order.id (not Mongo _id) so vending/retry works consistently
+    // ✅ always return UUID order.id (not Mongo _id)
     res.status(201).json({
       success: true,
       message: 'Order created successfully. Proceed to payment.',
       data: {
         orderId: order.id,
-        totalAmount: order.totalAmount, // Includes Convenience Fee
+        totalAmount: order.totalAmount,
         breakdown: {
           electricity: order.subTotal,
           fee: order.serviceFee,
@@ -46,7 +45,6 @@ const createOrder = async (req, res, next) => {
   }
 };
 
-// --- Admin Retry Vending ---
 const retryVending = async (req, res, next) => {
   try {
     const { orderId } = req.body;
@@ -56,7 +54,6 @@ const retryVending = async (req, res, next) => {
     }
     if (!orderId) throw new HttpError(400, 'Order ID is required');
 
-    // Fetch order (service may accept either UUID or Mongo _id). We normalize to UUID.
     const order = await orderService.getOrder(orderId);
     if (!order) throw new HttpError(404, 'Order not found');
 
@@ -65,7 +62,7 @@ const retryVending = async (req, res, next) => {
 
     res.status(200).json({
       success: true,
-      message: 'Retry triggered. If VTpass is pending, requery will finalize.',
+      message: 'Retry triggered.',
       data: result,
     });
   } catch (error) {
@@ -73,7 +70,6 @@ const retryVending = async (req, res, next) => {
   }
 };
 
-// --- Requery (VTpass) ---
 const requery = async (req, res, next) => {
   try {
     const { requestId } = req.body;

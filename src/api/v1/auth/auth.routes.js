@@ -30,7 +30,7 @@ router.post('/login', validate(loginSchema), authController.login);
 
 // --- Guest session + upgrade ---
 router.post('/guest', validate(guestSchema), authController.createGuest);
-router.post('/guest/upgrade', authMiddleware, validate(guestUpgradeSchema), authController.upgradeGuest);
+router.post('/guest/upgrade', authMiddleware(), validate(guestUpgradeSchema), authController.upgradeGuest);
 
 // --- OTP Verification ---
 router.post('/verify-otp', validate(verifyOtpSchema), authController.verifyEmailOtp);

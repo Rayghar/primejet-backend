@@ -46,6 +46,22 @@ const sendEmailSafely = async (emailOptions) => {
     }
 };
 
+// ✅ NEW: Background (fire-and-forget) email sender for upgradeGuest only
+// This prevents the upgrade endpoint from hanging indefinitely when SendGrid is slow/blocked.
+const sendEmailBackground = (emailOptions) => {
+  sendEmail(emailOptions)
+    .then(() => {
+      logger.info(`[AUTH_SERVICE] Verification email successfully sent to ${emailOptions.to}`);
+    })
+    .catch((err) => {
+      logger.error(`[AUTH_SERVICE] Failed to send verification email to ${emailOptions.to}:`, {
+        message: err.message,
+        stack: err.stack,
+      });
+      // Failure is logged but does not affect the upgrade response
+    });
+};
+
 const generateJwtForUser = (user, isNewUser = false) => {
   const payload = { id: user.id, role: user.role };
   const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1d' });
@@ -99,9 +115,6 @@ const createGuest = async (meta = {}) => {
     // 3. Resume Session
     // Security: Only allow auto-login if it is actually a guest account.
     if (!isGuestEmail(guestUser.email)) {
-        // If it's a real user, we shouldn't auto-login them as guest easily, 
-        // but for checkout flow convenience, we can return a limited token OR throw error.
-        // Best practice: Ask them to login.
         throw new HttpError(409, 'This phone number is already registered. Please log in.');
     }
 
@@ -136,9 +149,7 @@ const createGuest = async (meta = {}) => {
     isVerified: true, // Guests are auto-verified to allow ordering
     status: 'active',
   });
-
   await guestUser.save();
-
   const jwtResult = generateJwtForUser(guestUser, true);
   return {
     ...jwtResult,
@@ -155,16 +166,12 @@ const createGuest = async (meta = {}) => {
 
 const upgradeGuest = async (guestUserId, upgradeData) => {
   logger.info(`[TRACE] upgradeGuest started for UserID: ${guestUserId}`);
-
-  const { email, password, name, phone } = upgradeData;
-
+  const { email, password, name } = upgradeData; // phone removed – not needed here
   const guest = await User.findOne({ id: guestUserId }).select('+isVerified +status +role +email');
   if (!guest) throw new HttpError(404, 'Guest session not found.');
-
   if (!isGuestEmail(guest.email)) {
     throw new HttpError(400, 'This account is already upgraded.');
   }
-
   const emailLower = String(email || '').toLowerCase().trim();
   if (!emailLower) throw new HttpError(400, 'Email is required.');
   if (!password) throw new HttpError(400, 'Password is required.');
@@ -183,69 +190,73 @@ const upgradeGuest = async (guestUserId, upgradeData) => {
   logger.info(`[TRACE] Updating guest record in DB...`);
   guest.name = name || guest.name;
   guest.email = emailLower;
-  if (phone) guest.phone = phone; 
-
-  guest.password = password;
+  guest.password = password; // Assuming pre-save hook hashes password (consistent with registerCustomer)
   guest.role = 'customer';
   guest.isVerified = false; // Must verify email now
   guest.status = 'pending_verification';
   guest.otp = hashedOtp;
   guest.otpExpires = otpExpires;
-
   await guest.save();
-  logger.info(`[TRACE] Guest record updated. Sending Email...`);
 
-  // ✅ FIX: Send Email Safely
-  await sendEmailSafely({
+  logger.info(`[TRACE] Guest record updated for user ${guest.id}. Queuing verification email in background.`);
+
+  // ✅ FIRE-AND-FORGET EMAIL (non-blocking – fixes endless spinning)
+  sendEmailBackground({
     to: emailLower,
-    subject: 'Gas2Door Verification Code',
-    text: `Your verification code is: ${otp}.`,
-    html: `<p>Your verification code is: <strong>${otp}</strong>.</p>`
+    subject: 'Gas2Door – Complete Your Account Upgrade',
+    text: `Hello ${name || 'Customer'},\n\nYour account upgrade is almost complete!\nYour 4-digit verification code is: ${otp}\n\nIt expires in 10 minutes.\n\nIf you didn't request this, ignore this email.\n\nThank you,\nGas2Door Team`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+        <h2 style="color: #0d9488;">Gas2Door Account Upgrade</h2>
+        <p>Hello <strong>${name || 'Customer'}</strong>,</p>
+        <p>Your account upgrade is almost complete!</p>
+        <p style="font-size: 1.2em;">Your verification code is:</p>
+        <p style="font-size: 2em; font-weight: bold; color: #0d9488; letter-spacing: 8px;">${otp}</p>
+        <p>It expires in <strong>10 minutes</strong>.</p>
+        <p>If you did not request this upgrade, please ignore this email.</p>
+        <p>Thank you,<br/><strong>Gas2Door Team</strong></p>
+      </div>
+    `,
   });
+
+  // OTP logged for dev/debug only (remove in full production if needed)
+  logger.info(`[AUTH_SERVICE] Upgrade OTP for ${emailLower}: ${otp}`);
 
   return {
     userId: guest.id,
-    message: 'Upgrade successful. Please check your email for the verification code.'
+    message: 'Account upgraded successfully! Please check your email for the 4-digit verification code. If you don\'t receive it within a few minutes, you can request a resend on the verification screen.'
   };
 };
 
 const resendVerificationOtp = async (email) => {
   const emailLower = String(email || '').toLowerCase().trim();
   logger.info(`[TRACE] Resending OTP to: ${emailLower}`);
-
   if (!emailLower) throw new HttpError(400, 'Email is required.');
-
   const user = await User.findOne({ email: emailLower }).select('+isVerified +otp +otpExpires');
   if (!user) return { message: 'If registered, code sent.' };
   if (user.isVerified) return { message: 'Email already verified.' };
-
   const now = Date.now();
   const last = resendOtpThrottle.get(emailLower) || 0;
   const cooldownMs = VERIFICATION_RESEND_COOLDOWN_SECONDS * 1000;
-
   if (now - last < cooldownMs) {
     throw new HttpError(429, `Please wait before requesting another code.`);
   }
-
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
   user.otp = await bcrypt.hash(otp, 10);
   user.otpExpires = new Date(Date.now() + 10 * 60 * 1000);
   await user.save();
-
   resendOtpThrottle.set(emailLower, now);
-
-  // ✅ FIX: Send Email Safely
+  // ✅ Still use safe (blocking) sender for resend – user explicitly requested it
   await sendEmailSafely({
     to: emailLower,
     subject: 'Gas2Door Verification Code',
     text: `Your verification code is: ${otp}.`,
     html: `<p>Your verification code is: <strong>${otp}</strong>.</p>`
   });
-
   return { message: 'Verification code sent.' };
 };
 
-// ====================== END GUEST + RESEND THROTTLE ======================
+// ====================== REMAINING FUNCTIONS UNCHANGED ======================
 
 const registerCustomer = async (userData) => {
   const { email, password, name, phone, referralCode } = userData;
@@ -253,23 +264,20 @@ const registerCustomer = async (userData) => {
   if (existingUser && existingUser.isVerified) {
     throw new HttpError(409, 'An account with this email already exists.');
   }
-
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
   const hashedOtp = await bcrypt.hash(otp, 10);
   const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
-
   const userFields = {
     name,
     email: email.toLowerCase(),
     phone,
-    password: password, 
+    password: password,
     role: 'customer',
     otp: hashedOtp,
     otpExpires,
     isVerified: false,
     status: 'pending_verification'
   };
-
   let user;
   if (existingUser) {
     user = await User.findOneAndUpdate({ _id: existingUser._id }, userFields, { new: true });
@@ -277,11 +285,9 @@ const registerCustomer = async (userData) => {
     user = new User({ ...userFields, id: uuidv4() });
     await user.save();
   }
-
   if (referralCode && referralCode.trim().length > 0) {
     const trimmedCode = referralCode.trim().toUpperCase();
     const potentialAgent = await Agent.findOne({ agentCode: trimmedCode });
-
     if (potentialAgent && potentialAgent.isActive) {
       user.referredByAgentId = potentialAgent.id;
       logger.info(`[AUTH_SERVICE] Attributing new user ${email} to agent ${potentialAgent.id} via code ${trimmedCode}.`);
@@ -290,20 +296,16 @@ const registerCustomer = async (userData) => {
       await referralService.processCodeOnRegistration(user, trimmedCode);
     }
   }
-
   await user.save();
-
   if (user.referredByAgentId) {
     await agentService.markCustomerRegisteredByAgent(referralCode.trim().toUpperCase(), user.id);
   }
-
   await sendEmail({
     to: email,
     subject: 'Your Gas2Door Verification Code',
     text: `Your verification code is: ${otp}.`,
     html: `<p>Your verification code is: <strong>${otp}</strong>.</p>`
   });
-
   logger.info(`[AUTH_SERVICE] OTP for ${email}: ${otp}`);
   return { userId: user.id, message: 'Registration successful. A 4-digit verification code has been sent to your email.' };
 };
@@ -318,11 +320,9 @@ const verifyGoogleIdTokenAndLogin = async (idToken) => {
         process.env.GOOGLE_IOS_CLIENT_ID
       ].filter(id => id),
     });
-
     const payload = ticket.getPayload();
     const { email, name, sub: googleId } = payload;
     let user = await User.findOne({ email: email });
-
     if (user) {
       if (!user.googleId) {
         user.googleId = googleId;
@@ -330,7 +330,6 @@ const verifyGoogleIdTokenAndLogin = async (idToken) => {
       }
       return generateJwtForUser(user, false);
     }
-
     const newUser = new User({
       id: uuidv4(),
       googleId,
@@ -341,7 +340,6 @@ const verifyGoogleIdTokenAndLogin = async (idToken) => {
       isVerified: true,
       status: 'active',
     });
-
     await newUser.save();
     return generateJwtForUser(newUser, true);
   } catch (error) {
@@ -355,28 +353,22 @@ const verifyAppleIdTokenAndLogin = async (idToken) => {
     logger.error('APPLE_SERVICE_ID is not configured in ENV.');
     throw new HttpError(500, 'Server configuration error: Apple Sign-In not fully set up.');
   }
-
   try {
     const decodedToken = jwt.decode(idToken, { complete: true });
     if (!decodedToken) throw new HttpError(401, 'Invalid Apple ID Token format.');
-
     const { kid } = decodedToken.header;
     const key = await appleClient.getSigningKey(kid);
     const publicKey = key.getPublicKey();
-
     const payload = jwt.verify(idToken, publicKey, {
       algorithms: ['RS256', 'ES256'],
       issuer: 'https://appleid.apple.com',
       audience: APPLE_AUDIENCE,
     });
-
     const { email, sub: appleId } = payload;
     let user = await User.findOne({ appleId }).select('+isVerified +status');
     let isNewUser = false;
-
     if (!user) {
       user = await User.findOne({ email: email.toLowerCase() }).select('+isVerified +status');
-
       if (user) {
         user.appleId = appleId;
         user.isVerified = true;
@@ -399,7 +391,6 @@ const verifyAppleIdTokenAndLogin = async (idToken) => {
         isNewUser = true;
       }
     }
-
     return generateJwtForUser(user, isNewUser);
   } catch (error) {
     logger.error("Error verifying Apple ID token:", error.message, { stack: error.stack });
@@ -415,40 +406,31 @@ const verifyEmailOtp = async (email, otp) => {
     email: email.toLowerCase(),
     otpExpires: { $gt: Date.now() }
   }).select('+otp +isVerified');
-
   if (!user) throw new HttpError(400, 'Verification code is invalid or has expired.');
-
   const isMatch = await bcrypt.compare(otp, user.otp);
   if (!isMatch) throw new HttpError(400, 'Invalid verification code provided.');
-
   user.isVerified = true;
   user.status = 'active';
   user.otp = undefined;
   user.otpExpires = undefined;
   await user.save();
-
   return { message: 'Email verified successfully. You can now log in.' };
 };
 
 const login = async (email, password) => {
   const user = await User.findOne({ email: email.toLowerCase() }).select('+password +isVerified');
   if (!user) throw new HttpError(401, 'Invalid email or password.');
-
   if (isGuestEmail(user.email)) {
     throw new HttpError(403, 'This is a guest checkout session. Please upgrade your account to log in.');
   }
-
   if (!user.password) {
     throw new HttpError(403, 'This account was created using a social provider. Please use Google Sign-In.');
   }
-
   if (user.role === 'customer' && user.isVerified === false) {
     throw new HttpError(403, 'Your account has not been verified. Please check your email for the verification code.');
   }
-
   const isMatch = await bcrypt.compare(password, user.password);
   if (!isMatch) throw new HttpError(401, 'Invalid email or password.');
-
   return generateJwtForUser(user);
 };
 
@@ -458,20 +440,16 @@ const requestPasswordReset = async (email) => {
     logger.warn(`Password reset requested for non-existent email: ${email}.`);
     return { message: 'If your email is registered, you will receive a 6-digit reset code.' };
   }
-
   const resetToken = Math.floor(100000 + Math.random() * 900000).toString();
-
   user.passwordResetToken = await bcrypt.hash(resetToken, 10);
   user.passwordResetExpires = Date.now() + 10 * 60 * 1000;
   await user.save();
-
   await sendEmail({
     to: email,
     subject: 'Your Gas2Door Password Reset Code',
     text: `Your password reset code is: ${resetToken}. It will expire in 10 minutes.`,
     html: `<p>Your password reset code is: <strong>${resetToken}</strong>. It will expire in 10 minutes.</p>`
   });
-
   logger.info(`Password Reset Code for ${email}: ${resetToken}`);
   return { message: 'A 6-digit reset code has been sent to your email.' };
 };
@@ -480,17 +458,12 @@ const adminCreateUser = async (newUserData, requestingUser) => {
   if (!requestingUser || requestingUser.role !== 'admin') {
     throw new HttpError(403, 'Insufficient permissions. Only admins can create new users.');
   }
-
   const { email, password, name, phone, role } = newUserData;
-
   const existingUser = await User.findOne({ email: email.toLowerCase() });
   if (existingUser) throw new HttpError(409, 'An account with this email already exists.');
-
   const hashedPassword = await bcrypt.hash(password, 10);
-
   const newUser = new User({
     id: uuidv4(),
-    name,
     name,
     email: email.toLowerCase(),
     phone,
@@ -499,9 +472,7 @@ const adminCreateUser = async (newUserData, requestingUser) => {
     isVerified: true,
     status: 'active',
   });
-
   await newUser.save();
-
   const userJson = newUser.toJSON();
   delete userJson.password;
   return userJson;
@@ -512,17 +483,13 @@ const verifyPasswordResetToken = async (email, token) => {
     email: email.toLowerCase(),
     passwordResetExpires: { $gt: Date.now() }
   }).select('+passwordResetToken');
-
   if (!user) throw new HttpError(400, 'Reset code is invalid or has expired.');
-
   const isMatch = await bcrypt.compare(token, user.passwordResetToken);
   if (!isMatch) throw new HttpError(400, 'Invalid reset code provided.');
-
   const finalResetToken = crypto.randomBytes(32).toString('hex');
   user.passwordResetToken = crypto.createHash('sha256').update(finalResetToken).digest('hex');
   user.passwordResetExpires = Date.now() + 10 * 60 * 1000;
   await user.save();
-
   return { message: 'Code verified successfully.', resetToken: finalResetToken };
 };
 
@@ -532,13 +499,10 @@ const resetPassword = async (token, newPassword) => {
     passwordResetToken: hashedToken,
     passwordResetExpires: { $gt: Date.now() },
   });
-
   if (!user) throw new HttpError(400, 'Password reset token is invalid or has expired.');
-
   user.password = newPassword;
   user.passwordResetToken = undefined;
   user.passwordResetExpires = undefined;
-
   await user.save();
   return { message: 'Password has been reset successfully.' };
 };

@@ -1,25 +1,31 @@
-// File: src/api/v1/utilities/power.routes.js
-
 const express = require("express");
 const router = express.Router();
 
-const authMiddleware = require("../../../middleware/auth.middleware");
 const powerController = require("./power.controller");
 
-// ✅ Legacy endpoints (keep them so existing clients won't break)
-router.post("/validate", authMiddleware, powerController.validateMeter);
-router.post("/order", authMiddleware, powerController.createPowerOrder);
+// Use your existing auth middleware path (based on your backend structure)
+const authMiddleware = require("../../../middleware/auth.middleware");
 
-// ✅ NEW VTpass endpoints (these are what your app should use now)
-router.post("/vtpass/verify", authMiddleware, powerController.vtpassVerifyMeter);
-router.post("/vtpass/purchase", authMiddleware, powerController.vtpassPurchase);
-router.get(
-  "/vtpass/status/:requestId",
-  authMiddleware,
-  powerController.vtpassRequeryStatus
-);
+// All power routes require auth (Flutter sends Bearer token)
+router.use(authMiddleware);
 
-// ✅ Admin utility (already exists in your dart ApiService)
-router.post("/retry", authMiddleware, powerController.retryVending);
+// ---------------------------------------------------------------------------
+// Legacy endpoints (keep for backward compatibility)
+// ---------------------------------------------------------------------------
+router.post("/validate", powerController.validateMeterLegacy);
+router.post("/order", powerController.createPowerOrderLegacy);
+router.post("/requery", powerController.requeryLegacy);
+
+// ---------------------------------------------------------------------------
+// VTpass endpoints (NEW)
+// ---------------------------------------------------------------------------
+router.post("/vtpass/verify", powerController.vtpassVerify);
+router.post("/vtpass/purchase", powerController.vtpassPurchase);
+router.get("/vtpass/status/:requestId", powerController.vtpassStatus);
+
+// ---------------------------------------------------------------------------
+// Admin / Ops
+// ---------------------------------------------------------------------------
+router.post("/retry", powerController.retryVending);
 
 module.exports = router;

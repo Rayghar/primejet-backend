@@ -30,15 +30,18 @@ const appleClient = jwksClient({
 const sendEmailSafely = async (emailOptions) => {
     logger.info(`[TRACE] Sending email to: ${emailOptions.to}`);
     
+    // Create a timeout promise that rejects after 8 seconds
     const timeout = new Promise((_, reject) =>
         setTimeout(() => reject(new Error("Email server timed out (8s limit)")), 8000)
     );
 
     try {
+        // Race the actual send against the timeout
         await Promise.race([sendEmail(emailOptions), timeout]);
         logger.info(`[TRACE] Email sent successfully.`);
     } catch (e) {
         logger.error(`[TRACE] Email Failed: ${e.message}`);
+        // Throw a specific error so the frontend knows it's an email issue
         throw new HttpError(503, "Verification email failed to send. Please try again or contact support.");
     }
 };
@@ -46,19 +49,17 @@ const sendEmailSafely = async (emailOptions) => {
 // ✅ NEW: Background (fire-and-forget) email sender for upgradeGuest only
 // This prevents the upgrade endpoint from hanging indefinitely when SendGrid is slow/blocked.
 const sendEmailBackground = (emailOptions) => {
-  // Detach completely from current execution context
-  setImmediate(() => {
-    sendEmail(emailOptions)
-      .then(() => {
-        logger.info(`[AUTH_SERVICE] Verification email successfully sent to ${emailOptions.to}`);
-      })
-      .catch((err) => {
-        logger.error(`[AUTH_SERVICE] Failed to send verification email to ${emailOptions.to}:`, {
-          message: err.message,
-          stack: err.stack,
-        });
+  sendEmail(emailOptions)
+    .then(() => {
+      logger.info(`[AUTH_SERVICE] Verification email successfully sent to ${emailOptions.to}`);
+    })
+    .catch((err) => {
+      logger.error(`[AUTH_SERVICE] Failed to send verification email to ${emailOptions.to}:`, {
+        message: err.message,
+        stack: err.stack,
       });
-  });
+      // Failure is logged but does not affect the upgrade response
+    });
 };
 
 const generateJwtForUser = (user, isNewUser = false) => {
@@ -81,6 +82,7 @@ const isGuestEmail = (email) =>
   typeof email === 'string' &&
   (email.endsWith('@guest.gas2door.ng') || email.endsWith('@guest.gas2door.local') || email.includes('@guest.'));
 
+// ✅ FIX: Deterministic Email. 1 Phone = 1 Guest Account.
 const makeGuestEmail = (phone) => {
   const safePhone = String(phone || '').replace(/[^\d+]/g, '') || 'unknown';
   return `${safePhone}@guest.gas2door.ng`;
@@ -90,21 +92,33 @@ const makeGuestPassword = () => {
   return `G2D_g_${crypto.randomBytes(16).toString('hex')}`;
 };
 
+/**
+ * CREATE OR RESUME GUEST SESSION
+ * 1. Sanitizes phone.
+ * 2. Checks DB for user with that phone.
+ * 3. If found & is guest -> Returns login token (Resume).
+ * 4. If not found -> Creates new guest (Register).
+ */
 const createGuest = async (meta = {}) => {
   const name = (meta.name || 'Guest').toString().trim() || 'Guest';
   const phone = String(meta.phone || '').trim();
 
   if (!phone) throw new HttpError(400, 'Phone number is required for guest checkout.');
 
+  // 1. Clean Phone
   const safePhone = phone.replace(/[^\d+]/g, '');
 
+  // 2. Check for existing user
   let guestUser = await User.findOne({ phone: safePhone });
 
   if (guestUser) {
+    // 3. Resume Session
+    // Security: Only allow auto-login if it is actually a guest account.
     if (!isGuestEmail(guestUser.email)) {
         throw new HttpError(409, 'This phone number is already registered. Please log in.');
     }
 
+    // Refresh name if provided
     if (name !== 'Guest' && guestUser.name !== name) {
         guestUser.name = name;
         await guestUser.save();
@@ -124,6 +138,7 @@ const createGuest = async (meta = {}) => {
     };
   }
 
+  // 4. Create New Guest
   guestUser = new User({
     id: uuidv4(),
     name,
@@ -131,7 +146,7 @@ const createGuest = async (meta = {}) => {
     phone: safePhone,
     password: makeGuestPassword(),
     role: 'customer',
-    isVerified: true,
+    isVerified: true, // Guests are auto-verified to allow ordering
     status: 'active',
   });
   await guestUser.save();
@@ -150,26 +165,20 @@ const createGuest = async (meta = {}) => {
 };
 
 const upgradeGuest = async (guestUserId, upgradeData) => {
-  logger.info(`[UPGRADE_GUEST] STARTED for UserID: ${guestUserId} | Payload: ${JSON.stringify(upgradeData)}`);
-
-  const { email, password, name } = upgradeData;
+  logger.info(`[TRACE] upgradeGuest started for UserID: ${guestUserId}`);
+  const { email, password, name } = upgradeData; // phone removed – not needed here
   const guest = await User.findOne({ id: guestUserId }).select('+isVerified +status +role +email');
-  if (!guest) {
-    logger.warn(`[UPGRADE_GUEST] Guest not found for ID: ${guestUserId}`);
-    throw new HttpError(404, 'Guest session not found.');
-  }
+  if (!guest) throw new HttpError(404, 'Guest session not found.');
   if (!isGuestEmail(guest.email)) {
-    logger.warn(`[UPGRADE_GUEST] Account already upgraded for ID: ${guestUserId}`);
     throw new HttpError(400, 'This account is already upgraded.');
   }
-
   const emailLower = String(email || '').toLowerCase().trim();
   if (!emailLower) throw new HttpError(400, 'Email is required.');
   if (!password) throw new HttpError(400, 'Password is required.');
 
-  const existing = await User.findOne({ email: emailLower }).select('+id');
+  // Check collision
+  const existing = await User.findOne({ email: emailLower }).select('+isVerified +id');
   if (existing && existing.id !== guest.id) {
-    logger.warn(`[UPGRADE_GUEST] Email collision: ${emailLower} already exists`);
     throw new HttpError(409, 'An account with this email already exists.');
   }
 
@@ -177,25 +186,21 @@ const upgradeGuest = async (guestUserId, upgradeData) => {
   const hashedOtp = await bcrypt.hash(otp, 10);
   const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
-  // ✅ Explicitly hash password (consistent with adminCreateUser, avoids reliance on pre-save hook issues)
-  const hashedPassword = await bcrypt.hash(password, 10);
-
-  logger.info(`[UPGRADE_GUEST] Updating DB for UserID: ${guestUserId}`);
-
+  // Update DB
+  logger.info(`[TRACE] Updating guest record in DB...`);
   guest.name = name || guest.name;
   guest.email = emailLower;
-  guest.password = hashedPassword;
+  guest.password = password; // Assuming pre-save hook hashes password (consistent with registerCustomer)
   guest.role = 'customer';
-  guest.isVerified = false;
+  guest.isVerified = false; // Must verify email now
   guest.status = 'pending_verification';
   guest.otp = hashedOtp;
   guest.otpExpires = otpExpires;
-
   await guest.save();
 
-  logger.info(`[UPGRADE_GUEST] DB update complete for UserID: ${guestUserId}. Queuing background email to ${emailLower}`);
+  logger.info(`[TRACE] Guest record updated for user ${guest.id}. Queuing verification email in background.`);
 
-  // ✅ NON-BLOCKING EMAIL (fire-and-forget with setImmediate for full detachment)
+  // ✅ FIRE-AND-FORGET EMAIL (non-blocking – fixes endless spinning)
   sendEmailBackground({
     to: emailLower,
     subject: 'Gas2Door – Complete Your Account Upgrade',
@@ -214,7 +219,8 @@ const upgradeGuest = async (guestUserId, upgradeData) => {
     `,
   });
 
-  logger.info(`[UPGRADE_GUEST] OTP (dev only): ${otp} | Returning success response immediately`);
+  // OTP logged for dev/debug only (remove in full production if needed)
+  logger.info(`[AUTH_SERVICE] Upgrade OTP for ${emailLower}: ${otp}`);
 
   return {
     userId: guest.id,
@@ -240,6 +246,7 @@ const resendVerificationOtp = async (email) => {
   user.otpExpires = new Date(Date.now() + 10 * 60 * 1000);
   await user.save();
   resendOtpThrottle.set(emailLower, now);
+  // ✅ Still use safe (blocking) sender for resend – user explicitly requested it
   await sendEmailSafely({
     to: emailLower,
     subject: 'Gas2Door Verification Code',

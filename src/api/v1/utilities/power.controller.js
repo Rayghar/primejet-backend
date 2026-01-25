@@ -1,85 +1,145 @@
 // File: src/api/v1/utilities/power.controller.js
-const powerService = require('./power.service');
-const orderService = require('../orders/order.service');
-const HttpError = require('../../../utils/HttpError');
 
-const validateMeter = async (req, res, next) => {
+const powerService = require("./power.service");
+
+/**
+ * ✅ Legacy endpoints (kept)
+ * These now internally call the VTpass service methods
+ * to ensure backward compatibility.
+ */
+exports.validateMeter = async (req, res) => {
   try {
-    const { meterNumber, discoCode, meterType } = req.body;
+    const { meterNumber, discoCode } = req.body;
 
-    if (!meterNumber || !discoCode) {
-      throw new HttpError(400, 'Meter number and Disco code are required');
-    }
-
-    const result = await powerService.validateMeter(meterNumber, discoCode, meterType);
-
-    res.status(200).json({
-      success: true,
-      data: result,
+    const data = await powerService.vtpassVerifyMeter({
+      meterNumber,
+      discoCode,
+      type: "prepaid",
     });
-  } catch (error) {
-    next(error);
+
+    return res.status(200).json({
+      success: true,
+      message: "Meter verified successfully",
+      data,
+    });
+  } catch (err) {
+    return res.status(400).json({
+      success: false,
+      message: err.message || "Meter verification failed",
+    });
   }
 };
 
-const createOrder = async (req, res, next) => {
+exports.createPowerOrder = async (req, res) => {
   try {
-    const userId = req.user.id; // from auth middleware
-    const order = await powerService.createPendingOrder(userId, req.body);
+    const { meterNumber, discoCode, amount, phone, meterName } = req.body;
 
-    // ✅ always return UUID order.id (not Mongo _id)
-    res.status(201).json({
-      success: true,
-      message: 'Order created successfully. Proceed to payment.',
-      data: {
-        orderId: order.id,
-        totalAmount: order.totalAmount,
-        breakdown: {
-          electricity: order.subTotal,
-          fee: order.serviceFee,
-        },
-      },
+    const data = await powerService.vtpassPurchaseElectricity({
+      meterNumber,
+      discoCode,
+      type: "prepaid",
+      amount,
+      phone,
+      meterName,
     });
-  } catch (error) {
-    next(error);
+
+    return res.status(201).json({
+      success: true,
+      message: "Power order created successfully",
+      data,
+    });
+  } catch (err) {
+    return res.status(400).json({
+      success: false,
+      message: err.message || "Power order failed",
+    });
   }
 };
 
-const retryVending = async (req, res, next) => {
+/**
+ * ✅ NEW VTpass endpoints
+ */
+exports.vtpassVerifyMeter = async (req, res) => {
+  try {
+    const { meterNumber, serviceId, type } = req.body;
+
+    const data = await powerService.vtpassVerifyMeterDirect({
+      meterNumber,
+      serviceId,
+      type,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Meter verified successfully",
+      data,
+    });
+  } catch (err) {
+    return res.status(400).json({
+      success: false,
+      message: err.message || "Meter verification failed",
+    });
+  }
+};
+
+exports.vtpassPurchase = async (req, res) => {
+  try {
+    const { meterNumber, serviceId, type, amount, phone } = req.body;
+
+    const data = await powerService.vtpassPurchaseDirect({
+      meterNumber,
+      serviceId,
+      type,
+      amount,
+      phone,
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Electricity purchase successful",
+      data,
+    });
+  } catch (err) {
+    return res.status(400).json({
+      success: false,
+      message: err.message || "Electricity purchase failed",
+    });
+  }
+};
+
+exports.vtpassRequeryStatus = async (req, res) => {
+  try {
+    const { requestId } = req.params;
+
+    const data = await powerService.vtpassRequeryStatus({ requestId });
+
+    return res.status(200).json({
+      success: true,
+      message: "Status query successful",
+      data,
+    });
+  } catch (err) {
+    return res.status(400).json({
+      success: false,
+      message: err.message || "Status query failed",
+    });
+  }
+};
+
+exports.retryVending = async (req, res) => {
   try {
     const { orderId } = req.body;
 
-    if (req.user.role !== 'admin') {
-      throw new HttpError(403, 'Access Denied: Only Admins can retry vending.');
-    }
-    if (!orderId) throw new HttpError(400, 'Order ID is required');
+    await powerService.retryVending({ orderId });
 
-    const order = await orderService.getOrder(orderId);
-    if (!order) throw new HttpError(404, 'Order not found');
-
-    const normalizedId = order.id || orderId;
-    const result = await powerService.vendPower(normalizedId);
-
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: 'Retry triggered.',
-      data: result,
+      message: "Retry triggered successfully",
     });
-  } catch (error) {
-    next(error);
+  } catch (err) {
+    return res.status(400).json({
+      success: false,
+      message: err.message || "Retry failed",
+    });
   }
 };
-
-const requery = async (req, res, next) => {
-  try {
-    const { requestId } = req.body;
-    if (!requestId) throw new HttpError(400, 'requestId is required');
-
-    const data = await powerService.requeryVtpass(requestId);
-    res.status(200).json({ success: true, data });
-  } catch (error) {
-    next(error);
-  }
-};
-
-module.exports = { validateMeter, createOrder, retryVending, requery };

@@ -1,31 +1,31 @@
-const express = require("express");
+// File: src/api/v1/utilities/power.routes.js
+const express = require('express');
 const router = express.Router();
+const powerController = require('./power.controller');
+const auth = require('../../../middleware/auth.middleware');
 
-const powerController = require("./power.controller");
+// Apply Auth Middleware (User must be logged in)
+router.use(auth);
 
-// Use your existing auth middleware path (based on your backend structure)
-const authMiddleware = require("../../../middleware/auth.middleware");
+/**
+ * @route   POST /api/v1/power/validate
+ * @desc    Validate a meter number via Monnify VAS
+ * @access  Private
+ */
+router.post('/validate', powerController.validateMeter);
 
-// All power routes require auth (Flutter sends Bearer token)
-router.use(authMiddleware);
+/**
+ * @route   POST /api/v1/power/order
+ * @desc    Create a pending electricity order (before payment)
+ * @access  Private
+ */
+router.post('/order', powerController.createOrder);
 
-// ---------------------------------------------------------------------------
-// Legacy endpoints (keep for backward compatibility)
-// ---------------------------------------------------------------------------
-router.post("/validate", powerController.validateMeterLegacy);
-router.post("/order", powerController.createPowerOrderLegacy);
-router.post("/requery", powerController.requeryLegacy);
-
-// ---------------------------------------------------------------------------
-// VTpass endpoints (NEW)
-// ---------------------------------------------------------------------------
-router.post("/vtpass/verify", powerController.vtpassVerify);
-router.post("/vtpass/purchase", powerController.vtpassPurchase);
-router.get("/vtpass/status/:requestId", powerController.vtpassStatus);
-
-// ---------------------------------------------------------------------------
-// Admin / Ops
-// ---------------------------------------------------------------------------
-router.post("/retry", powerController.retryVending);
+/**
+ * @route   POST /api/v1/power/retry
+ * @desc    Admin only: Retry vending for a failed/stuck order
+ * @access  Private (Admin)
+ */
+router.post('/retry', powerController.retryVending);
 
 module.exports = router;

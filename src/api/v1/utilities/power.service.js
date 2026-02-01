@@ -1,136 +1,244 @@
-const axios = require("axios");
-const crypto = require("crypto");
+// File: src/api/v1/utilities/power.service.js
+const axios = require('axios');
+const { v4: uuidv4 } = require('uuid');
+const HttpError = require('../../../utils/HttpError');
+const { logger } = require('../../../config/logger.config');
+const orderService = require('../../orders/order.service'); 
 
-const VTPASS_BASE_URL = process.env.VTPASS_BASE_URL || "https://sandbox.vtpass.com";
-const VTPASS_API_KEY = process.env.VTPASS_API_KEY;
-const VTPASS_SECRET_KEY = process.env.VTPASS_SECRET_KEY;
+// Configuration
+// Sandbox: https://sandbox.monnify.com
+// Live: https://api.monnify.com
+const BASE_URL = 'https://sandbox.monnify.com' //process.env.MONNIFY_BASE_URL || 'https://sandbox.monnify.com';
+const API_KEY = process.env.MONNIFY_API_KEY;
+const SECRET_KEY = process.env.MONNIFY_SECRET_KEY;
+const CONVENIENCE_FEE = parseFloat(process.env.POWER_CONVENIENCE_FEE || '100'); 
 
-function assertVtpassEnv() {
-  if (!VTPASS_API_KEY || !VTPASS_SECRET_KEY) {
-    throw new Error("VTpass credentials missing: set VTPASS_API_KEY and VTPASS_SECRET_KEY");
-  }
-}
+// --- MONNIFY HELPERS ---
 
-function vtpassHeaders() {
-  assertVtpassEnv();
-  return {
-    "Content-Type": "application/json",
-    "api-key": VTPASS_API_KEY,
-    "secret-key": VTPASS_SECRET_KEY,
-  };
-}
-
-// Minimal mapping helper (adjust to your disco codes if different)
-const DISCO_TO_SERVICE_ID = {
-  ikeja: "ikeja-electric",
-  ekedc: "eko-electric",
-  eko: "eko-electric",
-  aedc: "abuja-electric",
-  abuja: "abuja-electric",
-  ibedc: "ibadan-electric",
-  ibadan: "ibadan-electric",
-  eedc: "enugu-electric",
-  enugu: "enugu-electric",
-  jed: "jos-electric",
-  jos: "jos-electric",
-  kedco: "kano-electric",
-  kano: "kano-electric",
-  phed: "portharcourt-electric",
-  portharcourt: "portharcourt-electric",
-  bedc: "benin-electric",
-  benin: "benin-electric",
-  kaedco: "kaduna-electric",
-  kaduna: "kaduna-electric",
-  aba: "aba-electric",
-  yedc: "yola-electric",
-  yola: "yola-electric",
-};
-
-exports.resolveServiceId = (discoOrCode) => {
-  if (!discoOrCode) return null;
-  const key = String(discoOrCode).toLowerCase().trim();
-  return DISCO_TO_SERVICE_ID[key] || null;
-};
-
-function genRequestId() {
-  // VTpass requires a unique request_id
-  // Keep it numeric-ish and unique enough
-  const ts = Date.now().toString();
-  const rand = crypto.randomBytes(4).toString("hex");
-  return `${ts}${rand}`; // e.g. 170... + 8 hex chars
-}
-
-// ---------------------------------------------------------------------------
-// VTpass: Verify Meter
-// Docs: POST {base}/api/merchant-verify with billersCode, serviceID, type
-// ---------------------------------------------------------------------------
-exports.vtpassVerifyMeter = async ({ meterNumber, serviceId, type }) => {
-  const url = `${VTPASS_BASE_URL}/api/merchant-verify`;
-
-  const payload = {
-    billersCode: String(meterNumber),
-    serviceID: String(serviceId),
-    type: String(type), // prepaid | postpaid
+/**
+ * Map Frontend Disco Codes to Monnify Product Codes.
+ * These codes (e.g. "MOB_PREPAID_IKEJA") are specific to Monnify.
+ * You can verify these by calling GET /api/v1/vas/bills-payment/billers via Postman.
+ */
+const mapDiscoToMonnifyCode = (code, type = 'prepaid') => {
+  // Normalize type
+  const isPrepaid = type.toLowerCase().includes('prepaid');
+  
+  // Mapping Table (Sandbox/Live standard codes)
+  const map = {
+    'ikeja_electric': isPrepaid ? 'MOB_PREPAID_IKEJA' : 'MOB_POSTPAID_IKEJA',
+    'eko_electric': isPrepaid ? 'MOB_PREPAID_EKO' : 'MOB_POSTPAID_EKO',
+    'abuja_electric': isPrepaid ? 'MOB_PREPAID_ABUJA' : 'MOB_POSTPAID_ABUJA',
+    'ibadan_electric': isPrepaid ? 'MOB_PREPAID_IBADAN' : 'MOB_POSTPAID_IBADAN',
+    'enugu_electric': isPrepaid ? 'MOB_PREPAID_ENUGU' : 'MOB_POSTPAID_ENUGU',
+    'jos_electric': isPrepaid ? 'MOB_PREPAID_JOS' : 'MOB_POSTPAID_JOS',
+    'kano_electric': isPrepaid ? 'MOB_PREPAID_KANO' : 'MOB_POSTPAID_KANO',
+    'portharcourt_electric': isPrepaid ? 'MOB_PREPAID_PH' : 'MOB_POSTPAID_PH',
+    // Aliases for frontend "legacy" codes
+    'ikeja_electric_prepaid': 'MOB_PREPAID_IKEJA',
+    'eko_electric_prepaid': 'MOB_PREPAID_EKO',
+    'abuja_electric_prepaid': 'MOB_PREPAID_ABUJA',
   };
 
-  const resp = await axios.post(url, payload, { headers: vtpassHeaders(), timeout: 30000 });
+  return map[code] || 'MOB_PREPAID_IKEJA'; // Fallback
+};
 
-  const data = resp?.data;
-  if (!data) throw new Error("No response from VTpass");
+/**
+ * Get Access Token (Basic Auth)
+ * Monnify Token expires in 60 mins. We fetch a new one for each major op for simplicity.
+ */
+const getAccessToken = async () => {
+  try {
+    if (!API_KEY || !SECRET_KEY) throw new Error("Monnify API Key/Secret missing");
+    
+    const authString = Buffer.from(`${API_KEY}:${SECRET_KEY}`).toString('base64');
+    const response = await axios.post(
+      `${BASE_URL}/api/v1/auth/login`,
+      {},
+      { headers: { 'Authorization': `Basic ${authString}` } }
+    );
+    
+    if (response.data.requestSuccessful && response.data.responseBody.accessToken) {
+      return response.data.responseBody.accessToken;
+    }
+    throw new Error('Failed to retrieve access token from Monnify');
+  } catch (error) {
+    logger.error(`[Monnify] Auth Failed: ${error.message}`);
+    throw new Error('Service authentication failed');
+  }
+};
 
-  if (data.code !== "000") {
-    throw new Error(data?.response_description || data?.content?.error || "VTpass verification failed");
+// --- CORE FUNCTIONS ---
+
+/**
+ * Step 1: Validate Meter
+ * Returns customer name & address.
+ */
+const validateMeter = async (meterNumber, discoCode, meterType = 'prepaid') => {
+  try {
+    const token = await getAccessToken();
+    // In Monnify validation, you often use the generic validation endpoint
+    // or specific product lookup. 
+    // Endpoint: POST /api/v1/vas/bills-payment/validate-customer
+    
+    // Note: Monnify validation requires a "Biller Code" or "Product Code".
+    // We use the product code mapped above.
+    const productCode = mapDiscoToMonnifyCode(discoCode, meterType);
+
+    logger.info(`[Power] Validating Meter: ${meterNumber} on ${productCode}`);
+
+    const response = await axios.post(
+      `${BASE_URL}/api/v1/vas/bills-payment/validate-customer`,
+      {
+        productCode: productCode,
+        customerKey: meterNumber
+      },
+      { headers: { 'Authorization': `Bearer ${token}` } }
+    );
+
+    const body = response.data;
+    if (body.requestSuccessful) {
+      const data = body.responseBody;
+      return {
+        isValid: true,
+        name: data.name || data.customerName || "Customer",
+        address: data.address || "Address Not Provided",
+        meterNumber: meterNumber,
+        discoCode: discoCode,
+        // Validation Reference is rarely needed for *Electricity* on Monnify (unlike VTpass)
+        // but we return it just in case.
+        validationReference: data.validationReference 
+      };
+    } else {
+      throw new Error(body.responseMessage || 'Meter validation failed');
+    }
+
+  } catch (error) {
+    logger.error(`[Power] Validation Error: ${error.message}`);
+    const msg = error.response?.data?.responseMessage || error.message;
+    throw new HttpError(400, `Validation Failed: ${msg}`);
+  }
+};
+
+/**
+ * Step 2: Create Pending Order
+ * Adds Convenience Fee here.
+ */
+const createPendingOrder = async (userId, data) => {
+  const { meterNumber, discoCode, amount, phone, email, meterName, meterType } = data;
+
+  const electricityAmount = parseFloat(amount);
+  const totalPayable = electricityAmount + CONVENIENCE_FEE;
+
+  // Create Order in DB
+  const newOrder = await orderService.placeOrder({
+    user: { id: userId }, 
+    body: {
+        type: 'POWER', 
+        orderItems: [], 
+        totalAmount: totalPayable, // User Pays (e.g. 2100)
+        subTotal: electricityAmount,   // Vending Amount (e.g. 2000)
+        serviceFee: CONVENIENCE_FEE,   // Fee (e.g. 100)
+        deliveryFee: 0,
+        status: 'Pending Payment',
+        paymentStatus: 'Pending',
+        metadata: {
+            meterNumber,
+            discoCode,
+            productCode: mapDiscoToMonnifyCode(discoCode, meterType),
+            meterType: meterType || 'prepaid',
+            meterName,
+            phone,
+            email
+        }
+    }
+  });
+
+  return newOrder;
+};
+
+/**
+ * Step 3: Vend Token (Called by Webhook)
+ */
+const vendPower = async (orderId) => {
+  logger.info(`[Monnify] Vending Power for Order: ${orderId}`);
+  
+  const order = await orderService.getOrder(orderId);
+  if (!order) throw new Error('Order not found');
+  
+  // Idempotency
+  if (['Completed', 'Delivered'].includes(order.status)) {
+      return { success: true, token: order.metadata.get('token'), cached: true };
   }
 
-  // Return only the content (matches your Flutter expectation: body.data is a map)
-  return data.content || data;
-};
+  try {
+    const token = await getAccessToken();
+    const requestRef = `${Date.now()}-${uuidv4().substring(0,4)}`;
 
-// ---------------------------------------------------------------------------
-// VTpass: Purchase
-// Docs: POST {base}/api/pay with request_id, serviceID, billersCode, variation_code, amount, phone
-// ---------------------------------------------------------------------------
-exports.vtpassPurchase = async ({ meterNumber, serviceId, type, amount, phone }) => {
-  const url = `${VTPASS_BASE_URL}/api/pay`;
+    // Payload for POST /api/v1/vas/bills-payment/vend
+    const payload = {
+        batchReference: requestRef,
+        requestReference: requestRef,
+        productCode: order.metadata.get('productCode'), // "MOB_PREPAID_IKEJA"
+        customerKey: order.metadata.get('meterNumber'),
+        amount: order.subTotal, // Vend the electricity amount (2000), not total
+        clientReference: requestRef,
+        // user details
+        email: order.metadata.get('email') || "customer@primejet.com",
+        phone: order.metadata.get('phone') || "08000000000"
+    };
 
-  const request_id = genRequestId();
+    logger.info(`[Monnify] Sending Vend Request: ${JSON.stringify(payload)}`);
 
-  const payload = {
-    request_id,
-    serviceID: String(serviceId),
-    billersCode: String(meterNumber),
-    variation_code: String(type), // prepaid | postpaid
-    amount: Number(amount),
-    phone: String(phone),
-  };
+    const response = await axios.post(
+        `${BASE_URL}/api/v1/vas/bills-payment/vend`,
+        payload,
+        { headers: { 'Authorization': `Bearer ${token}` } }
+    );
 
-  const resp = await axios.post(url, payload, { headers: vtpassHeaders(), timeout: 45000 });
+    const body = response.data;
 
-  const data = resp?.data;
-  if (!data) throw new Error("No response from VTpass");
+    if (body.requestSuccessful) {
+        const vendData = body.responseBody;
+        
+        // Extract Token: Monnify usually returns it in 'token' or 'pin' or 'standardToken'
+        // If it's empty, check the transaction object
+        const tokenCode = vendData.token || vendData.pin || vendData.standardToken || "TOKEN_GENERATED";
+        const units = vendData.units || "0";
 
-  // Even if not "000", bubble a meaningful message
-  if (data.code !== "000") {
-    throw new Error(data?.response_description || "VTpass purchase failed");
+        // Update Order
+        await orderService.updateOrderStatus(orderId, 'Completed', {
+            token: tokenCode,
+            units: units,
+            vendorReference: vendData.transactionReference,
+            vendorResponse: JSON.stringify(vendData)
+        }, 'system');
+
+        // Optional: Send Push Notification here
+        try {
+           await notificationService.createAndSendNotification(
+             order.user._id || order.user, 
+             'Power Token Generated',
+             `Token: ${tokenCode}`,
+             { type: 'POWER_ORDER', orderId: orderId, token: tokenCode }
+           );
+        } catch(e) {}
+
+        return { success: true, token: tokenCode, units };
+    } else {
+        throw new Error(body.responseMessage || 'Monnify vending failed');
+    }
+
+  } catch (error) {
+    logger.error(`[Monnify] Vending FAILED: ${error.message}`);
+    
+    const failReason = error.response?.data?.responseMessage || error.message;
+    await orderService.updateOrderStatus(orderId, 'Vending Failed', {
+      error: failReason
+    }, 'system');
+    
+    throw error;
   }
-
-  // Return full VTpass response — contains requestId/token/units/etc
-  return data;
 };
 
-// ---------------------------------------------------------------------------
-// VTpass: Requery
-// Docs: POST {base}/api/requery with request_id
-// ---------------------------------------------------------------------------
-exports.vtpassRequery = async ({ requestId }) => {
-  const url = `${VTPASS_BASE_URL}/api/requery`;
-
-  const payload = { request_id: String(requestId) };
-
-  const resp = await axios.post(url, payload, { headers: vtpassHeaders(), timeout: 30000 });
-
-  const data = resp?.data;
-  if (!data) throw new Error("No response from VTpass");
-
-  return data;
-};
+module.exports = { validateMeter, createPendingOrder, vendPower };

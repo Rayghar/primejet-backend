@@ -30,16 +30,18 @@ const monnifyHttp = axios.create({
   validateStatus: () => true, // never throw on 4xx/5xx
 });
 
+// Log service load (helps confirm deployed version)
+logger.info('[POWER_SERVICE] loaded version=2026-02-02');
+
 // -----------------------------------------------------------------------------
 // HELPERS
 // -----------------------------------------------------------------------------
 
 /**
  * Map frontend disco codes → Monnify product codes (fallback mode).
- * If you later move fully to catalog discovery, this can be bypassed.
  */
 const mapDiscoToMonnifyCode = (code, type = 'prepaid') => {
-  const isPrepaid = String(type).toLowerCase().includes('prepaid');
+  const isPrepaid = String(type || 'prepaid').toLowerCase().includes('prepaid');
 
   const map = {
     ikeja_electric_prepaid: 'MOB_PREPAID_IKEJA',
@@ -55,13 +57,25 @@ const mapDiscoToMonnifyCode = (code, type = 'prepaid') => {
     eko_electric: isPrepaid ? 'MOB_PREPAID_EKO' : 'MOB_POSTPAID_EKO',
   };
 
-  return map[code] || 'MOB_PREPAID_IKEJA';
+  return map[String(code || '').trim()] || 'MOB_PREPAID_IKEJA';
 };
 
 /**
- * ---------------------------------------------------------------------------
- * AUTHENTICATION (FULLY DIAGNOSTIC – NO GUESSING)
- * ---------------------------------------------------------------------------
+ * If caller already sends a Monnify productCode (e.g. "MOB_PREPAID_IKEJA"),
+ * use it directly. Otherwise map from disco shorthand.
+ */
+const resolveProductCode = (providerCode, meterType = 'prepaid') => {
+  const c = String(providerCode || '').trim();
+  if (!c) return null;
+
+  // Heuristic: Monnify electricity codes in your mapping are "MOB_*"
+  if (c.toUpperCase().startsWith('MOB_')) return c;
+
+  return mapDiscoToMonnifyCode(c, meterType);
+};
+
+/**
+ * AUTH (Diagnostic, safe: no secrets printed)
  */
 const getAccessToken = async () => {
   const hasKey = !!API_KEY;
@@ -84,9 +98,7 @@ const getAccessToken = async () => {
     const response = await monnifyHttp.post(
       '/api/v1/auth/login',
       {},
-      {
-        headers: { Authorization: `Basic ${authString}` },
-      }
+      { headers: { Authorization: `Basic ${authString}` } }
     );
 
     const { status, data } = response;
@@ -108,15 +120,36 @@ const getAccessToken = async () => {
       err?.response?.data?.message ||
       err.message;
 
-    logger.error(
-      `[Monnify][AUTH][FAIL] status=${status || 'n/a'} message=${providerMsg}`
-    );
+    logger.error(`[Monnify][AUTH][FAIL] status=${status || 'n/a'} message=${providerMsg}`);
 
-    throw new HttpError(
-      502,
-      `Service authentication failed: ${providerMsg}`
-    );
+    throw new HttpError(502, `Service authentication failed: ${providerMsg}`);
   }
+};
+
+// -----------------------------------------------------------------------------
+// CATALOG (Fixes /power/products 404)
+// -----------------------------------------------------------------------------
+
+/**
+ * Lightweight catalog for frontend dropdowns.
+ * You can later replace with Monnify product discovery if/when available.
+ */
+const getProductsCatalog = async ({ category = 'ELECTRICITY' } = {}) => {
+  const cat = String(category || 'ELECTRICITY').toUpperCase();
+
+  // Only electricity for now
+  if (cat !== 'ELECTRICITY') return [];
+
+  return [
+    { code: 'ikeja_electric_prepaid', name: 'Ikeja Electric (Prepaid)', meterType: 'prepaid', category: 'ELECTRICITY' },
+    { code: 'eko_electric_prepaid', name: 'Eko Electric (Prepaid)', meterType: 'prepaid', category: 'ELECTRICITY' },
+    { code: 'abuja_electric_prepaid', name: 'Abuja Electric (Prepaid)', meterType: 'prepaid', category: 'ELECTRICITY' },
+    { code: 'ibadan_electric_prepaid', name: 'Ibadan Electric (Prepaid)', meterType: 'prepaid', category: 'ELECTRICITY' },
+    { code: 'enugu_electric_prepaid', name: 'Enugu Electric (Prepaid)', meterType: 'prepaid', category: 'ELECTRICITY' },
+    { code: 'jos_electric_prepaid', name: 'Jos Electric (Prepaid)', meterType: 'prepaid', category: 'ELECTRICITY' },
+    { code: 'kano_electric_prepaid', name: 'Kano Electric (Prepaid)', meterType: 'prepaid', category: 'ELECTRICITY' },
+    { code: 'portharcourt_electric_prepaid', name: 'Port Harcourt (Prepaid)', meterType: 'prepaid', category: 'ELECTRICITY' },
+  ];
 };
 
 // -----------------------------------------------------------------------------
@@ -129,31 +162,28 @@ const getAccessToken = async () => {
  *  - productCode
  *  - customerId
  */
-const validateMeter = async (meterNumber, discoCode, meterType = 'prepaid') => {
+const validateMeter = async (meterNumber, providerCode, meterType = 'prepaid') => {
   try {
     const m = String(meterNumber || '').trim();
-    const d = String(discoCode || '').trim();
+    const p = String(providerCode || '').trim();
     const t = String(meterType || 'prepaid').trim();
 
     if (!m) throw new HttpError(400, 'Meter number is required');
-    if (!d) throw new HttpError(400, 'Disco / product code is required');
+    if (!p) throw new HttpError(400, 'Disco / product code is required');
 
     const token = await getAccessToken();
-    const productCode = mapDiscoToMonnifyCode(d, t);
+    const productCode = resolveProductCode(p, t);
+    if (!productCode) throw new HttpError(400, 'Unable to resolve productCode');
 
-    logger.info(
-      `[Monnify][VALIDATE] meter=${m} productCode=${productCode}`
-    );
+    logger.info(`[Monnify][VALIDATE] meter=${m} providerCode=${p} productCode=${productCode}`);
 
     const response = await monnifyHttp.post(
       '/api/v1/vas/bills-payment/validate-customer',
       {
         productCode,
-        customerId: m, // ✅ correct per Monnify Bills Payment spec
+        customerId: m,
       },
-      {
-        headers: { Authorization: `Bearer ${token}` },
-      }
+      { headers: { Authorization: `Bearer ${token}` } }
     );
 
     const { status, data } = response;
@@ -171,7 +201,7 @@ const validateMeter = async (meterNumber, discoCode, meterType = 'prepaid') => {
         name: body.name || body.customerName || 'Customer',
         address: body.address || 'Address Not Provided',
         meterNumber: m,
-        discoCode: d,
+        providerCode: p,
         productCode,
         validationReference:
           body.validationReference || vendInstruction.validationReference || null,
@@ -199,7 +229,7 @@ const validateMeter = async (meterNumber, discoCode, meterType = 'prepaid') => {
 const createPendingOrder = async (userId, data = {}) => {
   const {
     meterNumber,
-    discoCode,
+    discoCode, // can be disco shorthand OR monnify product code
     amount,
     phone,
     email,
@@ -209,21 +239,22 @@ const createPendingOrder = async (userId, data = {}) => {
   } = data;
 
   const m = String(meterNumber || '').trim();
-  const d = String(discoCode || '').trim();
+  const p = String(discoCode || '').trim();
   const t = String(meterType || 'prepaid').trim();
   const electricityAmount = parseFloat(amount);
 
   if (!m) throw new HttpError(400, 'Meter number is required');
-  if (!d) throw new HttpError(400, 'Disco / product code is required');
+  if (!p) throw new HttpError(400, 'Disco / product code is required');
   if (!Number.isFinite(electricityAmount) || electricityAmount <= 0) {
     throw new HttpError(400, 'Invalid amount');
   }
 
   const totalPayable = electricityAmount + CONVENIENCE_FEE;
-  const productCode = mapDiscoToMonnifyCode(d, t);
+  const productCode = resolveProductCode(p, t);
+  if (!productCode) throw new HttpError(400, 'Unable to resolve productCode');
 
   logger.info(
-    `[POWER][ORDER] create meter=${m} productCode=${productCode} amount=${electricityAmount}`
+    `[POWER][ORDER] create meter=${m} providerCode=${p} productCode=${productCode} amount=${electricityAmount}`
   );
 
   const order = await orderService.placeOrder({
@@ -239,7 +270,7 @@ const createPendingOrder = async (userId, data = {}) => {
       paymentStatus: 'Pending',
       metadata: {
         meterNumber: m,
-        discoCode: d,
+        providerCode: p,
         productCode,
         meterType: t,
         meterName: meterName || null,
@@ -262,6 +293,7 @@ const vendPower = async (orderId) => {
   const order = await orderService.getOrder(orderId);
   if (!order) throw new Error('Order not found');
 
+  // Idempotency
   if (String(order.status).toUpperCase() === 'DELIVERED') {
     return { success: true, token: order.metadata.get('token'), cached: true };
   }
@@ -336,7 +368,9 @@ const vendPower = async (orderId) => {
         `Token: ${tokenCode}`,
         { type: 'POWER_ORDER', orderId, token: tokenCode }
       );
-    } catch (_) {}
+    } catch (_) {
+      // ignore notification failures
+    }
 
     return { success: true, token: tokenCode, units };
   } catch (err) {
@@ -359,6 +393,7 @@ const vendPower = async (orderId) => {
 };
 
 module.exports = {
+  getProductsCatalog,
   validateMeter,
   createPendingOrder,
   vendPower,

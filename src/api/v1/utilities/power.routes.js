@@ -1,11 +1,14 @@
 // File: src/api/v1/utilities/power.routes.js
+
 const express = require('express');
 const router = express.Router();
+
 const powerController = require('./power.controller');
-const auth = require('../../../middleware/auth.middleware');
+const authMiddleware = require('../../../middleware/auth.middleware');
 
 // Apply Auth Middleware (User must be logged in)
-router.use(auth);
+// NOTE: In this codebase, auth middleware is used as a factory (authMiddleware()).
+router.use(authMiddleware());
 
 /**
  * @route   POST /api/v1/power/validate

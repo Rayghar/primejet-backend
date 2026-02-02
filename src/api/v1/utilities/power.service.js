@@ -5,7 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
 const orderService = require('../orders/order.service');
-const notificationService = require('../../notifications/notification.service');
+const notificationService = require('../notifications/notification.service');
 
 // Configuration
 // Sandbox: https://sandbox.monnify.com

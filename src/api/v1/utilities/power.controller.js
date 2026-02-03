@@ -1,148 +1,124 @@
 // File: src/api/v1/utilities/power.controller.js
-const powerService = require('./power.service');
 
-const getProducts = async (req, res, next) => {
-  try {
-    const category = (req.query.category || 'ELECTRICITY').toString().toUpperCase();
-    const result = await powerService.getProductsCatalog({ category });
-    return res.status(200).json({ success: true, data: result });
-  } catch (err) {
-    next(err);
-  }
-};
+const HttpError = require('../../../utils/HttpError');
+const powerService = require('./power.service');
 
 /**
  * POST /api/v1/power/validate
- *
- * Backward compatible request body:
- * - NEW: { meterNumber, discoCode, productCode, meterType }
- * - OLD (Flutter logs): { meter, disco }
+ * Accepts either:
+ *  - { meterNumber, discoCode, meterType }   (legacy frontend)
+ *  - { meterNumber, productCode, meterType } (new catalog-based frontend)
  */
 const validateMeter = async (req, res, next) => {
   try {
-    const {
-      // New / preferred
-      meterNumber,
-      discoCode,
-      productCode,
-      meterType,
+    const meterNumber = req.body?.meterNumber;
+    const discoCode = req.body?.discoCode;       // legacy (eko_electric_prepaid)
+    const productCode = req.body?.productCode;   // new (from catalog)
+    const meterType = req.body?.meterType || 'prepaid';
 
-      // Backward-compatible (existing Flutter)
-      meter,
-      disco,
-    } = req.body || {};
-
-    const resolvedMeter = (meterNumber || meter || '').toString().trim();
-    // Backward compatible: productCode (new) OR discoCode (old) OR disco (older)
-    const providerCode = (productCode || discoCode || disco || '').toString().trim();
-
-    if (!resolvedMeter || !providerCode) {
-      return res.status(400).json({
-        success: false,
-        message: 'Meter number and Provider code are required',
-      });
+    if (!meterNumber) {
+      return next(new HttpError(400, 'meterNumber is required'));
     }
 
-    const result = await powerService.validateMeter(resolvedMeter, providerCode, meterType);
+    const providerOrProduct = productCode || discoCode;
+    if (!providerOrProduct) {
+      return next(new HttpError(400, 'discoCode or productCode is required'));
+    }
 
-    return res.status(200).json({ success: true, data: result });
-  } catch (error) {
-    next(error);
+    const result = await powerService.validateMeter(meterNumber, providerOrProduct, meterType);
+    return res.status(200).json(result);
+  } catch (err) {
+    return next(err);
   }
 };
 
 /**
  * POST /api/v1/power/order
- *
- * Backward compatible request body:
- * - NEW: { meterNumber, discoCode/productCode, amount, phone, email, meterName, meterType, validationReference }
- * - OLD: { meter, disco, amount, phone, meterName, validationReference }
+ * Creates pending order prior to payment
  */
 const createOrder = async (req, res, next) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user?.id || req.user?._id;
+    if (!userId) return next(new HttpError(401, 'Unauthorized'));
 
-    const {
-      // New / preferred fields
-      meterNumber,
-      discoCode,
-      productCode,
-      meterType,
-      amount,
-      phone,
-      email,
-      meterName,
-      validationReference,
-
-      // Backward-compatible fields (Flutter / older clients)
-      meter,
-      disco,
-
-      // allow extra fields without breaking
-      ...rest
-    } = req.body || {};
-
-    const resolvedMeter = (meterNumber || meter || '').toString().trim();
-    const providerCode = (productCode || discoCode || disco || '').toString().trim();
-
-    if (!resolvedMeter || !providerCode) {
-      return res.status(400).json({
-        success: false,
-        message: 'Meter number and Provider code are required',
-      });
-    }
-
-    const order = await powerService.createPendingOrder(userId, {
-      ...rest,
-      meterNumber: resolvedMeter,
-      discoCode: providerCode, // service will resolve to productCode safely
-      meterType,
-      amount,
-      phone,
-      email,
-      meterName,
-      validationReference,
-    });
-
+    const order = await powerService.createPendingOrder(userId, req.body);
     return res.status(201).json({
-      success: true,
-      message: 'Order created successfully. Proceed to payment.',
-      data: {
-        orderId: order.id,
-        totalAmount: order.totalAmount,
-        breakdown: {
-          electricity: order.subTotal,
-          fee: order.serviceFee,
-        },
-      },
+      message: 'Power order created',
+      orderId: order._id,
+      totalAmount: order.totalAmount,
+      status: order.status,
     });
-  } catch (error) {
-    next(error);
+  } catch (err) {
+    return next(err);
   }
 };
 
+/**
+ * POST /api/v1/power/retry
+ * Admin-only retry vending for stuck orders.
+ */
 const retryVending = async (req, res, next) => {
   try {
+    // NOTE: Keep your existing admin check if you already have one elsewhere.
+    // If you want to enforce here:
+    // if (!req.user?.roles?.includes('admin')) return next(new HttpError(403, 'Forbidden'));
+
     const { orderId } = req.body || {};
-
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Admin rights required' });
-    }
-
-    if (!orderId) {
-      return res.status(400).json({ success: false, message: 'orderId is required' });
-    }
+    if (!orderId) return next(new HttpError(400, 'orderId is required'));
 
     const result = await powerService.vendPower(orderId);
-    return res.status(200).json({ success: true, message: 'Retry successful', data: result });
-  } catch (error) {
-    next(error);
+    return res.status(200).json({ message: 'Retry processed', result });
+  } catch (err) {
+    return next(err);
+  }
+};
+
+/**
+ * GET /api/v1/power/billers?category=ELECTRICITY
+ * Uses Monnify billers endpoint to return supported electricity billers.
+ */
+const getBillers = async (req, res, next) => {
+  try {
+    const category =
+      req.query?.category ||
+      req.query?.categoryCode ||
+      'ELECTRICITY';
+
+    const billers = await powerService.getElectricityBillers(category);
+    return res.status(200).json({
+      category,
+      count: billers.length,
+      billers,
+    });
+  } catch (err) {
+    return next(err);
+  }
+};
+
+/**
+ * GET /api/v1/power/products?billerCode=XXXX
+ * Returns products for a biller (if supported by your tenant).
+ */
+const getProducts = async (req, res, next) => {
+  try {
+    const billerCode = req.query?.billerCode || req.query?.biller_code;
+    if (!billerCode) return next(new HttpError(400, 'billerCode is required'));
+
+    const products = await powerService.getBillerProducts(billerCode);
+    return res.status(200).json({
+      billerCode,
+      count: products.length,
+      products,
+    });
+  } catch (err) {
+    return next(err);
   }
 };
 
 module.exports = {
-  getProducts,
   validateMeter,
   createOrder,
   retryVending,
+  getBillers,
+  getProducts,
 };

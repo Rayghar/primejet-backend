@@ -5,257 +5,480 @@ const { v4: uuidv4 } = require('uuid');
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
 const orderService = require('../orders/order.service');
-const notificationService = require('../notifications/notification.service');
 
-// -----------------------------------------------------------------------------
-// CONFIGURATION
-// -----------------------------------------------------------------------------
+// ✅ Defensive import for notification service (paths vary across your repo)
+let notificationService = null;
+try {
+  notificationService = require('../notifications/notification.service.js');
+} catch (_) {
+  try {
+    notificationService = require('../../v1/notifications/notification.service.js');
+  } catch (_e) {
+    try {
+      notificationService = require('../../notifications/notification.service');
+    } catch (__e) {
+      logger.warn('[POWER_SERVICE] notification.service not found. Will skip persist notifications.');
+    }
+  }
+}
 
-// Sandbox: https://sandbox.monnify.com
-// Live:    https://api.monnify.com
+/**
+ * Configuration
+ * Sandbox: https://sandbox.monnify.com
+ * Live:    https://api.monnify.com
+ */
 const BASE_URL = process.env.MONNIFY_BASE_URL || 'https://sandbox.monnify.com';
 const API_KEY = process.env.MONNIFY_API_KEY;
 const SECRET_KEY = process.env.MONNIFY_SECRET_KEY;
 
+// Optional fee applied by your platform (not Monnify)
 const CONVENIENCE_FEE = parseFloat(process.env.POWER_CONVENIENCE_FEE || '100');
 
 // Timeouts
-const HTTP_TIMEOUT = 30000; // 30s
-const VEND_TIMEOUT = 45000; // 45s
+const HTTP_TIMEOUT = 30000;
+const VEND_TIMEOUT = 45000;
 
-// Axios instance (centralised + safe status handling)
-const monnifyHttp = axios.create({
-  baseURL: BASE_URL,
-  timeout: HTTP_TIMEOUT,
-  validateStatus: () => true, // never throw on 4xx/5xx
-});
-
-// Log service load (helps confirm deployed version)
-logger.info('[POWER_SERVICE] loaded version=2026-02-02');
-
-// -----------------------------------------------------------------------------
-// HELPERS
-// -----------------------------------------------------------------------------
-
-/**
- * Map frontend disco codes → Monnify product codes (fallback mode).
- */
-const mapDiscoToMonnifyCode = (code, type = 'prepaid') => {
-  const isPrepaid = String(type || 'prepaid').toLowerCase().includes('prepaid');
-
-  const map = {
-    ikeja_electric_prepaid: 'MOB_PREPAID_IKEJA',
-    eko_electric_prepaid: 'MOB_PREPAID_EKO',
-    abuja_electric_prepaid: 'MOB_PREPAID_ABUJA',
-    ibadan_electric_prepaid: 'MOB_PREPAID_IBADAN',
-    enugu_electric_prepaid: 'MOB_PREPAID_ENUGU',
-    jos_electric_prepaid: 'MOB_PREPAID_JOS',
-    kano_electric_prepaid: 'MOB_PREPAID_KANO',
-    portharcourt_electric_prepaid: 'MOB_PREPAID_PH',
-
-    ikeja_electric: isPrepaid ? 'MOB_PREPAID_IKEJA' : 'MOB_POSTPAID_IKEJA',
-    eko_electric: isPrepaid ? 'MOB_PREPAID_EKO' : 'MOB_POSTPAID_EKO',
-  };
-
-  return map[String(code || '').trim()] || 'MOB_PREPAID_IKEJA';
+// ------------------------------------------------------------
+// In-memory caches (safe + simple)
+// ------------------------------------------------------------
+let _authCache = {
+  accessToken: null,
+  expiresAtMs: 0,
 };
 
-/**
- * If caller already sends a Monnify productCode (e.g. "MOB_PREPAID_IKEJA"),
- * use it directly. Otherwise map from disco shorthand.
- */
-const resolveProductCode = (providerCode, meterType = 'prepaid') => {
-  const c = String(providerCode || '').trim();
-  if (!c) return null;
+// Cache billers & products to avoid hammering Monnify
+const _billersCache = new Map(); // key: categoryCode -> { expiresAtMs, data }
+const _productsCache = new Map(); // key: billerCode -> { expiresAtMs, data }
+const _resolvedProductCache = new Map(); // key: providerCode|meterType -> { expiresAtMs, productCode, billerCode }
 
-  // Heuristic: Monnify electricity codes in your mapping are "MOB_*"
-  if (c.toUpperCase().startsWith('MOB_')) return c;
+// Cache TTLs
+const AUTH_TTL_MS = 55 * 60 * 1000; // 55 mins (Monnify tokens are typically 60 mins)
+const BILLERS_TTL_MS = 6 * 60 * 60 * 1000; // 6 hrs
+const PRODUCTS_TTL_MS = 6 * 60 * 60 * 1000; // 6 hrs
+const RESOLVE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hrs
 
-  return mapDiscoToMonnifyCode(c, meterType);
-};
+// ------------------------------------------------------------
+// Helpers
+// ------------------------------------------------------------
+function now() {
+  return Date.now();
+}
 
-/**
- * AUTH (Diagnostic, safe: no secrets printed)
- */
-const getAccessToken = async () => {
-  const hasKey = !!API_KEY;
-  const hasSecret = !!SECRET_KEY;
+function safeStr(v) {
+  return String(v ?? '').trim();
+}
+
+function looksLikeProductCode(code) {
+  const c = safeStr(code);
+  // product codes are often uppercase with underscores, but not guaranteed.
+  // We still allow passing through anything that isn't your legacy "disco" pattern.
+  return (
+    c.startsWith('MOB_') ||
+    c.startsWith('BILL_') ||
+    c.startsWith('ELEC_') ||
+    /^[A-Z0-9_]{6,}$/.test(c)
+  );
+}
+
+function extractDiscoKeyword(providerCode) {
+  const c = safeStr(providerCode).toLowerCase();
+  const known = [
+    'ikeja',
+    'eko',
+    'abuja',
+    'ibadan',
+    'enugu',
+    'jos',
+    'kano',
+    'portharcourt',
+    'ph',
+  ];
+  return known.find((k) => c.includes(k)) || null;
+}
+
+function isPrepaid(meterTypeOrProvider) {
+  const s = safeStr(meterTypeOrProvider).toLowerCase();
+  // your frontend encodes prepaid in providerCode (eko_electric_prepaid)
+  return s.includes('prepaid');
+}
+
+function isPostpaid(meterTypeOrProvider) {
+  const s = safeStr(meterTypeOrProvider).toLowerCase();
+  return s.includes('postpaid');
+}
+
+function monnifyAuthHeaderBasic() {
+  const authString = Buffer.from(`${API_KEY}:${SECRET_KEY}`).toString('base64');
+  return { Authorization: `Basic ${authString}` };
+}
+
+function monnifyAuthHeaderBearer(token) {
+  return { Authorization: `Bearer ${token}` };
+}
+
+function normalizeCategoryCode(category) {
+  // Monnify support used: category_code=ELECTRICITY
+  // We accept both "category" and "categoryCode" from callers.
+  const c = safeStr(category).toUpperCase();
+  return c || 'ELECTRICITY';
+}
+
+async function httpPost(url, data, headers, timeout) {
+  return axios.post(url, data, {
+    headers,
+    timeout,
+    validateStatus: () => true, // never throw on non-2xx
+  });
+}
+
+async function httpGet(url, headers, timeout) {
+  return axios.get(url, {
+    headers,
+    timeout,
+    validateStatus: () => true,
+  });
+}
+
+// ------------------------------------------------------------
+// Auth
+// ------------------------------------------------------------
+async function getAccessToken() {
+  const ts = now();
+
+  // Use cache if valid
+  if (_authCache.accessToken && _authCache.expiresAtMs > ts) {
+    logger.debug('[Monnify][AUTH] cache hit');
+    return _authCache.accessToken;
+  }
 
   logger.info(
-    `[Monnify][AUTH] start baseUrl=${BASE_URL} hasKey=${hasKey} hasSecret=${hasSecret}`
+    `[Monnify][AUTH] start baseUrl=${BASE_URL} hasKey=${!!API_KEY} hasSecret=${!!SECRET_KEY}`
   );
 
-  if (!hasKey || !hasSecret) {
-    throw new HttpError(
-      500,
-      'Monnify credentials missing: MONNIFY_API_KEY / MONNIFY_SECRET_KEY'
-    );
+  if (!API_KEY || !SECRET_KEY) {
+    logger.error('[Monnify][AUTH] missing api credentials (MONNIFY_API_KEY / MONNIFY_SECRET_KEY)');
+    throw new Error('Monnify API Key/Secret missing in env');
   }
 
-  try {
-    const authString = Buffer.from(`${API_KEY}:${SECRET_KEY}`).toString('base64');
+  const url = `${BASE_URL}/api/v1/auth/login`;
+  const resp = await httpPost(url, {}, monnifyAuthHeaderBasic(), HTTP_TIMEOUT);
 
-    const response = await monnifyHttp.post(
-      '/api/v1/auth/login',
-      {},
-      { headers: { Authorization: `Basic ${authString}` } }
-    );
+  const body = resp?.data;
+  const requestSuccessful = body?.requestSuccessful;
+  const message = body?.responseMessage;
 
-    const { status, data } = response;
+  logger.info(`[Monnify][AUTH] status=${resp.status} requestSuccessful=${!!requestSuccessful} message=${message || 'n/a'}`);
 
-    logger.info(
-      `[Monnify][AUTH] status=${status} requestSuccessful=${!!data?.requestSuccessful} message=${data?.responseMessage || 'n/a'}`
-    );
-
-    if (data?.requestSuccessful && data?.responseBody?.accessToken) {
-      logger.info('[Monnify][AUTH] success');
-      return data.responseBody.accessToken;
-    }
-
-    throw new Error(data?.responseMessage || 'No access token returned');
-  } catch (err) {
-    const status = err?.response?.status;
-    const providerMsg =
-      err?.response?.data?.responseMessage ||
-      err?.response?.data?.message ||
-      err.message;
-
-    logger.error(`[Monnify][AUTH][FAIL] status=${status || 'n/a'} message=${providerMsg}`);
-
-    throw new HttpError(502, `Service authentication failed: ${providerMsg}`);
+  if (!requestSuccessful || !body?.responseBody?.accessToken) {
+    const errMsg = message || body?.responseBody?.message || 'No access token in response';
+    logger.error(`[Monnify][AUTH] failed: ${errMsg}`);
+    throw new Error('Service authentication failed. Please check server logs.');
   }
-};
 
-// -----------------------------------------------------------------------------
-// CATALOG (Fixes /power/products 404)
-// -----------------------------------------------------------------------------
+  _authCache.accessToken = body.responseBody.accessToken;
+  _authCache.expiresAtMs = ts + AUTH_TTL_MS;
+  logger.info('[Monnify][AUTH] success');
+
+  return _authCache.accessToken;
+}
+
+// ------------------------------------------------------------
+// Catalog (Billers & Products)
+// ------------------------------------------------------------
 
 /**
- * Lightweight catalog for frontend dropdowns.
- * You can later replace with Monnify product discovery if/when available.
+ * Get list of billers for a category.
+ * Support instruction:
+ *  /api/v1/vas/bills-payment/billers?category_code=ELECTRICITY
  */
-const getProductsCatalog = async ({ category = 'ELECTRICITY' } = {}) => {
-  const cat = String(category || 'ELECTRICITY').toUpperCase();
+async function listBillers(categoryCode = 'ELECTRICITY') {
+  const cat = normalizeCategoryCode(categoryCode);
 
-  // Only electricity for now
-  if (cat !== 'ELECTRICITY') return [];
+  const cached = _billersCache.get(cat);
+  if (cached && cached.expiresAtMs > now()) {
+    logger.debug(`[Monnify][BILLERS] cache hit category=${cat} count=${cached.data?.length || 0}`);
+    return cached.data;
+  }
 
-  return [
-    { code: 'ikeja_electric_prepaid', name: 'Ikeja Electric (Prepaid)', meterType: 'prepaid', category: 'ELECTRICITY' },
-    { code: 'eko_electric_prepaid', name: 'Eko Electric (Prepaid)', meterType: 'prepaid', category: 'ELECTRICITY' },
-    { code: 'abuja_electric_prepaid', name: 'Abuja Electric (Prepaid)', meterType: 'prepaid', category: 'ELECTRICITY' },
-    { code: 'ibadan_electric_prepaid', name: 'Ibadan Electric (Prepaid)', meterType: 'prepaid', category: 'ELECTRICITY' },
-    { code: 'enugu_electric_prepaid', name: 'Enugu Electric (Prepaid)', meterType: 'prepaid', category: 'ELECTRICITY' },
-    { code: 'jos_electric_prepaid', name: 'Jos Electric (Prepaid)', meterType: 'prepaid', category: 'ELECTRICITY' },
-    { code: 'kano_electric_prepaid', name: 'Kano Electric (Prepaid)', meterType: 'prepaid', category: 'ELECTRICITY' },
-    { code: 'portharcourt_electric_prepaid', name: 'Port Harcourt (Prepaid)', meterType: 'prepaid', category: 'ELECTRICITY' },
+  const token = await getAccessToken();
+
+  // ✅ Use category_code per support
+  const url = `${BASE_URL}/api/v1/vas/bills-payment/billers?category_code=${encodeURIComponent(cat)}`;
+
+  logger.info(`[Monnify][BILLERS] fetch category=${cat}`);
+  const resp = await httpGet(url, monnifyAuthHeaderBearer(token), HTTP_TIMEOUT);
+
+  const body = resp?.data;
+  logger.info(`[Monnify][BILLERS] status=${resp.status} requestSuccessful=${!!body?.requestSuccessful} message=${body?.responseMessage || 'n/a'}`);
+
+  if (!body?.requestSuccessful) {
+    const msg = body?.responseMessage || 'Failed to fetch billers';
+    logger.error(`[Monnify][BILLERS][FAIL] ${msg}`);
+    throw new Error(msg);
+  }
+
+  // shape: responseBody might be an array or an object containing content/list
+  const list =
+    Array.isArray(body?.responseBody) ? body.responseBody :
+    Array.isArray(body?.responseBody?.content) ? body.responseBody.content :
+    Array.isArray(body?.responseBody?.billers) ? body.responseBody.billers :
+    [];
+
+  _billersCache.set(cat, { expiresAtMs: now() + BILLERS_TTL_MS, data: list });
+
+  logger.info(`[Monnify][BILLERS] ok category=${cat} count=${list.length}`);
+  return list;
+}
+
+/**
+ * Get products for a biller (if your Monnify profile requires this step).
+ * Different tenants sometimes expose products under a separate endpoint;
+ * we implement the most common patterns and try them in order.
+ */
+async function listProductsForBiller(billerCode) {
+  const b = safeStr(billerCode);
+  if (!b) throw new Error('billerCode is required');
+
+  const cached = _productsCache.get(b);
+  if (cached && cached.expiresAtMs > now()) {
+    logger.debug(`[Monnify][PRODUCTS] cache hit billerCode=${b} count=${cached.data?.length || 0}`);
+    return cached.data;
+  }
+
+  const token = await getAccessToken();
+
+  // Try common endpoints (Monnify docs/tenants vary)
+  const candidates = [
+    `${BASE_URL}/api/v1/vas/bills-payment/billers/${encodeURIComponent(b)}/products`,
+    `${BASE_URL}/api/v1/vas/bills-payment/billers/products?biller_code=${encodeURIComponent(b)}`,
+    `${BASE_URL}/api/v1/vas/bills-payment/billers/products?billerCode=${encodeURIComponent(b)}`,
   ];
-};
 
-// -----------------------------------------------------------------------------
-// CORE FUNCTIONS
-// -----------------------------------------------------------------------------
+  for (const url of candidates) {
+    logger.info(`[Monnify][PRODUCTS] fetch billerCode=${b} url=${url.replace(BASE_URL, '')}`);
+    const resp = await httpGet(url, monnifyAuthHeaderBearer(token), HTTP_TIMEOUT);
+    const body = resp?.data;
 
-/**
- * STEP 1: Validate Meter
- * Monnify expects:
- *  - productCode
- *  - customerId
- */
-const validateMeter = async (meterNumber, providerCode, meterType = 'prepaid') => {
-  try {
-    const m = String(meterNumber || '').trim();
-    const p = String(providerCode || '').trim();
-    const t = String(meterType || 'prepaid').trim();
+    logger.info(`[Monnify][PRODUCTS] status=${resp.status} requestSuccessful=${!!body?.requestSuccessful} message=${body?.responseMessage || 'n/a'}`);
 
-    if (!m) throw new HttpError(400, 'Meter number is required');
-    if (!p) throw new HttpError(400, 'Disco / product code is required');
+    if (resp.status === 404) continue; // try next pattern
 
-    const token = await getAccessToken();
-    const productCode = resolveProductCode(p, t);
-    if (!productCode) throw new HttpError(400, 'Unable to resolve productCode');
-
-    logger.info(`[Monnify][VALIDATE] meter=${m} providerCode=${p} productCode=${productCode}`);
-
-    const response = await monnifyHttp.post(
-      '/api/v1/vas/bills-payment/validate-customer',
-      {
-        productCode,
-        customerId: m,
-      },
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-
-    const { status, data } = response;
-
-    logger.info(
-      `[Monnify][VALIDATE] status=${status} requestSuccessful=${!!data?.requestSuccessful} message=${data?.responseMessage || 'n/a'}`
-    );
-
-    if (data?.requestSuccessful) {
-      const body = data.responseBody || {};
-      const vendInstruction = body.vendInstruction || {};
-
-      return {
-        isValid: true,
-        name: body.name || body.customerName || 'Customer',
-        address: body.address || 'Address Not Provided',
-        meterNumber: m,
-        providerCode: p,
-        productCode,
-        validationReference:
-          body.validationReference || vendInstruction.validationReference || null,
-        requireValidationRef: !!vendInstruction.requireValidationRef,
-      };
+    if (!body?.requestSuccessful) {
+      const msg = body?.responseMessage || 'Failed to fetch products';
+      logger.error(`[Monnify][PRODUCTS][FAIL] ${msg}`);
+      throw new Error(msg);
     }
 
-    throw new Error(data?.responseMessage || 'Meter validation failed');
+    const list =
+      Array.isArray(body?.responseBody) ? body.responseBody :
+      Array.isArray(body?.responseBody?.content) ? body.responseBody.content :
+      Array.isArray(body?.responseBody?.products) ? body.responseBody.products :
+      [];
+
+    _productsCache.set(b, { expiresAtMs: now() + PRODUCTS_TTL_MS, data: list });
+
+    logger.info(`[Monnify][PRODUCTS] ok billerCode=${b} count=${list.length}`);
+    return list;
+  }
+
+  // If all candidates failed
+  logger.error('[Monnify][PRODUCTS][FAIL] No supported products endpoint matched for this tenant.');
+  throw new Error('Products endpoint not available for this Monnify tenant.');
+}
+
+/**
+ * Resolve your legacy providerCode (eko_electric_prepaid, ikeja_electric_prepaid, etc)
+ * to the actual supported Monnify productCode (returned by billers/products endpoints).
+ */
+async function resolveProductFromLegacy(providerCode, meterType = null) {
+  const p = safeStr(providerCode);
+  const typeHint = safeStr(meterType) || p;
+
+  const cacheKey = `${p}|${typeHint.toLowerCase()}`;
+  const cached = _resolvedProductCache.get(cacheKey);
+  if (cached && cached.expiresAtMs > now()) {
+    logger.debug(`[Monnify][RESOLVE] cache hit key=${cacheKey} -> ${cached.productCode}`);
+    return { productCode: cached.productCode, billerCode: cached.billerCode };
+  }
+
+  const keyword = extractDiscoKeyword(p);
+  if (!keyword) {
+    throw new Error(`Unable to resolve providerCode: ${p}`);
+  }
+
+  const prepaid = isPrepaid(typeHint);
+  const postpaid = isPostpaid(typeHint);
+
+  const billers = await listBillers('ELECTRICITY');
+
+  // Try to locate biller by name/code match
+  const biller = billers.find((b) => {
+    const name = safeStr(b?.billerName || b?.name).toLowerCase();
+    const code = safeStr(b?.billerCode || b?.code).toLowerCase();
+    return name.includes(keyword) || code.includes(keyword);
+  });
+
+  if (!biller) {
+    throw new Error(`No electricity biller matched keyword=${keyword} for providerCode=${p}`);
+  }
+
+  const billerCode = safeStr(biller?.billerCode || biller?.code);
+  if (!billerCode) {
+    throw new Error('Resolved biller is missing billerCode');
+  }
+
+  let productCode = safeStr(biller?.productCode || biller?.product_code);
+
+  // If biller response already includes a usable productCode, great.
+  // Else, query products.
+  if (!productCode) {
+    const products = await listProductsForBiller(billerCode);
+
+    // Choose a product using prepaid/postpaid hints
+    const match = products.find((pr) => {
+      const n = safeStr(pr?.productName || pr?.name).toLowerCase();
+      const c = safeStr(pr?.productCode || pr?.code).toUpperCase();
+      if (!c) return false;
+
+      if (prepaid) return n.includes('prepaid') || c.includes('PREPAID');
+      if (postpaid) return n.includes('postpaid') || c.includes('POSTPAID');
+
+      // If no hint, just pick first
+      return true;
+    });
+
+    productCode = safeStr(match?.productCode || match?.code);
+  }
+
+  if (!productCode) {
+    throw new Error(`Unable to resolve productCode for providerCode=${p} (billerCode=${billerCode})`);
+  }
+
+  _resolvedProductCache.set(cacheKey, {
+    expiresAtMs: now() + RESOLVE_TTL_MS,
+    productCode,
+    billerCode,
+  });
+
+  logger.info(`[Monnify][RESOLVE] providerCode=${p} -> billerCode=${billerCode} productCode=${productCode}`);
+  return { productCode, billerCode };
+}
+
+// ------------------------------------------------------------
+// Core Functions
+// ------------------------------------------------------------
+
+/**
+ * Validate Meter
+ * We accept either:
+ * - productCode directly (preferred after you wire catalog), OR
+ * - legacy providerCode (eko_electric_prepaid) which we resolve.
+ */
+async function validateMeter(meterNumber, providerOrProductCode, meterType = 'prepaid') {
+  const meter = safeStr(meterNumber);
+  const providerCode = safeStr(providerOrProductCode);
+
+  if (!meter) throw new HttpError(400, 'meterNumber is required');
+  if (!providerCode) throw new HttpError(400, 'discoCode/productCode is required');
+
+  const token = await getAccessToken();
+
+  let productCode = null;
+  let billerCode = null;
+
+  try {
+    if (looksLikeProductCode(providerCode) && !providerCode.includes('_electric_')) {
+      productCode = providerCode;
+      logger.info(`[Monnify][VALIDATE] using productCode directly productCode=${productCode}`);
+    } else {
+      const resolved = await resolveProductFromLegacy(providerCode, meterType);
+      productCode = resolved.productCode;
+      billerCode = resolved.billerCode;
+    }
+
+    logger.info(`[Monnify][VALIDATE] meter=${meter} providerCode=${providerCode} productCode=${productCode}`);
+
+    const url = `${BASE_URL}/api/v1/vas/bills-payment/validate-customer`;
+    const resp = await httpPost(
+      url,
+      // ✅ Your tenant may expect customerKey or customerId; keep both to be safe.
+      { productCode, customerId: meter, customerKey: meter },
+      monnifyAuthHeaderBearer(token),
+      HTTP_TIMEOUT
+    );
+
+    const body = resp?.data;
+    logger.info(
+      `[Monnify][VALIDATE] status=${resp.status} requestSuccessful=${!!body?.requestSuccessful} message=${body?.responseMessage || 'n/a'}`
+    );
+
+    if (!body?.requestSuccessful) {
+      const msg = body?.responseMessage || 'Meter validation failed';
+      logger.error(`[Monnify][VALIDATE][FAIL] ${msg}`);
+      throw new HttpError(400, `Validation Failed: ${msg}`);
+    }
+
+    const data = body?.responseBody || {};
+
+    // Pass through important hints if Monnify returns vendInstruction
+    const vendInstruction = data?.vendInstruction || null;
+
+    return {
+      isValid: true,
+      name: data?.name || data?.customerName || 'Customer',
+      address: data?.address || 'Address Not Provided',
+      meterNumber: meter,
+      providerCode,
+      productCode,
+      billerCode,
+      validationReference: data?.validationReference || null,
+      vendInstruction,
+      raw: data, // optional but useful during integration
+    };
   } catch (err) {
+    // Keep HttpError
     if (err instanceof HttpError) throw err;
 
     const msg =
       err?.response?.data?.responseMessage ||
       err?.response?.data?.message ||
-      err.message;
+      err?.message ||
+      'Unknown error';
 
-    logger.error(`[Monnify][VALIDATE][FAIL] ${msg}`);
+    logger.error(`[Monnify][VALIDATE][EXCEPTION] ${msg}`);
     throw new HttpError(400, `Validation Failed: ${msg}`);
   }
-};
+}
 
 /**
- * STEP 2: Create Pending Order (before payment)
+ * Create pending order (before payment)
+ * Store the *resolved* productCode so vend doesn’t depend on remapping.
  */
-const createPendingOrder = async (userId, data = {}) => {
-  const {
-    meterNumber,
-    discoCode, // can be disco shorthand OR monnify product code
-    amount,
-    phone,
-    email,
-    meterName,
-    meterType,
-    validationReference,
-  } = data;
+async function createPendingOrder(userId, payload) {
+  const meterNumber = safeStr(payload?.meterNumber);
+  const providerCode = safeStr(payload?.discoCode || payload?.providerCode);
+  const meterType = safeStr(payload?.meterType || 'prepaid');
 
-  const m = String(meterNumber || '').trim();
-  const p = String(discoCode || '').trim();
-  const t = String(meterType || 'prepaid').trim();
-  const electricityAmount = parseFloat(amount);
+  const amount = Number(payload?.amount);
+  if (!meterNumber) throw new HttpError(400, 'meterNumber is required');
+  if (!providerCode) throw new HttpError(400, 'discoCode/providerCode is required');
+  if (!Number.isFinite(amount) || amount <= 0) throw new HttpError(400, 'amount is invalid');
 
-  if (!m) throw new HttpError(400, 'Meter number is required');
-  if (!p) throw new HttpError(400, 'Disco / product code is required');
-  if (!Number.isFinite(electricityAmount) || electricityAmount <= 0) {
-    throw new HttpError(400, 'Invalid amount');
+  // Resolve productCode now
+  let productCode = safeStr(payload?.productCode);
+  let billerCode = safeStr(payload?.billerCode);
+
+  if (!productCode) {
+    if (looksLikeProductCode(providerCode) && !providerCode.includes('_electric_')) {
+      productCode = providerCode;
+    } else {
+      const resolved = await resolveProductFromLegacy(providerCode, meterType);
+      productCode = resolved.productCode;
+      billerCode = resolved.billerCode;
+    }
   }
 
-  const totalPayable = electricityAmount + CONVENIENCE_FEE;
-  const productCode = resolveProductCode(p, t);
-  if (!productCode) throw new HttpError(400, 'Unable to resolve productCode');
-
-  logger.info(
-    `[POWER][ORDER] create meter=${m} providerCode=${p} productCode=${productCode} amount=${electricityAmount}`
-  );
+  const totalPayable = amount + CONVENIENCE_FEE;
 
   const order = await orderService.placeOrder({
     user: { id: userId },
@@ -263,138 +486,164 @@ const createPendingOrder = async (userId, data = {}) => {
       type: 'POWER',
       orderItems: [],
       totalAmount: totalPayable,
-      subTotal: electricityAmount,
+      subTotal: amount,
       serviceFee: CONVENIENCE_FEE,
       deliveryFee: 0,
       status: 'Pending Payment',
       paymentStatus: 'Pending',
       metadata: {
-        meterNumber: m,
-        providerCode: p,
+        meterNumber,
+        providerCode,
+        billerCode: billerCode || null,
         productCode,
-        meterType: t,
-        meterName: meterName || null,
-        phone: phone || null,
-        email: email || null,
-        validationReference: validationReference || null,
+        meterType,
+        meterName: payload?.meterName || null,
+        phone: payload?.phone || null,
+        email: payload?.email || null,
+        validationReference: payload?.validationReference || null,
       },
     },
   });
 
   return order;
-};
+}
 
 /**
- * STEP 3: Vend Power (called after payment confirmation)
+ * Vend after payment webhook
+ * Uses productCode saved in metadata.
  */
-const vendPower = async (orderId) => {
+async function vendPower(orderId) {
   logger.info(`[Monnify][VEND] start orderId=${orderId}`);
 
   const order = await orderService.getOrder(orderId);
   if (!order) throw new Error('Order not found');
 
-  // Idempotency
-  if (String(order.status).toUpperCase() === 'DELIVERED') {
-    return { success: true, token: order.metadata.get('token'), cached: true };
+  const status = safeStr(order.status).toUpperCase();
+  const meta = order.metadata;
+
+  // Idempotency: if already delivered and token exists
+  const existingToken = meta?.get ? meta.get('token') : meta?.token;
+  if ((status === 'DELIVERED' || status === 'COMPLETED') && existingToken) {
+    logger.info('[Monnify][VEND] idempotent return (already has token)');
+    return { success: true, token: existingToken, cached: true };
   }
 
-  try {
-    const token = await getAccessToken();
-    const vendReference = `${Date.now()}-${uuidv4().slice(0, 6)}`;
+  const token = await getAccessToken();
 
-    const productCode = order.metadata.get('productCode');
-    const meterNumber = order.metadata.get('meterNumber');
-    const validationReference = order.metadata.get('validationReference');
+  const productCode = meta?.get ? meta.get('productCode') : meta?.productCode;
+  const meterNumber = meta?.get ? meta.get('meterNumber') : meta?.meterNumber;
+  const validationReference = meta?.get ? meta.get('validationReference') : meta?.validationReference;
 
-    if (!productCode || !meterNumber) {
-      throw new Error('Missing productCode or meterNumber on order');
-    }
+  if (!productCode) throw new Error('Missing productCode on order metadata');
+  if (!meterNumber) throw new Error('Missing meterNumber on order metadata');
 
-    const payload = {
-      productCode,
-      customerId: meterNumber,
-      vendAmount: Number(order.subTotal),
-      vendReference,
-    };
+  const vendReference = `${Date.now()}-${uuidv4().substring(0, 6)}`;
 
-    if (validationReference) {
-      payload.validationReference = validationReference;
-    }
+  const vendAmount = Number(order.subTotal);
+  if (!Number.isFinite(vendAmount) || vendAmount <= 0) throw new Error('Invalid vend amount');
 
-    logger.info(`[Monnify][VEND] payload=${JSON.stringify(payload)}`);
+  const url = `${BASE_URL}/api/v1/vas/bills-payment/vend`;
+  const vendPayload = {
+    productCode,
+    // same reason as validate: support both keys across tenants
+    customerId: meterNumber,
+    customerKey: meterNumber,
+    vendAmount,
+    vendReference,
+  };
 
-    const response = await monnifyHttp.post(
-      '/api/v1/vas/bills-payment/vend',
-      payload,
-      {
-        headers: { Authorization: `Bearer ${token}` },
-        timeout: VEND_TIMEOUT,
-      }
-    );
+  if (validationReference) {
+    vendPayload.validationReference = validationReference;
+  }
 
-    const { status, data } = response;
+  logger.info(
+    `[Monnify][VEND] request productCode=${productCode} meter=${meterNumber} amount=${vendAmount} vendReference=${vendReference}`
+  );
 
-    logger.info(
-      `[Monnify][VEND] status=${status} requestSuccessful=${!!data?.requestSuccessful} message=${data?.responseMessage || 'n/a'}`
-    );
+  const resp = await httpPost(url, vendPayload, monnifyAuthHeaderBearer(token), VEND_TIMEOUT);
+  const body = resp?.data;
 
-    if (!data?.requestSuccessful) {
-      throw new Error(data?.responseMessage || 'Vending failed');
-    }
+  logger.info(`[Monnify][VEND] status=${resp.status} requestSuccessful=${!!body?.requestSuccessful} message=${body?.responseMessage || 'n/a'}`);
 
-    const body = data.responseBody || {};
-    const tokenCode =
-      body.token || body.pin || body.standardToken || 'TOKEN_GENERATED';
-
-    const units = body.units || body.purchasedUnits || '0';
-
-    await orderService.updateOrderStatus(
-      orderId,
-      'Delivered',
-      {
-        token: tokenCode,
-        units,
-        vendReference,
-        vendorReference: body.transactionReference || null,
-        vendorResponse: JSON.stringify(body),
-      },
-      'system'
-    );
+  if (!body?.requestSuccessful) {
+    const msg = body?.responseMessage || 'Monnify vending failed';
+    logger.error(`[Monnify][VEND][FAIL] ${msg}`);
 
     try {
+      await orderService.updateOrderStatus(
+        orderId,
+        'Vending Failed',
+        { error: msg, vendorResponse: JSON.stringify(body || {}) },
+        'system'
+      );
+    } catch (_) {}
+
+    throw new Error(msg);
+  }
+
+  const vendData = body?.responseBody || {};
+
+  const tokenCode =
+    vendData.token ||
+    vendData.pin ||
+    vendData.standardToken ||
+    vendData.tokenCode ||
+    vendData.tokenNo ||
+    'TOKEN_GENERATED';
+
+  const units =
+    vendData.units ||
+    vendData.unit ||
+    vendData.purchasedUnits ||
+    vendData.vendQuantity ||
+    '0';
+
+  // Update order status (your app uses "Delivered" widely)
+  await orderService.updateOrderStatus(
+    orderId,
+    'Delivered',
+    {
+      token: tokenCode,
+      units,
+      vendorReference: vendData.transactionReference || vendData.reference || null,
+      vendorResponse: JSON.stringify(vendData),
+      vendReference,
+    },
+    'system'
+  );
+
+  // Notify user (optional)
+  try {
+    const userId = order.user?._id || order.user;
+    if (notificationService?.createAndSendNotification) {
       await notificationService.createAndSendNotification(
-        order.user?._id || order.user,
+        userId,
         'Power Token Generated',
         `Token: ${tokenCode}`,
         { type: 'POWER_ORDER', orderId, token: tokenCode }
       );
-    } catch (_) {
-      // ignore notification failures
     }
+  } catch (_) {}
 
-    return { success: true, token: tokenCode, units };
-  } catch (err) {
-    const msg =
-      err?.response?.data?.responseMessage ||
-      err?.response?.data?.message ||
-      err.message;
+  logger.info('[Monnify][VEND] success');
+  return { success: true, token: tokenCode, units };
+}
 
-    logger.error(`[Monnify][VEND][FAIL] ${msg}`);
+/**
+ * Public methods for controller routes
+ */
+async function getElectricityBillers(categoryCode = 'ELECTRICITY') {
+  return listBillers(categoryCode);
+}
 
-    await orderService.updateOrderStatus(
-      orderId,
-      'Vending Failed',
-      { error: msg },
-      'system'
-    );
-
-    throw err;
-  }
-};
+async function getBillerProducts(billerCode) {
+  return listProductsForBiller(billerCode);
+}
 
 module.exports = {
-  getProductsCatalog,
   validateMeter,
   createPendingOrder,
   vendPower,
+  getElectricityBillers,
+  getBillerProducts,
 };

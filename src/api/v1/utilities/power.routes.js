@@ -36,4 +36,8 @@ router.post('/order', powerController.createOrder);
  */
 router.post('/retry', powerController.retryVending);
 
+router.get('/billers', powerController.getBillers);
+router.get('/products', powerController.getProducts);
+
+
 module.exports = router;

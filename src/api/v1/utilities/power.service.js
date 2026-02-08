@@ -454,28 +454,26 @@ async function validateMeter(meterNumber, providerOrProductCode, meterType = 'pr
  * Create pending order (before payment)
  * Store the *resolved* productCode so vend doesn’t depend on remapping.
  */
-async function createPendingOrder(userId, payload) {
-  const meterNumber = safeStr(payload?.meterNumber);
-  const providerCode = safeStr(payload?.discoCode || payload?.providerCode);
-  const meterType = safeStr(payload?.meterType || 'prepaid');
+async function createPendingOrder(payload) {
+  const userId = payload.userId;
+  const meterNumber = safeStr(payload.meterNumber);
+  const providerCode = safeStr(payload.discoCode || payload.providerCode);
+  const meterType = safeStr(payload.meterType || 'prepaid');
+  const amount = Number(payload.amount);
 
-  const amount = Number(payload?.amount);
+  if (!userId) throw new HttpError(401, 'User ID is required');
   if (!meterNumber) throw new HttpError(400, 'meterNumber is required');
   if (!providerCode) throw new HttpError(400, 'discoCode/providerCode is required');
   if (!Number.isFinite(amount) || amount <= 0) throw new HttpError(400, 'amount is invalid');
 
-  // Resolve productCode now
-  let productCode = safeStr(payload?.productCode);
-  let billerCode = safeStr(payload?.billerCode);
+  // Resolve productCode
+  let productCode = safeStr(payload.productCode);
+  let billerCode = safeStr(payload.billerCode);
 
   if (!productCode) {
-    if (looksLikeProductCode(providerCode) && !providerCode.includes('_electric_')) {
-      productCode = providerCode;
-    } else {
-      const resolved = await resolveProductFromLegacy(providerCode, meterType);
-      productCode = resolved.productCode;
-      billerCode = resolved.billerCode;
-    }
+    const resolved = await resolveProductFromLegacy(providerCode, meterType);
+    productCode = resolved.productCode;
+    billerCode = resolved.billerCode;
   }
 
   const totalPayable = amount + CONVENIENCE_FEE;
@@ -484,23 +482,20 @@ async function createPendingOrder(userId, payload) {
     user: { id: userId },
     body: {
       type: 'POWER',
-      orderItems: [],
       totalAmount: totalPayable,
       subTotal: amount,
       serviceFee: CONVENIENCE_FEE,
-      deliveryFee: 0,
       status: 'Pending Payment',
       paymentStatus: 'Pending',
       metadata: {
         meterNumber,
         providerCode,
-        billerCode: billerCode || null,
+        billerCode,
         productCode,
         meterType,
-        meterName: payload?.meterName || null,
-        phone: payload?.phone || null,
-        email: payload?.email || null,
-        validationReference: payload?.validationReference || null,
+        meterName: payload.meterName,
+        phone: payload.phone,
+        validationReference: payload.validationReference,
       },
     },
   });
@@ -640,10 +635,23 @@ async function getBillerProducts(billerCode) {
   return listProductsForBiller(billerCode);
 }
 
+async function retryVending(orderId) {
+  logger.info(`[Monnify][RETRY VEND] orderId=${orderId}`);
+  
+  try {
+    const result = await vendPower(orderId);   // Reuse existing vend logic
+    return result;
+  } catch (error) {
+    logger.error(`[Monnify][RETRY VEND] failed: ${error.message}`);
+    throw error;
+  }
+}
+
 module.exports = {
   validateMeter,
   createPendingOrder,
   vendPower,
   getElectricityBillers,
   getBillerProducts,
+  retryVending,
 };

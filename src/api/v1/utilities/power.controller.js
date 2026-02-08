@@ -3,8 +3,8 @@ const powerService = require('./power.service');
 
 /**
  * Monnify Billers return codes like: biller-ekedc-pre / biller-ekedc-post.
- * Our backend validate/order flow expects internal provider codes
- * (e.g. eko_electric_prepaid), so we normalize here.
+ * Our backend expects internal provider codes (e.g. eko_electric_prepaid),
+ * so we normalize here.
  */
 const resolveProviderCode = (providerCode) => {
   if (!providerCode) return providerCode;
@@ -28,25 +28,41 @@ const resolveProviderCode = (providerCode) => {
   return `${base}_${typeSuffix}`;
 };
 
+const getBillers = async (req, res) => {
+  try {
+    const category = req.query.category || 'ELECTRICITY';
+    const billers = await powerService.getElectricityBillers(category);
+    
+    return res.status(200).json({
+      success: true,
+      billers
+    });
+  } catch (error) {
+    console.error('[Power Controller] Get billers error:', error.message);
+    return res.status(500).json({ error: error.message });
+  }
+};
+
 const validateMeter = async (req, res) => {
   try {
-    const meterNumber = req.body.meter;
-    const discoCode = resolveProviderCode(req.body.disco);
+    const meterNumber = req.body.meterNumber || req.body.meter;
+    const discoCode = req.body.discoCode || req.body.disco;
 
     if (!meterNumber || !discoCode) {
-      return res.status(400).json({ error: 'Missing meter or disco' });
+      return res.status(400).json({ error: 'Missing meterNumber or discoCode' });
     }
 
     const result = await powerService.validateMeter(meterNumber, discoCode);
-    return res.status(200).json(result);
+    return res.status(200).json({ success: true, data: result });
   } catch (error) {
+    console.error('[Power Controller] Validate meter error:', error.message);
     return res.status(400).json({ error: `Validation Failed: ${error.message}` });
   }
 };
 
 const createOrder = async (req, res) => {
   try {
-    const { meterNumber, discoCode, amount, phone, meterName } = req.body;
+    const { meterNumber, discoCode, amount, phone, meterName, meterType } = req.body;
 
     const normalizedDisco = resolveProviderCode(discoCode);
 
@@ -60,11 +76,13 @@ const createOrder = async (req, res) => {
       amount,
       phone,
       meterName,
+      meterType: meterType || 'prepaid',
       userId: req.user?.id || null,
     });
 
-    return res.status(200).json(result);
+    return res.status(200).json({ success: true, data: result });
   } catch (error) {
+    console.error('[Power Controller] Create order error:', error.message);
     return res.status(400).json({ error: `Order Failed: ${error.message}` });
   }
 };
@@ -75,10 +93,16 @@ const retryVending = async (req, res) => {
     if (!orderId) return res.status(400).json({ error: 'orderId is required' });
 
     const result = await powerService.retryVending(orderId);
-    return res.status(200).json(result);
+    return res.status(200).json({ success: true, data: result });
   } catch (error) {
     return res.status(400).json({ error: `Retry Failed: ${error.message}` });
   }
 };
 
-module.exports = { validateMeter, createOrder, retryVending, resolveProviderCode };
+module.exports = {
+  getBillers,
+  validateMeter,
+  createOrder,
+  retryVending,
+  resolveProviderCode
+};

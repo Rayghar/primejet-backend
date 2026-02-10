@@ -37,6 +37,31 @@ const verifyMonnifySignature = ({ signature, rawBodyString }) => {
   }
 };
 
+// Monnify paymentReference is configured by us. For gas orders we prefix: <orderId>_<timestamp>.
+// Recover orderId safely (UUIDv4 expected).
+const extractOrderIdFromPaymentReference = (paymentReference) => {
+  const ref = (paymentReference || '').toString();
+  const m = ref.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+  if (m && m[0]) return m[0];
+  if (ref.includes('_')) return ref.split('_')[0];
+  return ref || null;
+};
+
+
+const orderId = extractOrderIdFromPaymentReference(paymentReference);
+
+
+// 2. Fetch the Order to determine its TYPE (Gas vs Power)
+let targetOrder = null;
+try {
+  // Internal system call: use admin context to satisfy getOrder authz.
+  targetOrder = await orderService.getOrder(orderId, { id: 'system', role: 'admin' });
+} catch (e) {
+  logger.warn(`[Payment Service] Order ${orderId} not found. Skipping logic.`);
+  return;
+}
+
+
 /**
  * Process the verified webhook event
  */

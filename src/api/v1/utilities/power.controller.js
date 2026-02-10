@@ -47,18 +47,23 @@ const validateMeter = async (req, res) => {
   try {
     const meterNumber = req.body.meterNumber || req.body.meter;
     const discoCode = req.body.discoCode || req.body.disco;
+    const meterType = req.body.meterType || req.body.type; // optional
 
     if (!meterNumber || !discoCode) {
       return res.status(400).json({ error: 'Missing meterNumber or discoCode' });
     }
 
-    const result = await powerService.validateMeter(meterNumber, discoCode);
+    // Normalize incoming biller codes (e.g. biller-ekedc-pre/post) to internal provider code
+    const normalizedDisco = resolveProviderCode(discoCode);
+
+    const result = await powerService.validateMeter(meterNumber, normalizedDisco, meterType);
     return res.status(200).json({ success: true, data: result });
   } catch (error) {
     console.error('[Power Controller] Validate meter error:', error.message);
     return res.status(400).json({ error: `Validation Failed: ${error.message}` });
   }
 };
+
 
 const createOrder = async (req, res) => {
   try {

@@ -35,9 +35,8 @@ const SECRET_KEY = process.env.MONNIFY_SECRET_KEY;
 const CONVENIENCE_FEE = parseFloat(process.env.POWER_CONVENIENCE_FEE || '100');
 
 // Timeouts
-const HTTP_TIMEOUT = 30000;
-const VEND_TIMEOUT = 45000;
-
+const HTTP_TIMEOUT = 50000;
+const VEND_TIMEOUT = 60000;
 // ------------------------------------------------------------
 // In-memory caches (safe + simple)
 // ------------------------------------------------------------
@@ -449,6 +448,8 @@ async function validateMeter(meterNumber, providerOrProductCode, meterType = 'pr
     throw new HttpError(400, `Validation Failed: ${msg}`);
   }
 }
+
+
 
 /**
  * Create pending order (before payment)

@@ -3,10 +3,8 @@ const powerService = require('./power.service');
 
 /**
  * Monnify Billers return codes like: biller-ekedc-pre / biller-ekedc-post.
- * Our backend historically used internal provider codes (e.g. eko_electric_prepaid).
- * We keep resolveProviderCode for backwards compatibility, but:
- * ✅ If the incoming code is already a Monnify biller code (startsWith "biller-"),
- *    we pass it through directly so power.service can use billerCode correctly.
+ * Keep this helper for backward-compatibility (and for any legacy provider codes),
+ * but DO NOT force-normalize biller-* codes during validation anymore.
  */
 const resolveProviderCode = (providerCode) => {
   if (!providerCode) return providerCode;
@@ -56,12 +54,10 @@ const validateMeter = async (req, res) => {
     }
 
     // ✅ IMPORTANT:
-    // If discoCode is already a Monnify billerCode (biller-ekedc-pre/post), pass through.
-    // Else, keep legacy normalization.
-    const isMonnifyBillerCode = discoCode.toString().trim().toLowerCase().startsWith('biller-');
-    const codeToUse = isMonnifyBillerCode ? discoCode : resolveProviderCode(discoCode);
+    // - If Flutter sends biller-ekedc-pre/post, we keep it.
+    // - If caller sends legacy provider code, service can still resolve it.
+    const result = await powerService.validateMeter(meterNumber, discoCode, meterType);
 
-    const result = await powerService.validateMeter(meterNumber, codeToUse, meterType);
     return res.status(200).json({ success: true, data: result });
   } catch (error) {
     console.error('[Power Controller] Validate meter error:', error.message);
@@ -77,13 +73,10 @@ const createOrder = async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // ✅ Keep existing behavior:
-    // - If biller-... is sent, keep it (so metadata has billerCode).
-    // - Also keep legacy normalized provider code by passing the original input to service.
-    //   (service will store billerCode/providerCode properly)
     const result = await powerService.createPendingOrder({
       meterNumber,
-      discoCode, // pass raw; power.service handles biller- or legacy
+      // Keep the raw discoCode (biller-* or legacy). Service resolves to productCode.
+      discoCode,
       amount,
       phone,
       meterName,

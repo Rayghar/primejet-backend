@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const sha512 = require('js-sha512').sha512;
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
-const orderService = require('../orders/order.service'); 
+const orderService = require('../orders/order.service');
 const powerService = require('../utilities/power.service'); // ✅ Import Power Service
 const dotenv = require('dotenv');
 
@@ -32,35 +32,29 @@ const verifyMonnifySignature = ({ signature, rawBodyString }) => {
   const computedHash = computeMonnifyDocHash(rawBodyString, MONNIFY_SECRET_KEY);
 
   if (computedHash !== signature) {
-    logger.warn(`[Payment Service] Signature Mismatch! Computed: ${computedHash}, Received: ${signature}`);
+    logger.warn(
+      `[Payment Service] Signature Mismatch! Computed: ${computedHash}, Received: ${signature}`
+    );
     throw new HttpError(401, 'Invalid Monnify signature.');
   }
 };
 
-// Monnify paymentReference is configured by us. For gas orders we prefix: <orderId>_<timestamp>.
-// Recover orderId safely (UUIDv4 expected).
+/**
+ * Monnify paymentReference is configured by us. For orders we prefix: <orderId>_<timestamp> (recommended).
+ * Recover orderId safely:
+ *  - Prefer UUIDv4 found anywhere inside the paymentReference
+ *  - Else fall back to split('_')[0]
+ *  - Else return the raw reference
+ */
 const extractOrderIdFromPaymentReference = (paymentReference) => {
   const ref = (paymentReference || '').toString();
-  const m = ref.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+  const m = ref.match(
+    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
+  );
   if (m && m[0]) return m[0];
   if (ref.includes('_')) return ref.split('_')[0];
   return ref || null;
 };
-
-
-const orderId = extractOrderIdFromPaymentReference(paymentReference);
-
-
-// 2. Fetch the Order to determine its TYPE (Gas vs Power)
-let targetOrder = null;
-try {
-  // Internal system call: use admin context to satisfy getOrder authz.
-  targetOrder = await orderService.getOrder(orderId, { id: 'system', role: 'admin' });
-} catch (e) {
-  logger.warn(`[Payment Service] Order ${orderId} not found. Skipping logic.`);
-  return;
-}
-
 
 /**
  * Process the verified webhook event
@@ -68,12 +62,21 @@ try {
 const processWebhookEvent = async (eventData, eventType) => {
   logger.info(`[Payment Service] Processing event: ${eventType}`);
 
-  const { paymentReference, paymentStatus, transactionReference, amountPaid, paymentMethod, responseMessage } = eventData;
-  
-  // Extract Order ID (Assumes paymentReference is the Order ID or ORDERID_TIMESTAMP)
-  const orderId = paymentReference.split('_')[0];
+  const {
+    paymentReference,
+    paymentStatus,
+    transactionReference,
+    amountPaid,
+    paymentMethod,
+    responseMessage,
+  } = eventData;
 
-  logger.debug(`[Payment Service] Extracted Order ID: ${orderId}, Status: ${paymentStatus}`);
+  // ✅ Extract Order ID safely
+  const orderId = extractOrderIdFromPaymentReference(paymentReference);
+
+  logger.debug(
+    `[Payment Service] Extracted Order ID: ${orderId}, Status: ${paymentStatus}`
+  );
 
   if (!orderId) {
     throw new HttpError(400, 'Webhook payload missing order ID.');
@@ -90,12 +93,51 @@ const processWebhookEvent = async (eventData, eventType) => {
   };
 
   // 2. Fetch the Order to determine its TYPE (Gas vs Power)
+  // Webhook is server-to-server; there is no req.user. Use a system context so authz checks pass.
   let targetOrder = null;
   try {
-    targetOrder = await orderService.getOrder(orderId);
+    targetOrder = await orderService.getOrder(orderId, {
+      id: 'system',
+      role: 'admin',
+    });
   } catch (e) {
-    logger.warn(`[Payment Service] Order ${orderId} not found. Skipping logic.`);
-    return; // Stop if order doesn't exist
+    logger.warn(
+      `[Payment Service] Order ${orderId} not found (or not accessible). Skipping logic.`
+    );
+    return;
+  }
+
+  // 2b. Idempotency guard: if we already processed a successful payment / delivered vending, exit early.
+  try {
+    const status = (targetOrder?.status || '').toString().toLowerCase();
+    const paymentStat = (targetOrder?.paymentStatus || '').toString().toLowerCase();
+    const meta = targetOrder?.metadata || {};
+    const token =
+      typeof meta?.get === 'function' ? meta.get('token') : meta?.token;
+
+    if (
+      paymentStatus === 'PAID' &&
+      (status === 'delivered' || status === 'completed' || token)
+    ) {
+      logger.info(
+        `[Payment Service] Idempotent webhook: order ${orderId} already delivered. Skipping vending/update.`
+      );
+      return;
+    }
+
+    if (
+      paymentStatus === 'PAID' &&
+      paymentStat === 'completed' &&
+      status === 'processing' &&
+      targetOrder?.type === 'POWER'
+    ) {
+      // Still allow vendPower to run if token not present; but avoid repeated updates.
+      logger.info(
+        `[Payment Service] Order ${orderId} already marked Processing+Completed. Continuing to vending check.`
+      );
+    }
+  } catch (_) {
+    // Do not block webhook processing on idempotency check errors.
   }
 
   // 3. Define Default Updates (for Gas/Delivery)
@@ -129,7 +171,9 @@ const processWebhookEvent = async (eventData, eventType) => {
   // ========================================================================
   if (targetOrder && targetOrder.type === 'POWER') {
     if (paymentStatus === 'PAID') {
-      logger.info(`[Payment Service] ⚡ Power Order detected (${orderId}). Initiating Vending...`);
+      logger.info(
+        `[Payment Service] ⚡ Power Order detected (${orderId}). Initiating Vending...`
+      );
 
       try {
         // A. Mark Payment as Completed FIRST (so we have record of money)
@@ -142,19 +186,21 @@ const processWebhookEvent = async (eventData, eventType) => {
           notes: `${updateNotes} [System] Initiating Electricity Vending.`,
         });
 
-        // B. Trigger Vending (This handles the API call to Monnify/VTpass)
+        // B. Trigger Vending
         const vendResult = await powerService.vendPower(orderId);
-        
-        logger.info(`[Payment Service] ✅ Vending Success for ${orderId}. Token: ${vendResult.token}`);
-        
-        // C. STOP HERE. 
-        // We do NOT want to fall through to Gas logic (Driver Assignment).
-        return; 
 
+        logger.info(
+          `[Payment Service] ✅ Vending Success for ${orderId}. Token: ${vendResult.token}`
+        );
+
+        // C. STOP HERE (do not fall through to Gas logic)
+        return;
       } catch (powerError) {
-        logger.error(`[Payment Service] 🚨 Vending Error: ${powerError.message}`);
-        // The vendPower function usually sets status to 'Vending Failed' internally.
-        // We return safely to acknowledge the webhook with 200 OK.
+        logger.error(
+          `[Payment Service] 🚨 Vending Error: ${powerError.message}`,
+          { stack: powerError.stack }
+        );
+        // vendPower typically updates order status to "Vending Failed" internally.
         return;
       }
     }
@@ -162,7 +208,6 @@ const processWebhookEvent = async (eventData, eventType) => {
   // ========================================================================
 
   // 4. Standard Gas/Delivery Order Update
-  // This code only runs if it is NOT a Power order (or if payment failed)
   try {
     await orderService.updateOrderStatus({
       orderId: orderId,
@@ -172,10 +217,15 @@ const processWebhookEvent = async (eventData, eventType) => {
       verifiedAmount: finalAmountForOrder,
       notes: updateNotes,
     });
-    logger.info(`[Payment Service] Standard Order ${orderId} updated to ${newOrderStatus}`);
+    logger.info(
+      `[Payment Service] Standard Order ${orderId} updated to ${newOrderStatus}`
+    );
   } catch (error) {
-    logger.error(`[Payment Service] Failed to update order ${orderId}: ${error.message}`);
-    // Don't throw if it's just a status update fail, ensures webhook 200 OK
+    logger.error(
+      `[Payment Service] Failed to update order ${orderId}: ${error.message}`,
+      { stack: error.stack }
+    );
+    // Don't throw; ensures webhook path stays stable.
   }
 };
 
@@ -184,7 +234,7 @@ const processWebhookEvent = async (eventData, eventType) => {
  */
 const processMonnifyWebhook = async ({ signature, rawBodyString }) => {
   logger.info('[Payment Service] Webhook received.');
-  
+
   // 1. Verify
   verifyMonnifySignature({ signature, rawBodyString });
 
@@ -199,11 +249,11 @@ const processMonnifyWebhook = async ({ signature, rawBodyString }) => {
   // 3. Process
   const { eventType, eventData } = payload;
   if (eventType === 'SUCCESSFUL_TRANSACTION') {
-      await processWebhookEvent(eventData, eventType);
+    await processWebhookEvent(eventData, eventType);
   } else {
-      logger.info(`[Payment Service] Ignoring event type: ${eventType}`);
+    logger.info(`[Payment Service] Ignoring event type: ${eventType}`);
   }
-  
+
   logger.info('[Payment Service] Webhook processing complete.');
 };
 

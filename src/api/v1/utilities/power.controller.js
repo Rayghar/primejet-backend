@@ -2,8 +2,34 @@
 const powerService = require('./power.service');
 
 /**
- * Get Electricity Billers
+ * Monnify Billers return codes like: biller-ekedc-pre / biller-ekedc-post.
+ * Our backend historically used internal provider codes (e.g. eko_electric_prepaid).
+ * We keep resolveProviderCode for backwards compatibility, but:
+ * ✅ If the incoming code is already a Monnify biller code (startsWith "biller-"),
+ *    we pass it through directly so power.service can use billerCode correctly.
  */
+const resolveProviderCode = (providerCode) => {
+  if (!providerCode) return providerCode;
+  const c = providerCode.toString().trim().toLowerCase();
+  if (!c.startsWith('biller-')) return providerCode;
+
+  const isPostpaid = c.endsWith('-post');
+  const typeSuffix = isPostpaid ? 'postpaid' : 'prepaid';
+
+  let base = null;
+  if (c.includes('ekedc')) base = 'eko_electric';
+  else if (c.includes('ikedc')) base = 'ikeja_electric';
+  else if (c.includes('ibedc')) base = 'ibadan_electric';
+  else if (c.includes('phedc')) base = 'portharcourt_electric';
+  else if (c.includes('aedc')) base = 'abuja_electric';
+  else if (c.includes('eedc')) base = 'enugu_electric';
+  else if (c.includes('jedc')) base = 'jos_electric';
+  else if (c.includes('kedc') || c.includes('kedco')) base = 'kano_electric';
+
+  if (!base) return providerCode;
+  return `${base}_${typeSuffix}`;
+};
+
 const getBillers = async (req, res) => {
   try {
     const category = req.query.category || 'ELECTRICITY';
@@ -19,28 +45,23 @@ const getBillers = async (req, res) => {
   }
 };
 
-/**
- * Validate Meter
- * NOTE:
- * - discoCode MUST be Monnify billerCode (e.g. biller-ekedc-pre)
- * - productCode is derived internally (PREPAID_ELECTRICITY / POSTPAID_ELECTRICITY)
- */
 const validateMeter = async (req, res) => {
   try {
     const meterNumber = req.body.meterNumber || req.body.meter;
-    const billerCode = req.body.discoCode || req.body.disco;
-    const meterType = req.body.meterType || 'prepaid';
+    const discoCode = req.body.discoCode || req.body.disco;
+    const meterType = req.body.meterType || req.body.type; // optional
 
-    if (!meterNumber || !billerCode) {
-      return res.status(400).json({ error: 'Missing meterNumber or billerCode' });
+    if (!meterNumber || !discoCode) {
+      return res.status(400).json({ error: 'Missing meterNumber or discoCode' });
     }
 
-    const result = await powerService.validateMeter(
-      meterNumber,
-      billerCode,
-      meterType
-    );
+    // ✅ IMPORTANT:
+    // If discoCode is already a Monnify billerCode (biller-ekedc-pre/post), pass through.
+    // Else, keep legacy normalization.
+    const isMonnifyBillerCode = discoCode.toString().trim().toLowerCase().startsWith('biller-');
+    const codeToUse = isMonnifyBillerCode ? discoCode : resolveProviderCode(discoCode);
 
+    const result = await powerService.validateMeter(meterNumber, codeToUse, meterType);
     return res.status(200).json({ success: true, data: result });
   } catch (error) {
     console.error('[Power Controller] Validate meter error:', error.message);
@@ -48,9 +69,6 @@ const validateMeter = async (req, res) => {
   }
 };
 
-/**
- * Create Power Order
- */
 const createOrder = async (req, res) => {
   try {
     const { meterNumber, discoCode, amount, phone, meterName, meterType } = req.body;
@@ -59,14 +77,18 @@ const createOrder = async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    // ✅ Keep existing behavior:
+    // - If biller-... is sent, keep it (so metadata has billerCode).
+    // - Also keep legacy normalized provider code by passing the original input to service.
+    //   (service will store billerCode/providerCode properly)
     const result = await powerService.createPendingOrder({
       meterNumber,
-      billerCode: discoCode,
+      discoCode, // pass raw; power.service handles biller- or legacy
       amount,
       phone,
       meterName,
       meterType: meterType || 'prepaid',
-      userId: req.user?.id,
+      userId: req.user?.id || null,
     });
 
     return res.status(200).json({ success: true, data: result });
@@ -93,4 +115,5 @@ module.exports = {
   validateMeter,
   createOrder,
   retryVending,
+  resolveProviderCode,
 };

@@ -28,7 +28,7 @@ try {
  * - Sandbox: https://sandbox.monnify.com
  * - Live:    https://api.monnify.com
  */
-const BASE_URL = process.env.MONNIFY_BASE_URL || 'https://sandbox.monnify.com';
+const BASE_URL = process.env.MONNIFY_BASE_URL || 'https://api.monnify.com';
 const API_KEY = process.env.MONNIFY_API_KEY;
 const SECRET_KEY = process.env.MONNIFY_SECRET_KEY;
 
@@ -392,6 +392,26 @@ async function createPendingOrder(payload) {
       },
     },
   });
+}
+
+async function listAllBillerProducts() {
+  const token = await getAccessToken();
+  const resp = await httpGet(
+    `${BASE_URL}/api/v1/vas/bills-payment/biller-products`,
+    monnifyAuthHeaderBearer(token),
+    HTTP_TIMEOUT
+  );
+
+  if (!resp?.data?.requestSuccessful) {
+    throw new Error(resp?.data?.responseMessage || 'Failed to fetch biller products');
+  }
+
+  logger.info(
+    '[MONNIFY][BILLER_PRODUCTS]',
+    JSON.stringify(resp.data.responseBody, null, 2)
+  );
+
+  return resp.data.responseBody;
 }
 
 /**

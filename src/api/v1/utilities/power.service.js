@@ -314,42 +314,51 @@ async function validateMeter(meterNumber, discoOrBillerCode, meterType = 'prepai
  * Stores resolved billerCode + productCode so vend does NOT guess later.
  */
 async function createPendingOrder(payload) {
-  if (!payload?.userId) throw new HttpError(401, 'User required');
+  if (!payload?.userId) {
+    throw new HttpError(401, 'User required');
+  }
 
   const meterNumber = safeStr(payload.meterNumber);
-  const discoCode = safeStr(payload.discoCode);
-  const mt = safeStr(payload.meterType || 'prepaid');
-  const amount = Number(payload.amount);
+  const discoCode   = safeStr(payload.discoCode);
+  const meterType   = safeStr(payload.meterType || 'prepaid');
+  const amount      = Number(payload.amount);
 
-  if (!meterNumber) throw new HttpError(400, 'meterNumber is required');
-  if (!discoCode) throw new HttpError(400, 'discoCode is required');
-  if (!Number.isFinite(amount) || amount <= 0) throw new HttpError(400, 'amount is invalid');
+  if (!meterNumber || !discoCode) {
+    throw new HttpError(400, 'meterNumber and discoCode are required');
+  }
 
-  const { billerCode, productCode } = await resolveBillerAndProduct(discoCode, mt);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new HttpError(400, 'amount is invalid');
+  }
 
-  return orderService.placeOrder({
-    user: { id: payload.userId },
-    body: {
-      type: 'POWER',
+  // 🔑 Resolve Monnify product correctly (already fixed)
+  const resolved = await resolveProductFromLegacy(discoCode, meterType);
+
+  // ✅ CRITICAL: call placeOrder the SAME WAY gas orders do
+  return orderService.placeOrder(
+    payload.userId,        // customerId (1st argument)
+    {
+      type: 'POWER',       // <-- tells order service this is power
       totalAmount: amount + CONVENIENCE_FEE,
       subTotal: amount,
       serviceFee: CONVENIENCE_FEE,
       status: 'Pending Payment',
       paymentStatus: 'Pending',
+
       metadata: {
         meterNumber,
-        meterType: mt,
+        meterType,
         phone: payload.phone,
-        billerCode,
-        productCode,
-        // keep original input for traceability
+        productCode: resolved.productCode,
+        billerCode: resolved.billerCode,
         providerCode: discoCode,
         validationReference: payload.validationReference,
         meterName: payload.meterName,
       },
-    },
-  });
+    }
+  );
 }
+
 
 /**
  * Vend Power (Webhook-triggered)

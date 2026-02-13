@@ -281,8 +281,8 @@ async function validateMeter(meterNumber, discoOrBillerCode, meterType = 'prepai
     {
       billerCode,
       productCode,
-      customerIdentifier: meter, // key Monnify typically expects
-      // keep compatibility fields (harmless if ignored)
+      customerIdentifier: meter,
+      // compatibility fields
       customerId: meter,
       customerKey: meter,
     },
@@ -311,6 +311,7 @@ async function validateMeter(meterNumber, discoOrBillerCode, meterType = 'prepai
 
 /**
  * Create Pending Order
+ * ✅ FIXED: use resolveBillerAndProduct (resolveProductFromLegacy does not exist here)
  * Stores resolved billerCode + productCode so vend does NOT guess later.
  */
 async function createPendingOrder(payload) {
@@ -319,9 +320,9 @@ async function createPendingOrder(payload) {
   }
 
   const meterNumber = safeStr(payload.meterNumber);
-  const discoCode   = safeStr(payload.discoCode);
-  const meterType   = safeStr(payload.meterType || 'prepaid');
-  const amount      = Number(payload.amount);
+  const discoCode = safeStr(payload.discoCode);
+  const meterType = safeStr(payload.meterType || 'prepaid');
+  const amount = Number(payload.amount);
 
   if (!meterNumber || !discoCode) {
     throw new HttpError(400, 'meterNumber and discoCode are required');
@@ -331,34 +332,32 @@ async function createPendingOrder(payload) {
     throw new HttpError(400, 'amount is invalid');
   }
 
-  // 🔑 Resolve Monnify product correctly (already fixed)
-  const resolved = await resolveProductFromLegacy(discoCode, meterType);
+  // ✅ Resolve using Monnify biller-products endpoint flow
+  const resolved = await resolveBillerAndProduct(discoCode, meterType);
 
-  // ✅ CRITICAL: call placeOrder the SAME WAY gas orders do
+  // ✅ DO NOT CHANGE placeOrder signature (protect GAS)
   return orderService.placeOrder(
-    payload.userId,        // customerId (1st argument)
+    payload.userId,
     {
-      type: 'POWER',       // <-- tells order service this is power
+      type: 'POWER',
       totalAmount: amount + CONVENIENCE_FEE,
       subTotal: amount,
       serviceFee: CONVENIENCE_FEE,
       status: 'Pending Payment',
       paymentStatus: 'Pending',
-
       metadata: {
         meterNumber,
         meterType,
         phone: payload.phone,
         productCode: resolved.productCode,
         billerCode: resolved.billerCode,
-        providerCode: discoCode,
+        providerCode: discoCode, // traceability
         validationReference: payload.validationReference,
         meterName: payload.meterName,
       },
     }
   );
 }
-
 
 /**
  * Vend Power (Webhook-triggered)
@@ -395,7 +394,6 @@ async function vendPower(orderId) {
     billerCode,
     productCode,
     customerIdentifier: meterNumber,
-    // compatibility fields
     customerId: meterNumber,
     customerKey: meterNumber,
     vendAmount,

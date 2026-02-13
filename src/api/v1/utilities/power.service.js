@@ -24,11 +24,8 @@ try {
 
 /**
  * Configuration
- * BASE_URL:
- * - Sandbox: https://sandbox.monnify.com
- * - Live:    https://api.monnify.com
  */
-const BASE_URL = process.env.MONNIFY_BASE_URL || 'https://api.monnify.com';
+const BASE_URL = process.env.MONNIFY_BASE_URL || 'https://sandbox.monnify.com';
 const API_KEY = process.env.MONNIFY_API_KEY;
 const SECRET_KEY = process.env.MONNIFY_SECRET_KEY;
 
@@ -41,9 +38,9 @@ const VEND_TIMEOUT = 60000;
  * Caches
  */
 let _authCache = { accessToken: null, expiresAtMs: 0 };
-const _billersCache = new Map();          // key: category -> { expiresAtMs, data }
-const _billerProductsCache = new Map();   // key: category -> { expiresAtMs, data }
-const _resolvedCache = new Map();         // key: discoCode|meterType -> { expiresAtMs, billerCode, productCode }
+const _billersCache = new Map();          // category -> { expiresAtMs, data }
+const _billerProductsCache = new Map();   // billerCode -> { expiresAtMs, data }
+const _resolvedProductCache = new Map();  // key -> { expiresAtMs, billerCode, productCode }
 
 const AUTH_TTL_MS = 55 * 60 * 1000;
 const BILLERS_TTL_MS = 6 * 60 * 60 * 1000;
@@ -55,14 +52,14 @@ const RESOLVE_TTL_MS = 6 * 60 * 60 * 1000;
  */
 const now = () => Date.now();
 const safeStr = (v) => String(v ?? '').trim();
-const lower = (v) => safeStr(v).toLowerCase();
-const upper = (v) => safeStr(v).toUpperCase();
 
-const isPrepaid = (s) => lower(s).includes('prepaid') || lower(s).includes('-pre');
-const isPostpaid = (s) => lower(s).includes('postpaid') || lower(s).includes('-post');
+const isBillerCode = (s) => safeStr(s).toLowerCase().startsWith('biller-');
+
+const isPrepaid = (s) => safeStr(s).toLowerCase().includes('prepaid');
+const isPostpaid = (s) => safeStr(s).toLowerCase().includes('postpaid');
 
 const extractDiscoKeyword = (providerCode) => {
-  const c = lower(providerCode);
+  const c = safeStr(providerCode).toLowerCase();
   return [
     'eko',
     'ikeja',
@@ -72,28 +69,26 @@ const extractDiscoKeyword = (providerCode) => {
     'jos',
     'kano',
     'portharcourt',
-    'ph',
-    // also match Monnify biller codes like ekedc/ikedc
-    'ekedc',
-    'ikedc',
-    'ibedc',
     'phedc',
+    'ph',
     'aedc',
+    'ikedc',
+    'ekedc',
+    'ibedc',
     'eedc',
     'jedc',
     'kedc',
     'kedco',
-  ].find((k) => c.includes(k)) || null;
+  ].find((k) => c.includes(k));
 };
 
-// billers returned to Flutter are shaped as { code, name, categories }
 const getBillerName = (b) => safeStr(b?.name || b?.billerName || b?.biller_name);
 const getBillerCode = (b) => safeStr(b?.code || b?.billerCode || b?.biller_code);
 
-// biller-products fields can vary by tenant
-const getBPBillerCode = (x) => safeStr(x?.billerCode || x?.biller_code || x?.biller?.code || x?.biller?.billerCode);
-const getBPProductCode = (x) => safeStr(x?.productCode || x?.product_code || x?.code);
-const getBPProductName = (x) => safeStr(x?.productName || x?.product_name || x?.name);
+// From Monnify support example for biller-products:
+// content[].code = product code, content[].biller.code = biller code
+const getProductName = (p) => safeStr(p?.name || p?.productName || p?.product_name);
+const getProductCode = (p) => safeStr(p?.code || p?.productCode || p?.product_code);
 
 const monnifyAuthHeaderBasic = () => ({
   Authorization: `Basic ${Buffer.from(`${API_KEY}:${SECRET_KEY}`).toString('base64')}`,
@@ -141,11 +136,9 @@ async function getAccessToken() {
 
 /**
  * Billers
- * Docs: you list billers filtered by categoryCode. :contentReference[oaicite:1]{index=1}
  */
 async function listBillers(category = 'ELECTRICITY') {
-  const cat = upper(category || 'ELECTRICITY');
-
+  const cat = safeStr(category).toUpperCase();
   const cached = _billersCache.get(cat);
   if (cached && cached.expiresAtMs > now()) return cached.data;
 
@@ -175,136 +168,105 @@ async function listBillers(category = 'ELECTRICITY') {
 }
 
 /**
- * Biller Products
- * ✅ Monnify Support confirmed your tenant should use:
- *   GET /api/v1/vas/bills-payment/biller-products
- *
- * We optionally filter by category_code if supported (harmless if ignored).
+ * ✅ Monnify-supported endpoint (per support):
+ * GET /api/v1/vas/bills-payment/biller-products?biller_code=biller-phedc-pre
  */
-async function listBillerProducts(category = 'ELECTRICITY') {
-  const cat = upper(category || 'ELECTRICITY');
+async function listBillerProducts(billerCode) {
+  const bc = safeStr(billerCode);
+  if (!bc) throw new Error('billerCode is required');
 
-  const cached = _billerProductsCache.get(cat);
+  const cached = _billerProductsCache.get(bc);
   if (cached && cached.expiresAtMs > now()) return cached.data;
 
   const token = await getAccessToken();
 
-  // Try a couple safe variants (tenants differ)
-  const candidates = [
-    `${BASE_URL}/api/v1/vas/bills-payment/biller-products?category_code=${encodeURIComponent(cat)}`,
-    `${BASE_URL}/api/v1/vas/bills-payment/biller-products?categoryCode=${encodeURIComponent(cat)}`,
-    `${BASE_URL}/api/v1/vas/bills-payment/biller-products`,
-  ];
+  const url = `${BASE_URL}/api/v1/vas/bills-payment/biller-products?biller_code=${encodeURIComponent(bc)}`;
+  const resp = await httpGet(url, monnifyAuthHeaderBearer(token), HTTP_TIMEOUT);
 
-  let lastErr = null;
-
-  for (const url of candidates) {
-    const resp = await httpGet(url, monnifyAuthHeaderBearer(token), HTTP_TIMEOUT);
-    const body = resp?.data;
-
-    if (resp.status === 404) {
-      lastErr = new Error('biller-products endpoint not found on this base URL');
-      continue;
-    }
-
-    if (!body?.requestSuccessful) {
-      lastErr = new Error(body?.responseMessage || 'Failed to fetch biller products');
-      continue;
-    }
-
-    const list = Array.isArray(body?.responseBody)
-      ? body.responseBody
-      : Array.isArray(body?.responseBody?.content)
-      ? body.responseBody.content
-      : Array.isArray(body?.responseBody?.products)
-      ? body.responseBody.products
-      : Array.isArray(body?.responseBody?.billerProducts)
-      ? body.responseBody.billerProducts
-      : [];
-
-    _billerProductsCache.set(cat, { expiresAtMs: now() + BILLER_PRODUCTS_TTL_MS, data: list });
-    return list;
+  const body = resp?.data;
+  if (!body?.requestSuccessful) {
+    throw new Error(body?.responseMessage || 'Failed to fetch biller products');
   }
 
-  throw lastErr || new Error('Unable to load biller products from Monnify');
+  const content =
+    Array.isArray(body?.responseBody?.content) ? body.responseBody.content : [];
+
+  _billerProductsCache.set(bc, { expiresAtMs: now() + BILLER_PRODUCTS_TTL_MS, data: content });
+  return content;
 }
 
 /**
- * Resolve (billerCode, productCode) from either:
- * - discoCode = biller-ekedc-pre/post (preferred from UI)
- * - legacy provider codes like eko_electric_prepaid (fallback)
+ * Resolve input code into { billerCode, productCode }.
+ * Supports:
+ *  - Monnify biller codes: biller-ekedc-pre (preferred)
+ *  - Legacy/internal codes: eko_electric_prepaid (fallback)
  */
-async function resolveBillerAndProduct(discoCode, meterType = 'prepaid') {
-  const disco = safeStr(discoCode);
+async function resolveBillerAndProduct(inputCode, meterType) {
+  const raw = safeStr(inputCode);
   const mt = safeStr(meterType || '');
-  const cacheKey = `${disco}|${lower(mt)}`;
 
-  const cached = _resolvedCache.get(cacheKey);
+  const cacheKey = `${raw}|${mt.toLowerCase()}`;
+  const cached = _resolvedProductCache.get(cacheKey);
   if (cached && cached.expiresAtMs > now()) return cached;
 
-  // 1) If UI passes biller-* code, that is already the billerCode
   let billerCode = null;
-  const discoLower = lower(disco);
 
-  if (discoLower.startsWith('biller-')) {
-    billerCode = disco;
+  // Case A: already a Monnify biller code (Flutter sends this)
+  if (isBillerCode(raw)) {
+    billerCode = raw;
   } else {
-    // 2) Legacy fallback: find biller by keyword in billers list
-    const keyword = extractDiscoKeyword(disco);
-    if (!keyword) throw new Error(`Cannot resolve discoCode: ${disco}`);
+    // Case B: legacy/internal string — find matching biller
+    const keyword = extractDiscoKeyword(raw);
+    if (!keyword) throw new Error(`Cannot resolve providerCode: ${raw}`);
 
     const billers = await listBillers('ELECTRICITY');
-    const biller = billers.find((b) => {
-      const name = lower(getBillerName(b));
-      const code = lower(getBillerCode(b));
+    const matchedBiller = billers.find((b) => {
+      const name = getBillerName(b).toLowerCase();
+      const code = getBillerCode(b).toLowerCase();
       return name.includes(keyword) || code.includes(keyword);
     });
 
-    if (!biller) {
-      throw new Error(`No biller found for ${disco}`);
+    if (!matchedBiller) {
+      throw new Error(`No biller found for ${raw}`);
     }
 
-    billerCode = getBillerCode(biller);
+    billerCode = getBillerCode(matchedBiller);
   }
 
-  if (!billerCode) throw new Error(`Unable to resolve billerCode for ${disco}`);
+  if (!billerCode) throw new Error('Unable to resolve billerCode');
 
-  // 3) Find productCode using biller-products (tenant-supported)
-  const products = await listBillerProducts('ELECTRICITY');
-
-  const matching = products.filter((p) => lower(getBPBillerCode(p)) === lower(billerCode));
-  if (!matching.length) {
+  // Fetch biller-products for that billerCode (Monnify support endpoint)
+  const products = await listBillerProducts(billerCode);
+  if (!products.length) {
     throw new Error('Biller product not supported');
   }
 
-  const wantPre = isPrepaid(mt) || isPrepaid(disco);
-  const wantPost = isPostpaid(mt) || isPostpaid(disco);
+  // Choose product by prepaid/postpaid hint (if there are multiple)
+  const pick = products.find((p) => {
+    const name = getProductName(p).toLowerCase();
+    const code = getProductCode(p).toLowerCase();
 
-  const chosen =
-    matching.find((p) => {
-      const n = lower(getBPProductName(p));
-      const c = upper(getBPProductCode(p));
-      if (!c) return false;
-      if (wantPre) return n.includes('prepaid') || c.includes('PREPAID') || lower(c).includes('pre');
-      if (wantPost) return n.includes('postpaid') || c.includes('POSTPAID') || lower(c).includes('post');
-      return true;
-    }) || matching[0];
+    if (isPrepaid(mt) || isPrepaid(raw)) return name.includes('prepaid') || code.includes('pre');
+    if (isPostpaid(mt) || isPostpaid(raw)) return name.includes('postpaid') || code.includes('post');
+    return true;
+  }) || products[0];
 
-  const productCode = getBPProductCode(chosen);
-  if (!productCode) throw new Error('Biller product not supported');
+  const productCode = getProductCode(pick);
+  if (!productCode) throw new Error('Unable to resolve productCode');
 
-  const resolved = { billerCode, productCode, expiresAtMs: now() + RESOLVE_TTL_MS };
-  _resolvedCache.set(cacheKey, resolved);
+  const resolved = { billerCode, productCode };
+  _resolvedProductCache.set(cacheKey, { ...resolved, expiresAtMs: now() + RESOLVE_TTL_MS });
   return resolved;
 }
 
 /**
  * Validate Meter
- * Monnify workflow: validate customer needs productCode + customerId. :contentReference[oaicite:2]{index=2}
+ * Uses Monnify validate-customer with billerCode + productCode
  */
-async function validateMeter(meterNumber, discoCode, meterType = 'prepaid') {
+async function validateMeter(meterNumber, discoOrBillerCode, meterType = 'prepaid') {
   const meter = safeStr(meterNumber);
-  const disco = safeStr(discoCode);
+  const disco = safeStr(discoOrBillerCode);
+  const mt = safeStr(meterType || 'prepaid');
 
   if (!meter || !disco) {
     throw new HttpError(400, 'meterNumber and discoCode are required');
@@ -312,18 +274,17 @@ async function validateMeter(meterNumber, discoCode, meterType = 'prepaid') {
 
   const token = await getAccessToken();
 
-  const { billerCode, productCode } = await resolveBillerAndProduct(disco, meterType);
+  const { billerCode, productCode } = await resolveBillerAndProduct(disco, mt);
 
   const resp = await httpPost(
     `${BASE_URL}/api/v1/vas/bills-payment/validate-customer`,
     {
-      // Some tenants require billerCode; include it (safe even if ignored)
       billerCode,
       productCode,
+      customerIdentifier: meter, // key Monnify typically expects
+      // keep compatibility fields (harmless if ignored)
       customerId: meter,
-      // keep compatibility keys (harmless if ignored)
       customerKey: meter,
-      customerIdentifier: meter,
     },
     monnifyAuthHeaderBearer(token),
     HTTP_TIMEOUT
@@ -334,26 +295,23 @@ async function validateMeter(meterNumber, discoCode, meterType = 'prepaid') {
     throw new HttpError(400, body?.responseMessage || 'Meter validation failed');
   }
 
-  const data = body?.responseBody || {};
-  const vendInstruction = data?.vendInstruction || null;
+  const rb = body?.responseBody || {};
 
   return {
     isValid: true,
-    name: data?.name || data?.customerName || 'Customer',
-    address: data?.address || null,
+    name: rb?.name || rb?.customerName || 'Customer',
+    address: rb?.address || null,
     meterNumber: meter,
-    discoCode: disco, // keep original (biller-* or legacy)
     billerCode,
     productCode,
-    validationReference: data?.validationReference || null,
-    vendInstruction,
-    raw: data,
+    validationReference: rb?.validationReference || null,
+    raw: rb,
   };
 }
 
 /**
  * Create Pending Order
- * Store resolved billerCode/productCode so vend step is deterministic.
+ * Stores resolved billerCode + productCode so vend does NOT guess later.
  */
 async function createPendingOrder(payload) {
   if (!payload?.userId) throw new HttpError(401, 'User required');
@@ -367,7 +325,7 @@ async function createPendingOrder(payload) {
   if (!discoCode) throw new HttpError(400, 'discoCode is required');
   if (!Number.isFinite(amount) || amount <= 0) throw new HttpError(400, 'amount is invalid');
 
-  const resolved = await resolveBillerAndProduct(discoCode, mt);
+  const { billerCode, productCode } = await resolveBillerAndProduct(discoCode, mt);
 
   return orderService.placeOrder({
     user: { id: payload.userId },
@@ -382,11 +340,10 @@ async function createPendingOrder(payload) {
         meterNumber,
         meterType: mt,
         phone: payload.phone,
-        // ✅ store deterministic values for vend
-        billerCode: resolved.billerCode,
-        productCode: resolved.productCode,
-        // keep original for traceability
-        discoCode,
+        billerCode,
+        productCode,
+        // keep original input for traceability
+        providerCode: discoCode,
         validationReference: payload.validationReference,
         meterName: payload.meterName,
       },
@@ -394,30 +351,8 @@ async function createPendingOrder(payload) {
   });
 }
 
-async function listAllBillerProducts() {
-  const token = await getAccessToken();
-  const resp = await httpGet(
-    `${BASE_URL}/api/v1/vas/bills-payment/biller-products`,
-    monnifyAuthHeaderBearer(token),
-    HTTP_TIMEOUT
-  );
-
-  if (!resp?.data?.requestSuccessful) {
-    throw new Error(resp?.data?.responseMessage || 'Failed to fetch biller products');
-  }
-
-  logger.info(
-    '[MONNIFY][BILLER_PRODUCTS]',
-    JSON.stringify(resp.data.responseBody, null, 2)
-  );
-
-  return resp.data.responseBody;
-}
-
 /**
  * Vend Power (Webhook-triggered)
- * Monnify workflow: vend requires productCode, customerId, vendAmount, vendReference,
- * and validationReference only if required. :contentReference[oaicite:3]{index=3}
  */
 async function vendPower(orderId) {
   const oid = safeStr(orderId);
@@ -429,16 +364,18 @@ async function vendPower(orderId) {
   const meta = order.metadata || {};
   const existingToken = meta?.token;
 
+  // Idempotency
   if (existingToken) return { success: true, token: existingToken, cached: true };
 
   const token = await getAccessToken();
   const vendReference = `${Date.now()}-${uuidv4().slice(0, 6)}`;
 
-  const billerCode = safeStr(meta.billerCode);
   const productCode = safeStr(meta.productCode);
+  const billerCode = safeStr(meta.billerCode);
   const meterNumber = safeStr(meta.meterNumber);
   const validationReference = safeStr(meta.validationReference);
 
+  if (!billerCode) throw new Error('Missing billerCode on order metadata');
   if (!productCode) throw new Error('Missing productCode on order metadata');
   if (!meterNumber) throw new Error('Missing meterNumber on order metadata');
 
@@ -446,18 +383,16 @@ async function vendPower(orderId) {
   if (!Number.isFinite(vendAmount) || vendAmount <= 0) throw new Error('Invalid vend amount');
 
   const vendPayload = {
-    // include billerCode if present (safe)
-    ...(billerCode ? { billerCode } : {}),
+    billerCode,
     productCode,
-    customerId: meterNumber,
-    // compatibility keys
-    customerKey: meterNumber,
     customerIdentifier: meterNumber,
+    // compatibility fields
+    customerId: meterNumber,
+    customerKey: meterNumber,
     vendAmount,
     vendReference,
   };
 
-  // only send validationReference if present
   if (validationReference) vendPayload.validationReference = validationReference;
 
   const resp = await httpPost(
@@ -518,15 +453,14 @@ async function vendPower(orderId) {
  * Public APIs
  */
 const getElectricityBillers = (category) => listBillers(category);
-
-async function retryVending(orderId) {
-  return vendPower(orderId);
-}
+const getBillerProducts = (billerCode) => listBillerProducts(billerCode);
+const retryVending = (orderId) => vendPower(orderId);
 
 module.exports = {
   validateMeter,
   createPendingOrder,
   vendPower,
   getElectricityBillers,
+  getBillerProducts,
   retryVending,
 };

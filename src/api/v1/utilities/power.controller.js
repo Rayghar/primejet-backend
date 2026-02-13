@@ -2,30 +2,20 @@
 const powerService = require('./power.service');
 
 /**
- * Monnify Billers return codes like: biller-ekedc-pre / biller-ekedc-post.
- * Keep this helper for backward-compatibility (and for any legacy provider codes),
- * but DO NOT force-normalize biller-* codes during validation anymore.
+ * IMPORTANT:
+ * Flutter sends Monnify biller codes like: biller-ekedc-pre / biller-ekedc-post
+ * Do NOT convert those to legacy internal codes anymore.
+ * We will resolve productCode in power.service.js using /biller-products endpoint.
  */
 const resolveProviderCode = (providerCode) => {
   if (!providerCode) return providerCode;
-  const c = providerCode.toString().trim().toLowerCase();
-  if (!c.startsWith('biller-')) return providerCode;
+  const c = providerCode.toString().trim();
 
-  const isPostpaid = c.endsWith('-post');
-  const typeSuffix = isPostpaid ? 'postpaid' : 'prepaid';
+  // ✅ If it is already a Monnify biller code, keep it as-is
+  if (c.toLowerCase().startsWith('biller-')) return c;
 
-  let base = null;
-  if (c.includes('ekedc')) base = 'eko_electric';
-  else if (c.includes('ikedc')) base = 'ikeja_electric';
-  else if (c.includes('ibedc')) base = 'ibadan_electric';
-  else if (c.includes('phedc')) base = 'portharcourt_electric';
-  else if (c.includes('aedc')) base = 'abuja_electric';
-  else if (c.includes('eedc')) base = 'enugu_electric';
-  else if (c.includes('jedc')) base = 'jos_electric';
-  else if (c.includes('kedc') || c.includes('kedco')) base = 'kano_electric';
-
-  if (!base) return providerCode;
-  return `${base}_${typeSuffix}`;
+  // Otherwise, return as-is (legacy/internal codes still supported by service)
+  return c;
 };
 
 const getBillers = async (req, res) => {
@@ -53,11 +43,9 @@ const validateMeter = async (req, res) => {
       return res.status(400).json({ error: 'Missing meterNumber or discoCode' });
     }
 
-    // ✅ IMPORTANT:
-    // - If Flutter sends biller-ekedc-pre/post, we keep it.
-    // - If caller sends legacy provider code, service can still resolve it.
-    const result = await powerService.validateMeter(meterNumber, discoCode, meterType);
+    const normalizedDisco = resolveProviderCode(discoCode);
 
+    const result = await powerService.validateMeter(meterNumber, normalizedDisco, meterType);
     return res.status(200).json({ success: true, data: result });
   } catch (error) {
     console.error('[Power Controller] Validate meter error:', error.message);
@@ -69,14 +57,15 @@ const createOrder = async (req, res) => {
   try {
     const { meterNumber, discoCode, amount, phone, meterName, meterType } = req.body;
 
-    if (!meterNumber || !discoCode || !amount || !phone) {
+    const normalizedDisco = resolveProviderCode(discoCode);
+
+    if (!meterNumber || !normalizedDisco || !amount || !phone) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
     const result = await powerService.createPendingOrder({
       meterNumber,
-      // Keep the raw discoCode (biller-* or legacy). Service resolves to productCode.
-      discoCode,
+      discoCode: normalizedDisco,
       amount,
       phone,
       meterName,

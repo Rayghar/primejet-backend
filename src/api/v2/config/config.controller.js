@@ -23,6 +23,13 @@ const getConfiguration = async (req, res, next) => {
           baseDeliveryFee: 500,
           expressDeliverySurcharge: 200,
         },
+        financialSettings: {
+          vatPercentage: 7.5,
+          companyIncomeTaxPercentage: 30,
+          withholdingTaxPercentage: 0,
+          applyCompanyIncomeTaxProvision: true,
+          showDscrWhenNoDebt: false,
+        },
         routingSettings: {
           maxPickupWindowMinutes: 60,
           maxBatchWeightKg: 500,

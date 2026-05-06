@@ -1,6 +1,7 @@
 // File: src/models/user.model.js
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
+const { ROLE_OPTIONS, BRANCH_SCOPE_OPTIONS } = require('../config/rolePermissions');
 
 const userSchema = new mongoose.Schema(
   {
@@ -71,9 +72,45 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ['customer', 'driver', 'admin'],
+      enum: ROLE_OPTIONS,
       required: [true, 'User role is required.'],
       default: 'customer',
+      index: true,
+    },
+    permissions: {
+      type: [String],
+      default: [],
+    },
+    permissionOverrides: {
+      add: { type: [String], default: [] },
+      remove: { type: [String], default: [] },
+    },
+    branchScope: {
+      type: String,
+      enum: BRANCH_SCOPE_OPTIONS,
+      default: 'all',
+      index: true,
+    },
+    allowedBranches: {
+      type: [{
+        branchId: { type: String, trim: true },
+        branchCode: { type: String, trim: true },
+        branchKey: { type: String, trim: true },
+        branchName: { type: String, trim: true },
+      }],
+      default: [],
+    },
+    mustChangePassword: {
+      type: Boolean,
+      default: false,
+    },
+    accessNotes: {
+      type: String,
+      trim: true,
+      maxlength: 500,
+    },
+    lastAccessReviewAt: {
+      type: Date,
     },
     status: {
       type: String,
@@ -184,8 +221,8 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
-const User = mongoose.model('User', userSchema);
 userSchema.index({ currentLocation: '2dsphere' });
-module.exports = mongoose.model('User', userSchema);
+
+const User = mongoose.models.User || mongoose.model('User', userSchema);
 
 module.exports = User;

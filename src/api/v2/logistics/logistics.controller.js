@@ -1,96 +1,165 @@
 // src/api/v2/logistics/logistics.controller.js
 const mongoose = require('mongoose');
 const Order = require('../../../models/order.model');
-const User = require('../../../models/user.model'); // For driver info
-const Van = require('../../../models/van.model'); // Assuming a Van model
-const Run = require('../../../models/run.model'); // Assuming a Run model
+const User = require('../../../models/user.model');
+const Van = require('../../../models/van.model');
+const Run = require('../../../models/run.model');
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
+const { getOrderCoordinates, estimateOrderLoadKg, deriveCapacityStatus } = require('../runs/run.service');
+
+// helper for lenient payment checks
+const normalize = (v) => String(v || '').trim().toLowerCase();
+const isUnassignablePaymentStatus = (paymentStatus) => {
+  const s = normalize(paymentStatus);
+  return [
+    'pending',
+    'processing (gateway)',
+    'processing',
+    'verifying',
+    'verifying payment',
+    'awaiting payment',
+    'unpaid',
+    'failed',
+  ].includes(s);
+};
 
 /**
  * @desc Assigns an unassigned order to a specific van and creates a new run.
- * This logic mirrors `adminAssignDriver` from v1 order service and `assignOrderToVan` from v1 run service.
- * @param {object} req - Express request object.
- * @param {object} res - Express response object.
- * @param {function} next - Express next middleware function.
  */
 const assignOrderToVan = async (req, res, next) => {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    try {
-        const { orderId, vanId } = req.body;
-        const adminId = req.user.id;
-        const adminEmail = req.user.email;
+  const session = await mongoose.startSession();
 
-        // 1. Fetch Order and Van
-        const order = await Order.findOne({ id: orderId, status: { $in: ['Order Placed', 'Pending Pickup', 'Ready for Delivery'] } }).session(session);
-        if (!order) {
-            throw new HttpError(404, 'Order not found or not in a state to be assigned.');
-        }
-        if (order.driverId) {
-            throw new HttpError(400, `Order ${orderId} is already assigned to a driver.`);
-        }
+  try {
+    await session.withTransaction(async () => {
+      const { orderId, vanId } = req.body;
 
-        const van = await Van.findOne({ id: vanId, status: 'Idle' }).session(session);
-        if (!van) {
-            throw new HttpError(404, 'Van not found or not available.');
-        }
+      if (!orderId || !vanId) {
+        throw new HttpError(400, 'orderId and vanId are required.');
+      }
 
-        const driver = await User.findOne({ id: van.driverId, role: 'driver' }).session(session);
-        if (!driver) {
-            throw new HttpError(404, `Driver associated with Van ${van.vanNumber} not found.`);
-        }
+      const adminId = req.user?.id;
+      const adminEmail = req.user?.email || 'admin';
 
-        // 2. Update Order Status and Assign Driver
-        order.driverId = van.driverId;
-        order.status = 'Driver Assigned';
-        order.statusHistory.push({
-            status: 'Driver Assigned',
-            timestamp: new Date(),
-            notes: `Assigned to driver ${driver.name} (Van ${van.vanNumber}) by ${adminEmail}.`,
-            updatedBy: adminId,
-            updaterRole: 'admin'
-        });
-        await order.save({ session });
+      // 1) Fetch Order (eligibility + lock in txn)
+      const order = await Order.findOne({
+        id: orderId,
+        status: { $nin: ['Delivered', 'Canceled', 'Cancelled', 'Failed'] },
+      }).session(session);
 
-        // 3. Update Van Status
-        van.status = 'On Delivery';
-        van.currentOrderId = orderId; // Link van to the order it's delivering
-        await van.save({ session });
+      if (!order) {
+        throw new HttpError(404, 'Order not found or not eligible for assignment.');
+      }
 
-        // 4. Create a new Run document for this assignment
-        const newRun = new Run({
-            id: new mongoose.Types.ObjectId().toString(),
-            driverId: van.driverId,
-            overallStatus: 'Assigned',
-            stops: [{
-                stopId: new mongoose.Types.ObjectId().toString(),
-                orderId: order.id,
-                sequence: 1, // First stop in this run
-                status: 'Pending',
-                latitude: order.deliveryLatitude,
-                longitude: order.deliveryLongitude,
-            }],
-            totalStops: 1,
-            notes: `Run created for Order #${order.id.substring(0, 8)} assigned to Van ${van.vanNumber}.`,
-            estimatedStartDate: new Date(), // Set to now or a planned time
-        });
-        await newRun.save({ session });
+      if (order.driverId) {
+        throw new HttpError(400, `Order ${orderId} is already assigned to a driver.`);
+      }
 
-        logger.info(`Order ${orderId} assigned to Van ${van.vanNumber} (Driver: ${driver.name}). New Run ID: ${newRun.id}`);
+      if (isUnassignablePaymentStatus(order.paymentStatus)) {
+        throw new HttpError(400, `Order ${orderId} is not eligible for assignment until payment is confirmed.`);
+      }
 
-        await session.commitTransaction();
-        res.status(200).json({ message: `Order ${orderId} assigned successfully to Van ${van.vanNumber}.` });
+      // Prevent duplicate active runs for same order
+      const existingRun = await Run.findOne({
+        'stops.orderId': orderId,
+        overallStatus: { $nin: ['Completed', 'Cancelled', 'Canceled'] },
+      }).session(session);
 
-    } catch (error) {
-        await session.abortTransaction();
-        logger.error('Error assigning order to van:', error);
-        next(new HttpError(500, error.message || 'Failed to assign order to van.'));
-    } finally {
-        session.endSession();
+      if (existingRun) {
+        throw new HttpError(400, `Order ${orderId} already has an active run.`);
+      }
+
+      // 2) Fetch Van (must be idle)
+      const van = await Van.findOne({ id: vanId, status: 'Idle' }).session(session);
+      if (!van) {
+        throw new HttpError(404, 'Van not found or not available.');
+      }
+
+      // 3) Fetch driver for that van
+      if (!van.driverId) {
+        throw new HttpError(400, `Van ${van.vanNumber || vanId} has no driver assigned.`);
+      }
+
+      const driver = await User.findOne({ id: van.driverId, role: 'driver' }).session(session);
+      if (!driver) {
+        throw new HttpError(404, `Driver associated with Van ${van.vanNumber || vanId} not found.`);
+      }
+
+      // 4) Update Order: assign driver + status history
+      order.driverId = van.driverId;
+      order.status = 'Driver Assigned';
+
+      if (!Array.isArray(order.statusHistory)) order.statusHistory = [];
+      order.statusHistory.push({
+        status: 'Driver Assigned',
+        timestamp: new Date(),
+        notes: `Assigned to driver ${driver.name || driver.email || van.driverId} (Van ${van.vanNumber || vanId}) by ${adminEmail}.`,
+        updatedBy: adminId,
+        updaterRole: 'admin',
+      });
+
+      await order.save({ session });
+
+      // 5) Update Van status
+      van.status = 'On Delivery';
+      van.currentOrderId = orderId;
+      await van.save({ session });
+
+      // 6) Create Run
+      const newRun = new Run({
+        id: new mongoose.Types.ObjectId().toString(),
+        driverId: van.driverId,
+        vanId: van.id,
+        overallStatus: 'Assigned',
+        estimatedLoadKg: estimateOrderLoadKg(order),
+        capacityKg: Number(van.capacityKg || van.loadCapacityKg || van.capacity || 0),
+        capacityStatus: deriveCapacityStatus(estimateOrderLoadKg(order), Number(van.capacityKg || van.loadCapacityKg || van.capacity || 0)).capacityStatus,
+        capacityUtilizationPct: deriveCapacityStatus(estimateOrderLoadKg(order), Number(van.capacityKg || van.loadCapacityKg || van.capacity || 0)).capacityUtilizationPct,
+        capacityVarianceKg: deriveCapacityStatus(estimateOrderLoadKg(order), Number(van.capacityKg || van.loadCapacityKg || van.capacity || 0)).capacityVarianceKg,
+        stops: [
+          {
+            stopId: new mongoose.Types.ObjectId().toString(),
+            orderId: order.id,
+            sequence: 1,
+            status: 'Pending',
+            latitude: getOrderCoordinates(order).latitude,
+            longitude: getOrderCoordinates(order).longitude,
+            coordinateSource: getOrderCoordinates(order).source,
+            estimatedLoadKg: estimateOrderLoadKg(order),
+          },
+        ],
+        totalStops: 1,
+        notes: `Run created for Order #${String(order.id).substring(0, 8)} assigned to Van ${van.vanNumber || vanId}.`,
+        estimatedStartDate: new Date(),
+      });
+
+      await newRun.save({ session });
+
+      van.currentRunId = newRun.id;
+      await van.save({ session });
+
+      logger.info(
+        `Order ${orderId} assigned to Van ${van.vanNumber || vanId} (Driver: ${driver.name || driver.email}). New Run ID: ${newRun.id}`
+      );
+
+      res.status(200).json({
+        message: `Order ${orderId} assigned successfully to Van ${van.vanNumber || vanId}.`,
+        runId: newRun.id,
+      });
+    });
+  } catch (error) {
+    if (error instanceof HttpError) {
+      logger.warn(`[LOGISTICS] ${error.statusCode} - ${error.message}`);
+      return next(error);
     }
+
+    logger.error('Error assigning order to van:', error);
+    return next(new HttpError(500, error.message || 'Failed to assign order to van.'));
+  } finally {
+    session.endSession();
+  }
 };
 
 module.exports = {
-    assignOrderToVan,
+  assignOrderToVan,
 };

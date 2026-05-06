@@ -50,6 +50,22 @@ const vanSchema = new mongoose.Schema(
       maxlength: [100, 'Destination cannot exceed 100 characters.'],
       sparse: true,
     },
+    currentRunId: {
+      type: String,
+      trim: true,
+      sparse: true,
+      index: true,
+    },
+    capacityKg: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    loadCapacityKg: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     // Optional: vehicle details (make, model, license plate), capacity, etc.
   },
   {

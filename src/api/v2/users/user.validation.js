@@ -1,5 +1,6 @@
 // File: src/api/v1/users/user.validation.js
 const Joi = require('joi');
+const { ROLE_OPTIONS, BRANCH_SCOPE_OPTIONS } = require('../../../config/rolePermissions');
 
 const passwordPattern = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
 const nameRegex = /^[a-zA-Z\s]{2,50}$/;
@@ -31,8 +32,8 @@ const createUserSchema = Joi.object({
       'string.pattern.base': 'Password must be at least 8 characters long, contain at least one uppercase letter, one lowercase letter, one number, and one special character.',
       'any.required': 'Password is a required field.',
     }),
-  role: Joi.string().valid('customer', 'driver', 'admin').optional().messages({
-    'any.only': 'Role must be one of "customer", "driver", or "admin".',
+  role: Joi.string().valid(...ROLE_OPTIONS).optional().messages({
+    'any.only': `Role must be one of: ${ROLE_OPTIONS.join(', ')}.`,
   }),
   // Driver specific fields (optional for initial creation)
   vehicleModel: Joi.string().trim().max(50).optional().allow(''),
@@ -78,11 +79,31 @@ const adminCreateUserSchema = Joi.object({
     'string.pattern.base': 'Name must contain only letters and spaces, and be 2-50 characters long.',
   }),
   email: Joi.string().email().max(254).required(),
-  phone: Joi.string().pattern(phoneRegex).required().messages({
+  phone: Joi.string().pattern(phoneRegex).optional().allow('').messages({
     'string.pattern.base': 'Phone number must be a valid format (e.g., +2348012345678).',
   }),
   password: Joi.string().min(6).required(),
-  role: Joi.string().valid('customer', 'driver', 'admin').required(),
+  role: Joi.string().valid(...ROLE_OPTIONS).required(),
+  branchScope: Joi.string().valid(...BRANCH_SCOPE_OPTIONS).optional(),
+  allowedBranches: Joi.array().items(Joi.object({
+    branchId: Joi.string().allow('', null),
+    branchCode: Joi.string().allow('', null),
+    branchKey: Joi.string().allow('', null),
+    branchName: Joi.string().allow('', null),
+    id: Joi.string().allow('', null),
+    name: Joi.string().allow('', null),
+    label: Joi.string().allow('', null),
+    code: Joi.string().allow('', null),
+    key: Joi.string().allow('', null),
+  }).unknown(true), Joi.string()).optional(),
+  permissions: Joi.array().items(Joi.string()).optional(),
+  permissionOverrides: Joi.object({
+    add: Joi.array().items(Joi.string()).optional(),
+    remove: Joi.array().items(Joi.string()).optional(),
+  }).optional(),
+  mustChangePassword: Joi.boolean().optional(),
+  accessNotes: Joi.string().max(500).allow('', null).optional(),
+  status: Joi.string().valid('active', 'inactive', 'suspended').optional(),
 });
 
 const adminUpdateUserSchema = Joi.object({
@@ -94,7 +115,7 @@ const adminUpdateUserSchema = Joi.object({
     'string.pattern.base': 'Phone number must be a valid format (e.g., +2348012345678).',
   }),
   password: Joi.string().min(6).optional(), // For resetting/changing user's password by admin
-  role: Joi.string().valid('customer', 'driver', 'admin').optional(),
+  role: Joi.string().valid(...ROLE_OPTIONS).optional(),
   walletBalance: Joi.number().min(0).optional(),
   status: Joi.string().valid('active', 'inactive', 'suspended').optional(),
   isAvailableOnline: Joi.boolean().optional(), // For drivers
@@ -103,7 +124,39 @@ const adminUpdateUserSchema = Joi.object({
     accountNumber: Joi.string().allow('', null),
     accountName: Joi.string().allow('', null),
   }).optional(),
+  branchScope: Joi.string().valid(...BRANCH_SCOPE_OPTIONS).optional(),
+  allowedBranches: Joi.array().items(Joi.object({
+    branchId: Joi.string().allow('', null),
+    branchCode: Joi.string().allow('', null),
+    branchKey: Joi.string().allow('', null),
+    branchName: Joi.string().allow('', null),
+    id: Joi.string().allow('', null),
+    name: Joi.string().allow('', null),
+    label: Joi.string().allow('', null),
+    code: Joi.string().allow('', null),
+    key: Joi.string().allow('', null),
+  }).unknown(true), Joi.string()).optional(),
+  permissions: Joi.array().items(Joi.string()).optional(),
+  permissionOverrides: Joi.object({
+    add: Joi.array().items(Joi.string()).optional(),
+    remove: Joi.array().items(Joi.string()).optional(),
+  }).optional(),
+  mustChangePassword: Joi.boolean().optional(),
+  accessNotes: Joi.string().max(500).allow('', null).optional(),
 }).min(1); // Require at least one field to update
+
+
+const userIdParamSchema = Joi.object({
+  userId: Joi.string().trim().min(3).max(100).required(),
+});
+
+const driverIdParamSchema = Joi.object({
+  driverId: Joi.string().trim().min(3).max(100).required(),
+});
+
+const adminUpdateUserRoleSchema = Joi.object({
+  role: Joi.string().valid(...ROLE_OPTIONS).required(),
+});
 
 const adminUpdateUserStatusSchema = Joi.object({
   status: Joi.string().valid('active', 'inactive', 'suspended').required(),
@@ -125,6 +178,9 @@ module.exports = {
   updateNotificationPreferencesSchema,
   adminCreateUserSchema,
   adminUpdateUserSchema,
+  adminUpdateUserRoleSchema,
+  userIdParamSchema,
+  driverIdParamSchema,
   adminUpdateUserStatusSchema,
   updateDriverAvailabilitySchema,
   getDriverStatsSchema,

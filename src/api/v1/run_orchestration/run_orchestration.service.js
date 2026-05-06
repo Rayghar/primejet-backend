@@ -6,6 +6,7 @@ const Run = require('../../../models/run.model');
 const User = require('../../../models/user.model');
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config.js');
+const { getOrderCoordinates, estimateOrderLoadKg } = require('../runs/run.service');
 
 /**
  * Assigns a single order to an existing or new run for a specific driver.
@@ -58,8 +59,10 @@ const assignOrderToDriverRun = async (orderId, driverIdToAssign, adminPerforming
       orderId: order.id,
       sequence: run.stops.length + 1, // Simple sequence for now (can be optimized later)
       status: 'Pending', // Stop status within the run
-      latitude: order.deliveryLatitude,
-      longitude: order.longitude, // Corrected from order.deliveryLongitude as per previous analysis
+      latitude: getOrderCoordinates(order).latitude,
+      longitude: getOrderCoordinates(order).longitude,
+      coordinateSource: getOrderCoordinates(order).source,
+      estimatedLoadKg: estimateOrderLoadKg(order)
     });
     run.totalStops = run.stops.length;
 
@@ -113,8 +116,10 @@ const createBatchRun = async (orderIds, adminId, session) => {
       orderId: order.id,
       sequence: index + 1, // Simple sequence for now
       status: 'Pending',
-      latitude: order.deliveryLatitude,
-      longitude: order.longitude,
+      latitude: getOrderCoordinates(order).latitude,
+      longitude: getOrderCoordinates(order).longitude,
+      coordinateSource: getOrderCoordinates(order).source,
+      estimatedLoadKg: estimateOrderLoadKg(order),
     }));
 
     const newRun = new Run({
@@ -122,6 +127,7 @@ const createBatchRun = async (orderIds, adminId, session) => {
       overallStatus: 'Pending', // Pending driver assignment
       stops: stops,
       totalStops: stops.length,
+      estimatedLoadKg: stops.reduce((sum, stop) => sum + (Number(stop.estimatedLoadKg) || 0), 0),
       notes: `Run created by admin ${adminId} with ${stops.length} stops.`,
     });
 

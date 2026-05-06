@@ -8,89 +8,37 @@ const {
   paginationSchema,
   updateStopStatusSchema,
   createBatchRunSchema,
-  
 } = require('./run.validation');
-const runOrchestrationController = require('../run_orchestration/run_orchestration.controller'); 
 
 const router = express.Router();
 
 console.log('[RUN_ROUTES] Registering run/batch routes...');
 
+// -----------------------------------------------------------------------------
+// IMPORTANT ROUTE ORDER
+// -----------------------------------------------------------------------------
+// Specific /admin and /driver routes must come before generic /:runId routes.
+
 // --- Admin Routes ---
-router.get(
-  '/admin/pending-batches',
-  authMiddleware('admin'),
-  runController.getPendingBatches
-);
-
-router.get(
-  '/admin/active',
-  authMiddleware('admin'),
-  runController.getActiveRuns
-);
-
-router.get(
-  '/admin/unassigned-orders',
-  authMiddleware('admin'),
-  validate(paginationSchema, 'query'),
-  runController.getUnassignedOrders
-);
-
-router.post(
-  '/admin/create-batch',
-  authMiddleware('admin'),
-  validate(createBatchRunSchema), // <-- 2. Apply the validation middleware
-  runController.createRunFromBatch 
-);
-
-router.put(
-  '/driver/runs/:runId/accept',
-  authMiddleware('driver'),
-  runController.driverAcceptRun
-);
-
-router.get('/:runId', authMiddleware(), runController.getRun);
-
-router.put(
-  '/:runId/assign-driver',
-  authMiddleware('admin'),
-  validate(reassignDriverSchema),
-  runController.assignDriverToRun
-);
+router.get('/admin/pending-batches', authMiddleware('admin'), runController.getPendingBatches);
+router.get('/admin/active', authMiddleware('admin'), runController.getActiveRuns);
+router.get('/admin/unassigned-orders', authMiddleware('admin'), runController.getUnassignedOrders);
+router.post('/admin/create-batch', authMiddleware('admin'), validate(createBatchRunSchema), runController.createRunFromBatch);
 
 // --- Driver Routes ---
-router.get(
-  '/driver/assigned-runs',
-  authMiddleware('driver'),
-  runController.getAssignedRuns
-);
+router.get('/driver/assigned-runs', authMiddleware('driver'), runController.getAssignedRuns);
+router.get('/driver/history', authMiddleware('driver'), runController.getRunHistory);
+router.put('/driver/runs/:runId/accept', authMiddleware('driver'), runController.driverAcceptRun);
+router.post('/driver/runs/:runId/accept', authMiddleware('driver'), runController.driverAcceptRun);
+router.post('/driver/runs/:runId/end', authMiddleware('driver'), runController.endRun);
+router.post('/driver/runs/:runId/stops/:stopId/update-status', authMiddleware('driver'), validate(updateStopStatusSchema), runController.driverUpdateStopStatus);
 
-// This is the correct route for updating stop status
-router.post(
-  '/driver/runs/:runId/stops/:stopId/update-status',
-  authMiddleware('driver'),
-  validate(updateStopStatusSchema),
-  runController.driverUpdateStopStatus
-);
+// --- Generic Run Routes ---
+router.put('/:runId/assign-driver', authMiddleware('admin'), validate(reassignDriverSchema), runController.assignDriverToRun);
+router.post('/:runId/end', authMiddleware('driver'), runController.endRun);
 
-// This route for fetching driver run history is now deduplicated
-router.get(
-  '/driver/history',
-  authMiddleware('driver'),
-  validate(paginationSchema, 'query'), 
-  runController.getRunHistory
-);
-
-// ======================= FIX STARTS HERE =======================
-// Add this new route to handle the "end run" action from the driver app.
-// It should be a POST or PUT request since it changes the state of the run.
-// Driver ends a run
-router.post(
-  '/:runId/end', // Use this simplified and consistent path
-  authMiddleware('driver'),
-  runController.endRun
-);
-// ======================== FIX ENDS HERE ========================
+// Keep last so /driver/... is never captured as runId.
+router.get('/:runId', authMiddleware(), runController.getRun);
 
 console.log('[RUN_ROUTES] Run/batch routes registered.');
 

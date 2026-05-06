@@ -2,6 +2,26 @@
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
 
+const postingSchema = new mongoose.Schema(
+  {
+    status: {
+      type: String,
+      enum: ['UNPOSTED', 'QUEUED', 'POSTED', 'FAILED', 'SKIPPED', 'REVERSED'],
+      default: 'UNPOSTED',
+      index: true,
+    },
+    glEntryId: { type: mongoose.Schema.Types.ObjectId, ref: 'GeneralLedgerEntry', default: null },
+    glEntryIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'GeneralLedgerEntry' }],
+    postedAt: { type: Date, default: null },
+    postedBy: { type: String, default: null },
+    attempts: { type: Number, default: 0 },
+    errorCode: { type: String, default: null },
+    errorMessage: { type: String, default: null },
+    version: { type: Number, default: 1 },
+  },
+  { _id: false }
+);
+
 const itemSchema = new mongoose.Schema(
   {
     cylinderId: { type: String, required: [true, 'Cylinder ID is required.'] },
@@ -16,8 +36,6 @@ const itemSchema = new mongoose.Schema(
       required: [true, 'Unit price is required.'],
       min: [0, 'Unit price cannot be negative.'],
     },
-    // Optionally store subtotal if you frequently need it
-    // subtotal: { type: Number, required: true }
   },
   { _id: false }
 );
@@ -27,7 +45,7 @@ const statusHistorySchema = new mongoose.Schema(
     status: { type: String, required: [true, 'Status in history is required.'] },
     timestamp: { type: Date, required: true, default: Date.now },
     notes: { type: String, trim: true },
-    updatedBy: { type: String }, // User ID (customer/driver/admin/system)
+    updatedBy: { type: String },
     updaterRole: { type: String, enum: ['customer', 'driver', 'admin', 'system'] },
   },
   { _id: false }
@@ -54,18 +72,40 @@ const orderSchema = new mongoose.Schema(
 
     customerId: { type: String, required: true, ref: 'User', index: true },
     driverId: { type: String, ref: 'User', index: true, sparse: true },
+    runId: { type: String, ref: 'Run', index: true, sparse: true },
 
     // =================================================================
-    // 🛡️ SAFE UPDATE: Type Field with Default
-    // Why this is safe: Mongoose applies 'GAS' to any doc missing this field
-    // BEFORE validation runs. Old orders automatically become 'GAS'.
+    // SAFE: Type Field with Default
     // =================================================================
     type: {
       type: String,
       enum: ['GAS', 'DELIVERY', 'POWER'],
-      default: 'GAS', 
+      default: 'GAS',
       required: true,
-      index: true 
+      index: true,
+    },
+
+    /**
+     * ✅ GL-FIRST: branch dimension (optional; non-breaking)
+     * These fields allow your posting service to resolve a branchKey.
+     * Your system may store branch as ObjectId in some collections, string in others.
+     */
+    branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Plant', index: true, required: false },
+    serviceZoneId: { type: String, index: true, required: false },
+    zoneId: { type: String, index: true, required: false },
+    plantId: { type: String, index: true, required: false },
+
+    /**
+     * ✅ GL-FIRST: optional channel marker
+     * - Do NOT make required (migration-safe)
+     * - Posting logic can treat missing as DELIVERY (legacy)
+     */
+    channel: {
+      type: String,
+      enum: ['DELIVERY', 'POS', 'POWER', 'OTHER'],
+      required: false,
+      default: undefined,
+      index: true,
     },
 
     items: [itemSchema],
@@ -101,7 +141,6 @@ const orderSchema = new mongoose.Schema(
       type: String,
       required: true,
       enum: [
-        // Kept your existing values; these align with admin flows
         'Pending Payment',
         'Awaiting Driver Arrival',
         'Verifying Payment',
@@ -113,9 +152,7 @@ const orderSchema = new mongoose.Schema(
         'Canceled',
         'Customer Unavailable',
         'Failed',
-        // --- NEW STATUS ADDED: Safe to append to Enum ---
-        'Vending Failed', 
-        // (optional) you can add 'Payment Verification Delayed' later in services without changing UI flows
+        'Vending Failed',
       ],
       default: 'Pending Payment',
       index: true,
@@ -131,7 +168,7 @@ const orderSchema = new mongoose.Schema(
 
     paymentMethod: {
       type: String,
-      enum: ['card', 'wallet', 'stripe', 'paystack', 'payOnPickup'], // includes payOnPickup
+      enum: ['card', 'wallet', 'stripe', 'paystack', 'payOnPickup'],
       default: 'paystack',
     },
 
@@ -140,49 +177,47 @@ const orderSchema = new mongoose.Schema(
     paymentGatewayReference: { type: String, trim: true, index: true, sparse: true },
     paymentTransactionId: { type: String, trim: true },
 
-    // Map-friendly fields (redundant but useful for fast geo queries if needed)
     deliveryLatitude: { type: Number, min: -90, max: 90 },
     deliveryLongitude: { type: Number, min: -180, max: 180 },
 
-    // ETA and actual times
     estimatedDeliveryTime: { type: Date },
     actualDeliveryTime: { type: Date },
 
-    // --- Enhancement-friendly (optional) operational timestamps ---
-    // These are non-breaking and allow SLA/metrics without changing existing flows
-    placedAt: { type: Date }, // when customer pressed "place order" successfully
+    placedAt: { type: Date },
     paymentVerificationStartedAt: { type: Date },
     paymentVerifiedAt: { type: Date },
     driverAssignedAt: { type: Date },
-    pickedAt: { type: Date }, // when driver picks up stock/starts route
+    pickedAt: { type: Date },
     outForDeliveryAt: { type: Date },
     firstAttemptAt: { type: Date },
     deliveredAt: { type: Date },
     canceledAt: { type: Date },
 
-    // Soft signal for monitoring delayed verification (service will set/unset)
     paymentVerificationDelayed: { type: Boolean, default: false, index: true },
     paymentLastCheckAt: { type: Date },
 
-    // =================================================================
-    // 🛡️ SAFE UPDATE: Metadata
-    // Using a Map is safe because if empty/undefined, it defaults to {}
-    // It does not enforce schema structure, preventing validation errors
-    // =================================================================
     metadata: {
       type: Map,
       of: String,
-      default: {}
+      default: {},
     },
 
-    // History & notes
     statusHistory: {
       type: [statusHistorySchema],
-      default: [], // keep your new default
+      default: [],
     },
     adminNotes: [adminNoteSchema],
 
+    /**
+     * ✅ GL-FIRST business date
+     * Posting uses orderDate first, fallback createdAt if missing.
+     */
     orderDate: { type: Date, required: true, default: Date.now, index: true },
+
+    /**
+     * ✅ GL-FIRST posting metadata (non-breaking)
+     */
+    posting: { type: postingSchema, default: () => ({}) },
   },
   {
     timestamps: true,
@@ -191,8 +226,7 @@ const orderSchema = new mongoose.Schema(
   }
 );
 
-/* -------------------- Virtual Populations (customer/driver) -------------------- */
-// The User model’s primary key is 'id' (UUID) — match on foreignField 'id'
+/* -------------------- Virtual Populations -------------------- */
 orderSchema.virtual('customer', {
   ref: 'User',
   localField: 'customerId',
@@ -207,14 +241,12 @@ orderSchema.virtual('driver', {
   justOne: true,
 });
 
-/* -------------------- UI/DTO-friendly Virtuals (safe, read-only) -------------------- */
-// Short ID for display in admin/cards
+/* -------------------- UI/DTO-friendly Virtuals -------------------- */
 orderSchema.virtual('shortId').get(function () {
   const s = this.id || '';
   return s.length > 6 ? s.slice(-6) : s;
 });
 
-// Prefer snapshot.fullAddress; fallback to concatenated bits
 orderSchema.virtual('displayAddress').get(function () {
   const snap = this.deliveryAddressSnapshot || {};
   if (snap.fullAddress) return snap.fullAddress;
@@ -222,35 +254,33 @@ orderSchema.virtual('displayAddress').get(function () {
   return parts.join(', ');
 });
 
-// Single-line snippet (used in lists)
 orderSchema.virtual('addressSnippet').get(function () {
   const d = this.displayAddress || '';
   return d.length > 90 ? `${d.slice(0, 87)}…` : d;
 });
 
-// Compact location object for frontends that expect { lat, lng }
 orderSchema.virtual('deliveryLocation').get(function () {
   const snap = this.deliveryAddressSnapshot || {};
   const lat = snap.latitude ?? this.deliveryLatitude;
   const lng = snap.longitude ?? this.deliveryLongitude;
-  if (typeof lat === 'number' && typeof lng === 'number') {
-    return { lat, lng };
-  }
+  if (typeof lat === 'number' && typeof lng === 'number') return { lat, lng };
   return null;
 });
 
-/* -------------------- Indexes (non-breaking, help dashboards/reports) -------------------- */
+/* -------------------- Indexes -------------------- */
 orderSchema.index({ status: 1, orderDate: -1 });
 orderSchema.index({ driverId: 1, status: 1, orderDate: -1 }, { sparse: true });
 orderSchema.index({ customerId: 1, orderDate: -1 });
+orderSchema.index({ branchId: 1, orderDate: -1, status: 1 });
+orderSchema.index({ serviceZoneId: 1, orderDate: -1, status: 1 });
 
-/* -------------------- Minimal pre-save: append status to history when it changes -------------------- */
-// This hook appends to statusHistory only when 'status' changes.
-// It will NOT override services that explicitly push history entries.
+// Helpful for posting queue views
+orderSchema.index({ 'posting.status': 1, orderDate: -1 });
+
+/* -------------------- Minimal pre-save hook -------------------- */
 orderSchema.pre('save', function (next) {
   try {
     if (this.isNew) {
-      // If no history provided, seed with initial status
       if (!Array.isArray(this.statusHistory) || this.statusHistory.length === 0) {
         this.statusHistory = [
           {
@@ -261,7 +291,6 @@ orderSchema.pre('save', function (next) {
           },
         ];
       }
-      // seed placedAt for fresh orders if missing
       if (!this.placedAt) this.placedAt = this.createdAt || new Date();
       return next();
     }
@@ -274,7 +303,6 @@ orderSchema.pre('save', function (next) {
         updaterRole: 'system',
       });
 
-      // convenience time stamps for metrics (optional; services can set more precisely)
       switch (this.status) {
         case 'Verifying Payment':
           if (!this.paymentVerificationStartedAt) this.paymentVerificationStartedAt = new Date();

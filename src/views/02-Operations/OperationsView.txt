@@ -1,0 +1,97 @@
+// src/views/02-Operations/OperationsView.js (NEW FILE)
+
+import React, { useContext } from 'react';
+import { AppContext } from '../../app';
+import { Building, Flame, Truck, Package, AlertTriangle } from 'lucide-react';
+
+const OperationsView = () => {
+    const { state } = useContext(AppContext);
+    const { plants, inventory } = state;
+
+    const lpgLevelPercent = (inventory.bulkLpgTonnes / inventory.capacityTonnes) * 100;
+
+    return (
+        <div className="space-y-6">
+            <div>
+                <h2 className="text-xl font-bold text-slate-900 mb-4">Live Plant Monitoring</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    {plants.map(plant => (
+                        <div key={plant.id} className="bg-white p-4 rounded-xl shadow-sm border">
+                            <div className="flex justify-between items-center">
+                                <h4 className="font-semibold text-slate-800">{plant.name}</h4>
+                                <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${
+                                    plant.status === 'Operational' ? 'bg-emerald-100 text-emerald-800' 
+                                    : 'bg-amber-100 text-amber-800'
+                                }`}>{plant.status}</span>
+                            </div>
+                            <p className="text-3xl font-bold mt-2">{plant.outputKg} <span className="text-base font-medium text-slate-500">kg/day</span></p>
+                            <p className={`text-sm ${plant.uptime < 99.999 ? 'text-red-500 font-semibold' : 'text-slate-500'}`}>
+                                Uptime: {plant.uptime.toFixed(3)}%
+                            </p>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="lg:col-span-1 bg-white p-6 rounded-xl shadow-sm">
+                    <h3 className="text-lg font-semibold text-slate-900 flex items-center"><Flame className="h-5 w-5 mr-2 text-red-500"/>Bulk LPG Stock</h3>
+                    <div className="mt-4 text-center">
+                        <p className="text-4xl font-bold">{inventory.bulkLpgTonnes.toFixed(1)}<span className="text-xl text-slate-500"> / {inventory.capacityTonnes} Tonnes</span></p>
+                        <div className="w-full bg-slate-200 rounded-full h-4 mt-3">
+                            <div className={`h-4 rounded-full transition-all duration-500 ${lpgLevelPercent > 20 ? 'bg-emerald-500' : 'bg-red-500'}`} style={{ width: `${lpgLevelPercent}%` }}></div>
+                        </div>
+                         {lpgLevelPercent <= 20 && <p className="text-red-600 text-sm font-semibold mt-2 flex items-center justify-center"><AlertTriangle className="h-4 w-4 mr-1"/> Low Stock Alert!</p>}
+                    </div>
+                </div>
+                <div className="lg:col-span-2 bg-white p-6 rounded-xl shadow-sm">
+                    <h3 className="text-lg font-semibold text-slate-900 flex items-center"><Package className="h-5 w-5 mr-2 text-sky-500"/>Accessories Inventory</h3>
+                    <div className="grid grid-cols-3 gap-4 mt-4 text-center">
+                        {inventory.accessories.map(item => (
+                            <div key={item.name}>
+                                <p className="font-medium text-slate-500 text-sm">{item.name}</p>
+                                <p className="text-3xl font-bold">{item.stock}</p>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-xl shadow-sm">
+                <h3 className="text-lg font-semibold text-slate-900">Cylinder Inventory & Leasing</h3>
+                <div className="overflow-x-auto mt-4">
+                    <table className="min-w-full divide-y divide-slate-200">
+                        <thead className="bg-slate-50">
+                            <tr>
+                                <th className="px-4 py-2 text-left text-xs font-medium text-slate-500 uppercase">Size</th>
+                                <th className="px-4 py-2 text-left text-xs font-medium text-slate-500 uppercase">Filled (Warehouse)</th>
+                                <th className="px-4 py-2 text-left text-xs font-medium text-slate-500 uppercase">Empty (Warehouse)</th>
+                                <th className="px-4 py-2 text-left text-xs font-medium text-slate-500 uppercase">In-Transit (With Driver)</th>
+                                <th className="px-4 py-2 text-left text-xs font-medium text-slate-500 uppercase">Leased to Customers</th>
+                            </tr>
+                        </thead>
+                        <tbody className="bg-white divide-y divide-slate-200 text-sm">
+                            {inventory.cylinders.map(cyl => (
+                                <tr key={cyl.size}>
+                                    <td className="px-4 py-3 font-medium">{cyl.size}</td>
+                                    <td className="px-4 py-3 text-emerald-600 font-semibold">{cyl.filled}</td>
+                                    <td className="px-4 py-3 text-amber-600 font-semibold">{cyl.empty}</td>
+                                    <td className="px-4 py-3 text-sky-600 font-semibold">{cyl.inTransit}</td>
+                                    <td className="px-4 py-3 text-slate-600 font-semibold">{cyl.leased}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+             <div className="bg-white p-6 rounded-xl shadow-sm">
+                <h3 className="text-lg font-semibold text-slate-900 flex items-center"><Truck className="h-5 w-5 mr-2 text-purple-500"/>Logistics & Dispatch</h3>
+                 <div className="mt-4 h-64 bg-slate-200 rounded-lg flex items-center justify-center">
+                    <p className="text-slate-500">Live Driver Map (Integration Required)</p>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+export default OperationsView;

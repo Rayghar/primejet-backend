@@ -10,10 +10,10 @@ const config = {
   env: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT, 10) || 3000, // Ensure port is a number
   mongo: {
-    uri: process.env.MONGO_URI || 'MONGO_URI=mongodb+srv://gWEcHdWqXqK6mEiO@cluster0.hefxifh.mongodb.net/primejet?retryWrites=true&w=majority&appName=Cluster0',
+    uri: process.env.MONGO_URI || (process.env.NODE_ENV === 'production' ? undefined : 'mongodb://127.0.0.1:27017/primejet_dev'),
   },
   jwt: {
-    secret: process.env.JWT_SECRET || 'fallback_super_secret_key_for_dev_only_please_change',
+    secret: process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? undefined : 'dev_only_change_me_local_secret'),
     expiresIn: process.env.JWT_EXPIRES_IN || '1d',
   },
   redis: {
@@ -27,16 +27,15 @@ const config = {
   sentry: {
     dsn: process.env.SENTRY_DSN,
   },
-  logLevel: process.env.LOG_LEVEL || 'debug', // <<< MODIFIED: Default to 'debug' for local dev
   defaultCurrency: process.env.DEFAULT_CURRENCY || 'NGN',
-  frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3001', // For password reset links etc.
+  frontendUrl: process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? undefined : 'http://localhost:3001'), // For password reset links etc.
   activePaymentGateway: process.env.DEFAULT_PAYMENT_GATEWAY || 'stripe',
-  logLevel: process.env.LOG_LEVEL || 'info',
+  logLevel: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
   // ✅ NEW: Socket.IO configuration
   socket: {
     // This allows the Socket.IO server to accept connections from the specified frontend URL.
     cors: {
-      origin: process.env.FRONTEND_URL || 'http://localhost:3001',
+      origin: process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? undefined : 'http://localhost:3001'),
       methods: ["GET", "POST"]
     },
     // The path the Socket.IO server will listen on.
@@ -48,12 +47,16 @@ const config = {
   },
 };
 
-// Validate essential configurations
-if (!config.jwt.secret || config.jwt.secret === 'fallback_super_secret_key_for_dev_only_please_change') {
-  console.warn('[CONFIG_WARN] JWT_SECRET is not set or is using the default fallback. This is insecure for production.');
+const { requireProductionEnv } = require('../utils/productionSafety');
+
+// Validate essential configurations. In production, fail fast rather than silently
+// starting with unsafe defaults. Development remains convenient for local work.
+requireProductionEnv(config);
+if (!config.jwt.secret) {
+  console.warn('[CONFIG_WARN] JWT_SECRET is not set. Authentication will fail until configured.');
 }
-if (!config.mongo.uri || config.mongo.uri === 'mongodb://localhost:27017/primejet_default_dev') {
-    console.warn('[CONFIG_WARN] MONGO_URI is not set or is using a default development URI.');
+if (!config.mongo.uri) {
+  console.warn('[CONFIG_WARN] MONGO_URI is not set. Database connection will fail until configured.');
 }
 
 /**

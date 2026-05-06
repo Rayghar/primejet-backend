@@ -3,12 +3,13 @@ const mongoose = require('mongoose');
 const Redis = require('redis');
 const globalConfig = require('./index'); // Load from the main config index
 const { logger } = require('./logger.config'); // Load logger for DB events
+const { redactConnectionString } = require('../utils/productionSafety');
 
 mongoose.set('strictQuery', true);
 
 const connectMongoDB = async () => {
   try {
-    logger.info(`[DB_CONFIG] Attempting to connect to MongoDB with URI: ${globalConfig.mongo.uri}`);
+    logger.info(`[DB_CONFIG] Attempting to connect to MongoDB with URI: ${redactConnectionString(globalConfig.mongo.uri)}`);
     await mongoose.connect(globalConfig.mongo.uri, {
       // useNewUrlParser: true, // Deprecated in Mongoose 6+
       // useUnifiedTopology: true, // Deprecated in Mongoose 6+

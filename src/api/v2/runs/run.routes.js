@@ -1,37 +1,43 @@
-// src/api/v2/runs/run.routes.js
+// File: src/api/v2/runs/run.routes.js
 const express = require('express');
 const runController = require('./run.controller');
 const authMiddleware = require('../../../middleware/auth.middleware');
-const validate = require('../../../middleware/validate.middleware');
-const {
-  reassignDriverSchema,
-  paginationSchema,
-  updateStopStatusSchema,
-  runIdParamSchema // Assuming a runIdParamSchema exists
-} = require('./run.validation');
-const runOrchestrationController = require('../run_orchestration/run_orchestration.controller');
 
 const router = express.Router();
 
-// --- Admin Routes ---
-// These routes were previously returning 404 and are now correctly defined.
-router.get('/admin/pending-batches', authMiddleware('admin'), runController.getPendingBatches);
-router.get('/admin/active', authMiddleware('admin'), runController.getActiveRuns);
-router.get('/admin/unassigned-orders', authMiddleware('admin'), validate(paginationSchema, 'query'), runController.getUnassignedOrders);
-router.post('/admin/create-batch', authMiddleware('admin'), runOrchestrationController.adminCreateRunFromOrders);
-router.put('/:runId/assign-driver', authMiddleware('admin'), validate(runIdParamSchema, 'params'), validate(reassignDriverSchema), runController.assignDriverToRun);
+// -----------------------------------------------------------------------------
+// IMPORTANT ROUTE ORDER
+// -----------------------------------------------------------------------------
+// Keep specific /admin and /driver routes above generic /:runId routes.
+// Otherwise /driver/... can be incorrectly captured as runId.
 
-// Route to get specific run details (for admin/manager/assigned driver)
-router.get('/:runId', authMiddleware(), validate(runIdParamSchema, 'params'), runController.getRun);
+// --- Admin / Manager Dispatch Routes ---
+router.get('/admin/pending-batches', authMiddleware(['admin', 'manager']), runController.getPendingBatches);
+router.get('/admin/active', authMiddleware(['admin', 'manager']), runController.getActiveRuns);
+router.get('/admin/unassigned-orders', authMiddleware(['admin', 'manager']), runController.getUnassignedOrders);
+router.post('/admin/create-batch', authMiddleware(['admin', 'manager']), runController.createRunFromBatch);
+
+// --- Dispatch Control / Reporting Routes ---
+router.get('/dispatch-dashboard', authMiddleware(['admin', 'manager']), runController.getDispatchDashboard);
+router.get('/driver-scorecards', authMiddleware(['admin', 'manager']), runController.getDriverScorecards);
 
 // --- Driver Routes ---
 router.get('/driver/assigned-runs', authMiddleware('driver'), runController.getAssignedRuns);
-router.post('/driver/runs/:runId/accept', authMiddleware('driver'), validate(runIdParamSchema, 'params'), runController.acceptRun);
-router.post('/driver/runs/:runId/end', authMiddleware('driver'), validate(runIdParamSchema, 'params'), runController.endRun);
-router.post('/driver/runs/:runId/stops/:stopId/update-status', authMiddleware('driver'), validate(runIdParamSchema, 'params'), validate(updateStopStatusSchema), runController.driverUpdateStopStatus);
+router.get('/driver/history', authMiddleware('driver'), runController.getRunHistory);
+router.get('/driver/:driverId/history', authMiddleware(['admin', 'manager', 'driver']), runController.getRunHistory);
 
-// Route to get a driver's run history
-router.get('/driver/:driverId/history', authMiddleware(['admin', 'manager', 'driver']), validate(runIdParamSchema, 'params'), validate(paginationSchema, 'query'), runController.getRunHistory);
+router.post('/driver/runs/:runId/accept', authMiddleware('driver'), runController.acceptRun);
+router.post('/driver/runs/:runId/end', authMiddleware('driver'), runController.endRun);
+router.post('/driver/runs/:runId/stops/:stopId/update-status', authMiddleware('driver'), runController.driverUpdateStopStatus);
+router.post('/driver/runs/:runId/stops/:stopId/failure', authMiddleware('driver'), runController.recordFailedDeliveryReason);
 
+// --- Generic Run Mutation Routes ---
+router.post('/:runId/optimize-route', authMiddleware(['admin', 'manager']), runController.optimizeRunRoute);
+router.patch('/:runId/capacity', authMiddleware(['admin', 'manager']), runController.updateRunCapacity);
+router.patch('/:runId/stops/:stopId/failure', authMiddleware(['admin', 'manager']), runController.recordFailedDeliveryReason);
+router.put('/:runId/assign-driver', authMiddleware(['admin', 'manager']), runController.assignDriverToRun);
+
+// --- Generic Run Read Route: keep last ---
+router.get('/:runId', authMiddleware(), runController.getRun);
 
 module.exports = router;

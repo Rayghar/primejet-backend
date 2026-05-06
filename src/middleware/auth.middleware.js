@@ -4,6 +4,7 @@ const HttpError = require('../utils/HttpError');
 const globalConfig = require('../config'); // Assuming src/config/index.js exports all configs
 const { logger } = require('../config/logger.config'); // Use the configured logger
 const User = require('../models/user.model'); // Import the User model
+const { getEffectivePermissions, hasAnyPermission } = require('../config/rolePermissions');
 
 /**
  * Authentication middleware to verify JWT and optionally check roles.
@@ -52,20 +53,31 @@ const authMiddleware = (requiredRole) => async (req, res, next) => {
       return next(new HttpError(401, 'User associated with token not found or no longer exists.'));
     }
 
-    // Role-based authorization check:
+    const userObject = user.toObject();
+    delete userObject.password;
+    userObject.effectivePermissions = getEffectivePermissions(userObject);
+
+    // Role-based authorization check retained for legacy routes.
+    // super_admin/admin remain compatible with admin-only routes; permission checks can be layered separately.
     if (requiredRole) {
       const rolesArray = Array.isArray(requiredRole) ? requiredRole : [requiredRole];
-      if (!rolesArray.includes(user.role)) {
+      const expandedRoles = new Set(rolesArray);
+      if (expandedRoles.has('admin')) expandedRoles.add('super_admin');
+      if (expandedRoles.has('manager')) {
+        expandedRoles.add('operations_manager');
+        expandedRoles.add('plant_manager');
+      }
+
+      const roleAllowed = expandedRoles.has(userObject.role);
+      const adminOverride = ['admin', 'super_admin'].includes(userObject.role);
+
+      if (!roleAllowed && !adminOverride) {
         logger.warn(`[AUTH_MIDDLEWARE] Forbidden access for user ${user.id} (role: ${user.role}) to ${req.method} ${req.path}. Required roles: ${rolesArray.join(', ')}`);
         return next(new HttpError(403, `Insufficient permissions. Your role (${user.role}) is not authorized for this action.`));
       }
     }
 
-    // Attach the fetched Mongoose user document to `req.user`.
-    // Exclude sensitive fields like password before attaching to request.
-    const userObject = user.toObject();
-    delete userObject.password; 
-    req.user = userObject; 
+    req.user = userObject;
     
     logger.debug(`[AUTH_MIDDLEWARE] User ${req.user.id} (role: ${req.user.role}) authenticated for ${req.method} ${req.path}`);
     next(); // Proceed to the next middleware or route handler

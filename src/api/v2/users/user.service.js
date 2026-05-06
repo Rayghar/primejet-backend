@@ -9,7 +9,7 @@ const {
     updateNotificationPreferences,
     adminGetUsers,
     adminGetUser,
-    adminCreateUser: registerUserV1, // Rename to avoid conflict if needed, or just use as is
+    adminCreateUser,
     adminUpdateUser,
     adminUpdateUserStatus,
     deleteUser: deleteUserByIdV1, // Rename to avoid conflict
@@ -28,7 +28,7 @@ module.exports = {
     updateNotificationPreferences,
     adminGetUsers,
     adminGetUser,
-    adminCreateUser: registerUserV1, // Expose the v1 registerUser as adminCreateUser for v2
+    adminCreateUser,
     adminUpdateUser,
     adminUpdateUserStatus,
     deleteUserById: deleteUserByIdV1, // Expose the v1 deleteUser as deleteUserById for v2

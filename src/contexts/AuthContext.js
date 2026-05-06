@@ -1,42 +1,49 @@
-// src/contexts/AuthContext.js
-/*import React, { createContext, useState, useEffect } from 'react';
-import { loginUser, getMyProfile, logoutUser } from '../api/authService';
+import React, { createContext, useState, useEffect, useCallback } from 'react';
+import { getCurrentUser, hydrateCurrentUser, logoutUser, signInUser } from '../api/authService';
 
-const AuthContext = createContext();
+export const AuthContext = createContext();
 
-const AuthProvider = ({ children }) => {
+export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  const refreshUser = useCallback(async () => {
+    const hydrated = await hydrateCurrentUser();
+    setUser(hydrated);
+    return hydrated;
+  }, []);
+
   useEffect(() => {
-    const checkAuthStatus = async () => {
-      const token = localStorage.getItem('token');
-      if (token) {
+    let mounted = true;
+    const boot = async () => {
+      const storedUser = getCurrentUser();
+      if (storedUser && mounted) setUser(storedUser);
+      if (localStorage.getItem('token')) {
         try {
-          const profile = await getMyProfile();
-          setUser(profile);
-        } catch (error) {
-          // Token is invalid or expired, log out user
-          logoutUser();
+          const hydrated = await hydrateCurrentUser();
+          if (mounted) setUser(hydrated);
+        } catch (err) {
+          const status = err?.response?.status;
+          if (status === 401 || status === 403) {
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            if (mounted) setUser(null);
+          } else if (mounted && storedUser) {
+            // Preserve the last known session during transient network/backend outages.
+            setUser(storedUser);
+          }
         }
       }
-      setLoading(false);
+      if (mounted) setLoading(false);
     };
-
-    checkAuthStatus();
+    boot();
+    return () => { mounted = false; };
   }, []);
 
   const login = async (email, password) => {
-    setLoading(true);
-    try {
-      const { token, user: userData } = await loginUser(email, password);
-      localStorage.setItem('token', token);
-      setUser(userData);
-      setLoading(false);
-    } catch (error) {
-      setLoading(false);
-      throw error;
-    }
+    const data = await signInUser(email, password);
+    setUser(data.user);
+    return data;
   };
 
   const logout = () => {
@@ -45,12 +52,8 @@ const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );
 };
-
-export { AuthProvider, AuthContext };
-
-*/

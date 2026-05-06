@@ -93,7 +93,7 @@ function emitToRoom(room, event, payload) {
 function registerAdminSocket(socket, user) {
   try {
     const roles = Array.isArray(user?.roles) ? user.roles : [user?.role].filter(Boolean);
-    const isAdmin = roles.some(r => ['admin', 'superadmin'].includes(String(r).toLowerCase()));
+    const isAdmin = roles.some(r => ['admin', 'superadmin', 'super_admin'].includes(String(r).toLowerCase()));
     if (isAdmin) {
       socket.join('room:admins');
       logger.info(`[SOCKET] Admin joined admin room: ${user?.id}`);
@@ -112,7 +112,7 @@ const initializeSocket = (io) => {
   // 1) Authenticate socket with JWT from handshake.auth.token
   io.use(async (socket, next) => {
     const token = socket.handshake.auth?.token;
-    logger.info('[SOCKET_AUTH] New connection attempt...'); // Log start
+    logger.debug('[SOCKET_AUTH] New connection attempt...');
 
     try {
       if (!token) {
@@ -127,12 +127,12 @@ const initializeSocket = (io) => {
       }
 
       const decoded = jwt.verify(token, jwtSecret);
-      logger.info(`[SOCKET_AUTH] Token verified for user ID: ${decoded.id}`);
+      logger.debug(`[SOCKET_AUTH] Token verified for user ID: ${decoded.id}`);
 
       // --- Start Database Debug ---
-      logger.info(`[SOCKET_AUTH] Searching database for user ID: ${decoded.id}`);
+      logger.debug(`[SOCKET_AUTH] Searching database for user ID: ${decoded.id}`);
       const user = await User.findOne({ id: decoded.id });
-      logger.info(`[SOCKET_AUTH] Database search finished for user ID: ${decoded.id}`);
+      logger.debug(`[SOCKET_AUTH] Database search finished for user ID: ${decoded.id}`);
       // --- End Database Debug ---
 
       if (!user || user.status !== 'active') {
@@ -140,7 +140,7 @@ const initializeSocket = (io) => {
         return next(new Error('Authentication error: User not found or is inactive.'));
       }
 
-      logger.info(`[SOCKET_AUTH] User authenticated successfully: ${user.id}`);
+      logger.debug(`[SOCKET_AUTH] User authenticated successfully: ${user.id}`);
       socket.user = user.toObject();
       next();
 

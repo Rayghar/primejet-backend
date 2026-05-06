@@ -1,6 +1,7 @@
 // src/api/v1/users/user.controller.js
 const userService = require('./user.service'); // Path to co-located service
 const HttpError = require('../../../utils/HttpError'); // Path to global HttpError utility
+const User = require('../../../models/user.model');
 
 // Controller for the authenticated user's own profile
 const getProfile = async (req, res, next) => {
@@ -193,6 +194,7 @@ const getUsers = async (req, res, next) => {
     
     res.status(200).json(users);
   } catch (error) {
+    console.error('[USER_CONTROLLER] Fetching users failed:', error);
     next(new HttpError(500, 'Fetching users failed.'));
   }
 };

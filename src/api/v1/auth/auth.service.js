@@ -13,10 +13,9 @@ const { sendEmail } = require('../../../services/email.service');
 const Agent = require('../../../models/agent.model');
 const agentService = require('../agents/agent.service');
 const jwksClient = require('jwks-rsa');
+const { getEffectivePermissions, normalizeRole } = require('../../../config/rolePermissions');
 
-const JWT_SECRET = (globalConfig && globalConfig.jwt && globalConfig.jwt.secret)
-  ? globalConfig.jwt.secret
-  : (process.env.JWT_SECRET || 'your-default-super-secret-key-for-dev');
+const JWT_SECRET = globalConfig?.jwt?.secret;
 
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const APPLE_AUDIENCE = process.env.APPLE_SERVICE_ID;
@@ -63,13 +62,37 @@ const sendEmailBackground = (emailOptions) => {
 };
 
 const generateJwtForUser = (user, isNewUser = false) => {
-  const payload = { id: user.id, role: user.role };
+  const plainUser = typeof user.toObject === 'function' ? user.toObject() : { ...user };
+  const role = normalizeRole(plainUser.role);
+  const effectivePermissions = getEffectivePermissions(plainUser);
+  const payload = { id: plainUser.id, role };
   const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1d' });
   return {
     token,
-    userId: user.id,
-    role: user.role,
-    name: user.name,
+    userId: plainUser.id,
+    role,
+    name: plainUser.name,
+    email: plainUser.email,
+    status: plainUser.status,
+    branchScope: plainUser.branchScope,
+    allowedBranches: plainUser.allowedBranches || [],
+    permissions: plainUser.permissions || [],
+    permissionOverrides: plainUser.permissionOverrides || { add: [], remove: [] },
+    effectivePermissions,
+    user: {
+      id: plainUser.id,
+      name: plainUser.name,
+      email: plainUser.email,
+      phone: plainUser.phone,
+      role,
+      status: plainUser.status,
+      branchScope: plainUser.branchScope,
+      allowedBranches: plainUser.allowedBranches || [],
+      permissions: plainUser.permissions || [],
+      permissionOverrides: plainUser.permissionOverrides || { add: [], remove: [] },
+      effectivePermissions,
+      mustChangePassword: Boolean(plainUser.mustChangePassword),
+    },
     isNewUser,
     message: 'Login successful.'
   };
@@ -219,8 +242,6 @@ const upgradeGuest = async (guestUserId, upgradeData) => {
     `,
   });
 
-  // OTP logged for dev/debug only (remove in full production if needed)
-  logger.info(`[AUTH_SERVICE] Upgrade OTP for ${emailLower}: ${otp}`);
 
   return {
     userId: guest.id,
@@ -306,7 +327,6 @@ const registerCustomer = async (userData) => {
     text: `Your verification code is: ${otp}.`,
     html: `<p>Your verification code is: <strong>${otp}</strong>.</p>`
   });
-  logger.info(`[AUTH_SERVICE] OTP for ${email}: ${otp}`);
   return { userId: user.id, message: 'Registration successful. A 4-digit verification code has been sent to your email.' };
 };
 
@@ -450,7 +470,6 @@ const requestPasswordReset = async (email) => {
     text: `Your password reset code is: ${resetToken}. It will expire in 10 minutes.`,
     html: `<p>Your password reset code is: <strong>${resetToken}</strong>. It will expire in 10 minutes.</p>`
   });
-  logger.info(`Password Reset Code for ${email}: ${resetToken}`);
   return { message: 'A 6-digit reset code has been sent to your email.' };
 };
 

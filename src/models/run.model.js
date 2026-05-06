@@ -35,7 +35,9 @@ const stopSchema = new mongoose.Schema(
         'CYLINDER_REFILLING',
         'OUT_FOR_DELIVERY',
         'DELIVERED',
-        'CUSTOMER_UNAVAILABLE'
+        'CUSTOMER_UNAVAILABLE',
+        'ISSUE_REPORTED',
+        'CANCELED'
       ],
       default: 'Pending',
     },
@@ -45,6 +47,12 @@ const stopSchema = new mongoose.Schema(
     notes: { type: String, trim: true },
     latitude: { type: Number, min: -90, max: 90 },
     longitude: { type: Number, min: -180, max: 180 },
+    coordinateSource: { type: String, trim: true },
+    estimatedLoadKg: { type: Number, default: 0, min: 0 },
+    failureReason: { type: String, trim: true },
+    failureNote: { type: String, trim: true },
+    failedAt: { type: Date },
+    failedBy: { type: String },
     // <<<< NEW CODE: ADDED statusHistory to the stopSchema >>>>
     statusHistory: {
         type: [statusHistorySchema],
@@ -85,6 +93,34 @@ const runSchema = new mongoose.Schema(
       ref: 'User',
       index: true,
       sparse: true,
+    },
+    vanId: {
+      type: String,
+      ref: 'Van',
+      index: true,
+      sparse: true,
+    },
+    estimatedLoadKg: { type: Number, default: 0, min: 0 },
+    capacityKg: { type: Number, default: 0, min: 0 },
+    capacityStatus: {
+      type: String,
+      enum: ['NOT_CONFIGURED', 'OK', 'NEAR_CAPACITY', 'OVER_CAPACITY'],
+      default: 'NOT_CONFIGURED',
+      index: true,
+    },
+    capacityUtilizationPct: { type: Number, default: 0, min: 0 },
+    capacityVarianceKg: { type: Number, default: 0 },
+    failedDeliveryCount: { type: Number, default: 0, min: 0 },
+    routeOptimization: {
+      optimized: { type: Boolean, default: false },
+      optimizedAt: { type: Date },
+      algorithm: { type: String, trim: true },
+      startLatitude: { type: Number, min: -90, max: 90 },
+      startLongitude: { type: Number, min: -180, max: 180 },
+      startSource: { type: String, trim: true },
+      totalDistanceKm: { type: Number, default: 0, min: 0 },
+      validStopCount: { type: Number, default: 0, min: 0 },
+      missingCoordinateStopCount: { type: Number, default: 0, min: 0 },
     },
     overallStatus: {
       type: String,
@@ -128,7 +164,11 @@ runSchema.index({ driverId: 1, overallStatus: 1 });
 
 runSchema.pre('save', function (next) {
   if (this.isModified('stops') || this.isNew) {
+    const terminalStatuses = ['DELIVERED', 'CUSTOMER_UNAVAILABLE', 'ISSUE_REPORTED', 'CANCELED'];
+    const failedStatuses = ['CUSTOMER_UNAVAILABLE', 'ISSUE_REPORTED', 'CANCELED'];
     this.totalStops = this.stops ? this.stops.length : 0;
+    this.completedStops = this.stops ? this.stops.filter((s) => terminalStatuses.includes(s.status)).length : 0;
+    this.failedDeliveryCount = this.stops ? this.stops.filter((s) => failedStatuses.includes(s.status)).length : 0;
   }
   next();
 });

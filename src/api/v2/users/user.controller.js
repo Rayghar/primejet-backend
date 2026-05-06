@@ -2,6 +2,7 @@
 const userService = require('./user.service'); // Should point to v2 service now (which re-exports v1 functions)
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
+const Plant = require('../../../models/plant.model');
 
 // Fetches all users from the database. Mirrors v1/users/admin route.
 const adminGetUsers = async (req, res, next) => {
@@ -15,11 +16,65 @@ const adminGetUsers = async (req, res, next) => {
   }
 };
 
+
+const normalizeBranchOption = (row, source) => {
+  if (!row) return null;
+  const mongoId = String(row._id || row.mongoId || '').trim();
+  const businessId = String(row.id || row.branchId || row.plantId || '').trim();
+  const name = String(row.name || row.branchName || row.label || businessId || mongoId || '').trim();
+  if (!mongoId && !businessId && !name) return null;
+  // Use Mongo _id as the primary option value because DailySummary stores Plant._id.
+  // Preserve the business id/code as branchCode so legacy StockIn/Expense/price records still match.
+  const optionValue = mongoId || businessId || name;
+  const stateOrLocation = source === 'service_zone'
+    ? row.state
+    : (row.location?.address || row.address || '');
+
+  return {
+    id: optionValue,
+    _id: mongoId || undefined,
+    mongoId: mongoId || undefined,
+    branchId: optionValue,
+    branchCode: String(row.branchCode || row.code || businessId || optionValue).trim(),
+    branchKey: String(row.branchKey || row.key || mongoId || businessId || optionValue).trim(),
+    branchName: name || businessId || optionValue,
+    name: name || businessId || optionValue,
+    label: stateOrLocation ? `${name || businessId || optionValue} (${stateOrLocation})` : (name || businessId || optionValue),
+    source,
+    status: row.status || (typeof row.isActive === 'boolean' ? (row.isActive ? 'Active' : 'Inactive') : undefined),
+  };
+};
+
+const uniqueBranchOptions = (rows) => {
+  const seen = new Set();
+  return rows.filter(Boolean).filter((row) => {
+    const key = String(row.branchId || row.id || row.branchName || row.name || '').toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).sort((a, b) => String(a.branchName || a.name).localeCompare(String(b.branchName || b.name)));
+};
+
+// Returns Operations branch/plant options that can be assigned to Staff Access.
+// Important: this intentionally uses Plant records only. Service zones are delivery
+// areas, not cashier/finance operating branches, and assigning staff to a zone can
+// cause POS, Close Workspace and Finance filters to miss the actual branch.
+const adminGetBranchOptions = async (req, res, next) => {
+  try {
+    const plants = await Plant.find({}).select('_id id name branchCode branchKey code key location status').lean();
+    const options = uniqueBranchOptions(plants.map((row) => normalizeBranchOption(row, 'plant')));
+    res.status(200).json({ branches: options, count: options.length, source: 'operations.plants' });
+  } catch (error) {
+    logger.error('Error in adminGetBranchOptions (v2):', error);
+    next(new HttpError(500, 'Failed to fetch branch options.'));
+  }
+};
+
 // Creates a new user. Mirrors v1/users/admin route but returns a simplified payload.
 const adminCreateUser = async (req, res, next) => {
   try {
-    const newUser = await userService.registerUser(req.body, { allowFirstAdmin: false });
-    res.status(201).json({ id: newUser.id, message: 'User created successfully.' });
+    const newUser = await userService.adminCreateUser(req.body);
+    res.status(201).json({ id: newUser.id, user: newUser, message: 'User created successfully.' });
   } catch (error) {
     logger.error('Error in adminCreateUser (v2):', error);
     next(error);
@@ -105,6 +160,7 @@ const deleteUserById = async (req, res, next) => {
 
 module.exports = {
   adminGetUsers,
+  adminGetBranchOptions,
   adminCreateUser,
   adminGetUser,
   adminUpdateUserRole,

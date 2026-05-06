@@ -9,6 +9,36 @@ const { firestore, isFirebaseInitialized } = require('../../../config/firebase.c
 const { logger } = require('../../../config/logger.config');
 const agentService = require('../../v1/agents/agent.service');
 const referralService = require('../../v1/referrals/referral.service');
+const { getEffectivePermissions, normalizeRole } = require('../../../config/rolePermissions');
+
+
+const safeUserPayload = (user = {}) => {
+  const plain = typeof user.toObject === 'function' ? user.toObject() : { ...user };
+  delete plain.password;
+  plain.role = normalizeRole(plain.role);
+  plain.effectivePermissions = getEffectivePermissions(plain);
+  plain.isActive = plain.status ? plain.status === 'active' : true;
+  return plain;
+};
+
+const normalizeAllowedBranches = (branches = []) => {
+  if (!Array.isArray(branches)) return [];
+  return branches
+    .map((branch) => {
+      if (typeof branch === 'string') {
+        const value = branch.trim();
+        return value ? { branchId: value, branchCode: value, branchKey: value, branchName: value } : null;
+      }
+      const mongoId = String(branch._id || branch.mongoId || '').trim();
+      const branchId = String(branch.branchId || branch.id || mongoId || branch.branchCode || branch.branchKey || '').trim();
+      const branchCode = String(branch.branchCode || branch.code || branch.businessId || branch.plantId || branch.id || branchId || '').trim();
+      const branchKey = String(branch.branchKey || branch.key || mongoId || branchCode || branchId || '').trim();
+      const branchName = String(branch.branchName || branch.name || branch.label || branchCode || branchId || '').trim();
+      if (!branchId && !branchCode && !branchKey && !branchName) return null;
+      return { branchId: branchId || branchCode || branchKey || branchName, branchCode, branchKey, branchName };
+    })
+    .filter(Boolean);
+};
 
 const getProfile = async (userId) => {
   try {
@@ -25,7 +55,7 @@ const getProfile = async (userId) => {
     const userObject = user.toObject();
     userObject.isFirstTimeCustomer = pastOrderCount === 0;
 
-    return userObject;
+    return safeUserPayload(userObject);
   } catch (error) {
     if (error instanceof HttpError) throw error;
     console.error('Unexpected error in getProfile:', error);
@@ -34,7 +64,10 @@ const getProfile = async (userId) => {
 };
 
 const registerUser = async (userData, options = {}) => {
-  const { email, role, referredByCode, agentCode } = userData;
+  const email = String(userData.email || '').toLowerCase().trim();
+  const role = normalizeRole(userData.role || 'customer');
+  const referredByCode = userData.referredByCode;
+  const agentCode = userData.agentCode;
 
   let existingUser = await User.findOne({ email });
   if (existingUser) {
@@ -42,7 +75,7 @@ const registerUser = async (userData, options = {}) => {
   }
 
   if (role === 'admin' && !options.allowFirstAdmin) {
-    const adminCount = await User.countDocuments({ role: 'admin' });
+    const adminCount = await User.countDocuments({ role: { $in: ['admin', 'super_admin'] } });
     if (adminCount > 0) {
       throw new HttpError(403, 'Admin accounts can only be created by an existing admin.');
     }
@@ -68,14 +101,30 @@ const registerUser = async (userData, options = {}) => {
     }
   }
 
-  const newUser = new User(userData);
+  const accessFields = {
+    role,
+    branchScope: userData.branchScope || (role === 'customer' ? 'none' : 'all'),
+    allowedBranches: normalizeAllowedBranches(userData.allowedBranches),
+    permissions: Array.isArray(userData.permissions) ? userData.permissions : [],
+    permissionOverrides: userData.permissionOverrides || { add: [], remove: [] },
+    mustChangePassword: Boolean(userData.mustChangePassword),
+    accessNotes: userData.accessNotes || '',
+  };
+
+  const newUser = new User({
+    ...userData,
+    ...accessFields,
+    id: userData.id || uuidv4(),
+    email,
+    phone: userData.phone || `000${Date.now().toString().slice(-8)}`,
+  });
   await newUser.save();
 
   if (role === 'customer' && agentCode && newUser.referredByAgentId) {
     await agentService.markCustomerRegisteredByAgent(agentCode, newUser.id);
   }
 
-  return newUser.toObject();
+  return safeUserPayload(newUser);
 };
 
 const updateProfile = async (userId, updateData) => {
@@ -204,6 +253,12 @@ const adminGetUsers = async (options) => {
       });
     }
 
+    users.forEach((user) => {
+      user.role = normalizeRole(user.role);
+      user.effectivePermissions = getEffectivePermissions(user);
+      user.isActive = user.status ? user.status === 'active' : true;
+    });
+
     return {
       users,
       currentPage: page,
@@ -270,7 +325,7 @@ const adminGetUser = async (userId) => {
       userObject.recentDeliveries = driverOrders.slice(0, 5).map(o => o.toObject());
     }
 
-    return userObject;
+    return safeUserPayload(userObject);
   } catch (error) {
     if (error instanceof HttpError) throw error;
     logger.error('Unexpected error in adminGetUser:', { error: error.message, stack: error.stack });
@@ -279,27 +334,34 @@ const adminGetUser = async (userId) => {
 };
 
 const adminCreateUser = async (userData) => {
-  const { name, email, phone, password, role } = userData;
+  const { name, email, phone, password } = userData;
+  const role = normalizeRole(userData.role || 'cashier');
 
   try {
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    const emailLower = String(email || '').toLowerCase().trim();
+    const existingUser = await User.findOne({ email: emailLower });
     if (existingUser) {
       throw new HttpError(409, 'Email already exists for admin user creation.');
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = new User({
       id: uuidv4(),
       name,
-      email: email.toLowerCase(),
-      phone,
-      password: hashedPassword,
+      email: emailLower,
+      phone: phone || `000${Date.now().toString().slice(-8)}`,
+      password,
       role,
+      branchScope: userData.branchScope || 'all',
+      allowedBranches: normalizeAllowedBranches(userData.allowedBranches),
+      permissions: Array.isArray(userData.permissions) ? userData.permissions : [],
+      permissionOverrides: userData.permissionOverrides || { add: [], remove: [] },
+      status: userData.status || 'active',
+      mustChangePassword: typeof userData.mustChangePassword === 'boolean' ? userData.mustChangePassword : true,
+      accessNotes: userData.accessNotes || '',
     });
 
     await newUser.save();
-    const { password: _, ...userWithoutPassword } = newUser.toObject();
-    return userWithoutPassword;
+    return safeUserPayload(newUser);
   } catch (error) {
     if (error instanceof HttpError) throw error;
     console.error('Unexpected error in adminCreateUser:', error);
@@ -308,17 +370,24 @@ const adminCreateUser = async (userData) => {
 };
 
 const adminUpdateUser = async (userId, updateData) => {
-  const { name, email, phone, password, role, walletBalance, status, isAvailableOnline, bankDetails } = updateData;
+  const { name, email, phone, password, role, walletBalance, status, isAvailableOnline, bankDetails, branchScope, allowedBranches, permissions, permissionOverrides, mustChangePassword, accessNotes } = updateData;
   const updates = {};
 
   if (name) updates.name = name;
   if (phone) updates.phone = phone;
-  if (password) updates.password = await bcrypt.hash(password, 10);
-  if (role) updates.role = role;
+  const nextPassword = typeof password === 'string' ? password.trim() : '';
+  if (nextPassword) updates.password = await bcrypt.hash(nextPassword, 10);
+  if (role) updates.role = normalizeRole(role);
   if (typeof walletBalance === 'number') updates.walletBalance = walletBalance;
   if (status) updates.status = status;
   if (typeof isAvailableOnline === 'boolean') updates.isAvailableOnline = isAvailableOnline;
   if (bankDetails) updates.bankDetails = bankDetails;
+  if (branchScope) updates.branchScope = branchScope;
+  if (Array.isArray(allowedBranches)) updates.allowedBranches = normalizeAllowedBranches(allowedBranches);
+  if (Array.isArray(permissions)) updates.permissions = permissions;
+  if (permissionOverrides) updates.permissionOverrides = permissionOverrides;
+  if (typeof mustChangePassword === 'boolean') updates.mustChangePassword = mustChangePassword;
+  if (typeof accessNotes === 'string') updates.accessNotes = accessNotes;
 
   if (email) {
     const existingUserWithEmail = await User.findOne({ email: email.toLowerCase(), id: { $ne: userId } });
@@ -341,7 +410,7 @@ const adminUpdateUser = async (userId, updateData) => {
     if (!updatedUser) {
       throw new HttpError(404, 'User not found for admin update.');
     }
-    return { message: 'User updated successfully by admin.', user: updatedUser };
+    return { message: 'User updated successfully by admin.', user: safeUserPayload(updatedUser) };
   } catch (error) {
     if (error instanceof HttpError) throw error;
     console.error('Unexpected error in adminUpdateUser:', error);
@@ -487,7 +556,7 @@ module.exports = {
   updateNotificationPreferences,
   adminGetUsers,
   adminGetUser,
-  adminCreateUser: registerUser,
+  adminCreateUser,
   adminUpdateUser,
   adminUpdateUserStatus,
   deleteUser: deleteUserById,

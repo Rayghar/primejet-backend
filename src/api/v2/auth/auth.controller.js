@@ -21,11 +21,17 @@ const login = async (req, res, next) => {
     // Return a consistent payload expected by the frontend
     return res.status(200).json({
       token: result.token,
-      user: {
+      user: result.user || {
         id: result.userId,
         name: result.name,
-        email,          // v1 service doesn’t return email; we pass through the one used to login
+        email: result.email || email,
         role: result.role,
+        status: result.status,
+        branchScope: result.branchScope,
+        allowedBranches: result.allowedBranches || [],
+        permissions: result.permissions || [],
+        permissionOverrides: result.permissionOverrides || { add: [], remove: [] },
+        effectivePermissions: result.effectivePermissions || [],
       },
     });
   } catch (error) {

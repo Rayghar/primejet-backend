@@ -64,16 +64,6 @@ const powerRoutesV1 = require('./api/v1/utilities/power.routes');
 // -----------------------------------------------------------------------------
 // v2 Routes
 // -----------------------------------------------------------------------------
-const operationsRoutes = require('./api/v2/operations/operations.routes');
-const dataEntryRoutes = require('./api/v2/data-entry/data-entry.routes');
-const financialsRoutes = require('./api/v2/financials/financials.routes');
-const financeRoutes = require('./api/v2/finance/finanace.routes'); // filename kept as-is
-const logsRoutes = require('./api/v2/logs/logs.routes');
-const supportRoutes = require('./api/v2/support/support.routes');
-const glRoutes = require('./api/v2/gl/gl.routes');
-const migrationRoutes = require('./api/v2/migration/historicalMigration.routes');
-
-// Optional v2 index aggregator
 const v2ApiRoutes = require('./api/v2/index');
 
 // -----------------------------------------------------------------------------
@@ -155,17 +145,7 @@ app.use('/api/v1/power', powerRoutesV1);
 
 logger.info('[APP] API v1 routes setup complete.');
 
-// v2 routes
-app.use('/api/v2/operations', operationsRoutes);
-app.use('/api/v2/data-entry', dataEntryRoutes);
-app.use('/api/v2/financials', financialsRoutes);
-app.use('/api/v2/finance', financeRoutes);
-app.use('/api/v2/logs', logsRoutes);
-app.use('/api/v2/support', supportRoutes);
-app.use('/api/v2/gl', glRoutes);
-app.use('/api/v2/migration', migrationRoutes);
-
-// Keep optional aggregator last so explicit routes above are not shadowed
+// v2 routes: register through one aggregator to avoid duplicate route mounting.
 app.use('/api/v2', v2ApiRoutes);
 
 logger.info('[APP] API v2 routes setup complete.');

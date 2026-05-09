@@ -71,6 +71,11 @@ const orderSchema = new mongoose.Schema(
     },
 
     customerId: { type: String, required: true, ref: 'User', index: true },
+
+    // Cross-domain source marker for idempotent integrations such as CorporateFulfilment -> Order.
+    sourceType: { type: String, trim: true, uppercase: true, index: true, sparse: true },
+    sourceId: { type: String, trim: true, index: true, sparse: true },
+
     driverId: { type: String, ref: 'User', index: true, sparse: true },
     runId: { type: String, ref: 'Run', index: true, sparse: true },
 
@@ -168,11 +173,11 @@ const orderSchema = new mongoose.Schema(
 
     paymentMethod: {
       type: String,
-      enum: ['card', 'wallet', 'stripe', 'paystack', 'payOnPickup'],
+      enum: ['card', 'wallet', 'stripe', 'paystack', 'payOnPickup', 'monnify', 'bank_transfer', 'transfer', 'account_terms'],
       default: 'paystack',
     },
 
-    paymentGateway: { type: String, enum: ['stripe', 'paystack', 'wallet', null], sparse: true },
+    paymentGateway: { type: String, enum: ['stripe', 'paystack', 'monnify', 'wallet', 'manual', 'bank_transfer', null], sparse: true },
     paymentIntentId: { type: String, trim: true, index: true, sparse: true },
     paymentGatewayReference: { type: String, trim: true, index: true, sparse: true },
     paymentTransactionId: { type: String, trim: true },
@@ -330,5 +335,7 @@ orderSchema.pre('save', function (next) {
     next(err);
   }
 });
+
+orderSchema.index({ sourceType: 1, sourceId: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('Order', orderSchema);

@@ -93,7 +93,7 @@ function emitToRoom(room, event, payload) {
 function registerAdminSocket(socket, user) {
   try {
     const roles = Array.isArray(user?.roles) ? user.roles : [user?.role].filter(Boolean);
-    const isAdmin = roles.some(r => ['admin', 'superadmin', 'super_admin'].includes(String(r).toLowerCase()));
+    const isAdmin = roles.some(r => ['admin', 'superadmin', 'super_admin', 'manager', 'operations_manager', 'finance_lead', 'sales_agent', 'support_agent'].includes(String(r).toLowerCase()));
     if (isAdmin) {
       socket.join('room:admins');
       logger.info(`[SOCKET] Admin joined admin room: ${user?.id}`);
@@ -184,6 +184,24 @@ const initializeSocket = (io) => {
 
     // 1A.1) If admin, also join admin broadcast room
     registerAdminSocket(socket, socket.user);
+
+    // 1A.2) Join support-ticket rooms. Admins can join any ticket room; corporate/customer users
+    // can join their ticket rooms when the API issued the room id to them.
+    socket.on('join_support_ticket', async ({ ticketId, chatId } = {}) => {
+      try {
+        const normalizedTicketId = ticketId || String(chatId || '').replace(/^corp-ticket:/, '').replace(/^support-ticket:/, '');
+        if (!normalizedTicketId) return socket.emit('message_error', { message: 'ticketId is required.' });
+        const roomA = `support-ticket:${normalizedTicketId}`;
+        const roomB = `corp-ticket:${normalizedTicketId}`;
+        socket.join(roomA);
+        socket.join(roomB);
+        logger.info(`[SOCKET] ${userId} joined support rooms ${roomA}, ${roomB}`);
+        socket.emit('support_ticket_joined', { ticketId: normalizedTicketId, rooms: [roomA, roomB] });
+      } catch (e) {
+        logger.error('[SOCKET] join_support_ticket error', e);
+        socket.emit('message_error', { message: 'Failed to join support ticket.' });
+      }
+    });
 
     // 1B) Join a chat room (chatId == orderId) with authorization
     socket.on('join_room', async (orderId) => {

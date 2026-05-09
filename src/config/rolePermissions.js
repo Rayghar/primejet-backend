@@ -19,6 +19,10 @@ const ROLE_OPTIONS = [
   'auditor',
   'driver',
   'customer',
+  'corporate_admin',
+  'corporate_requester',
+  'corporate_approver',
+  'corporate_viewer',
 ];
 
 const BRANCH_SCOPE_OPTIONS = ['all', 'selected', 'own', 'none'];
@@ -40,6 +44,10 @@ const ROLE_META = {
   auditor: { label: 'Auditor', description: 'Read-only audit, control and report access.' },
   driver: { label: 'Driver', description: 'Driver/mobile execution role.' },
   customer: { label: 'Customer', description: 'Customer/mobile ordering role.' },
+  corporate_admin: { label: 'Corporate Admin', description: 'Business customer administrator for company users, sites, requests and statements.' },
+  corporate_requester: { label: 'Corporate Requester', description: 'Business customer user who can submit and track company LPG requests.' },
+  corporate_approver: { label: 'Corporate Approver', description: 'Business customer user who can approve company requests before fulfilment.' },
+  corporate_viewer: { label: 'Corporate Viewer', description: 'Business customer read-only visibility into requests, fulfilments and statements.' },
 };
 
 const PERMISSIONS = {
@@ -346,6 +354,10 @@ const ROLE_PERMISSIONS = {
   ],
   driver: [PERMISSIONS.OPERATIONS_VIEW],
   customer: [],
+  corporate_admin: [],
+  corporate_requester: [],
+  corporate_approver: [],
+  corporate_viewer: [],
 };
 
 const ALL_PERMISSION_NAMES = Object.values(PERMISSIONS);

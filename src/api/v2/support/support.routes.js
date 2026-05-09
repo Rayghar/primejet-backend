@@ -7,7 +7,7 @@ const supportController = require('./support.controller');
 
 // Keep the module secured using the existing auth middleware factory.
 // This fixes the prior middleware issue where authMiddleware was passed without calling it.
-const requireAdmin = authMiddleware(['admin']);
+const requireAdmin = authMiddleware(['admin', 'manager', 'operations_manager', 'finance_lead', 'sales_agent', 'support_agent']);
 
 // Dashboard / hub
 router.get('/hub', requireAdmin, supportController.getSupportHub);
@@ -19,6 +19,8 @@ router.post('/tickets', requireAdmin, supportController.createTicket);
 router.get('/tickets/:ticketId', requireAdmin, supportController.getTicketById);
 router.patch('/tickets/:ticketId', requireAdmin, supportController.updateTicket);
 router.post('/tickets/:ticketId/notes', requireAdmin, supportController.addTicketNote);
+router.get('/tickets/:ticketId/messages', requireAdmin, supportController.getTicketMessages);
+router.post('/tickets/:ticketId/messages', requireAdmin, supportController.sendTicketMessage);
 router.post('/tickets/from-failed-delivery', requireAdmin, supportController.createTicketFromFailedDelivery);
 
 // Customer 360 / timeline

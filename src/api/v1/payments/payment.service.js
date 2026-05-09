@@ -4,6 +4,12 @@ const sha512 = require('js-sha512').sha512;
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
 const orderService = require('../orders/order.service');
+const CorporateFulfilment = require('../../../models/corporateFulfilment.model');
+const CorporateClient = require('../../../models/corporateClient.model');
+const CorporateRequest = require('../../../models/corporateRequest.model');
+const { ensureInvoiceForFulfilment, recordInvoicePayment } = require('../../v2/corporate-clients/corporateBilling.service');
+const { syncPaymentFromInvoiceOrFulfilment } = require('../../v2/corporate-clients/corporateLifecycle.service');
+const { mapPayment } = require('../../v2/corporate-clients/corporateOrderBridge.service');
 const powerService = require('../utilities/power.service'); // ✅ Import Power Service
 const dotenv = require('dotenv');
 
@@ -70,6 +76,84 @@ const processWebhookEvent = async (eventData, eventType) => {
     paymentMethod,
     responseMessage,
   } = eventData;
+
+  // ✅ Corporate payments use reference format: CORP_<fulfilmentId>_<timestamp>.
+  // Handle them before the legacy retail order path so the retail order lookup is not attempted.
+  if (String(paymentReference || '').startsWith('CORP_')) {
+    const parts = String(paymentReference).split('_');
+    const fulfilmentId = parts[1];
+    if (!fulfilmentId) {
+      logger.warn(`[Payment Service] Corporate webhook missing fulfilment ID. Ref: ${paymentReference}`);
+      return;
+    }
+
+    const fulfilment = await CorporateFulfilment.findOne({ id: fulfilmentId });
+    if (!fulfilment) {
+      logger.warn(`[Payment Service] Corporate fulfilment ${fulfilmentId} not found for payment ref ${paymentReference}.`);
+      return;
+    }
+
+    const actor = { id: 'system', name: 'Monnify Webhook', email: 'system' };
+    const client = await CorporateClient.findOne({ id: fulfilment.clientId }).lean();
+    const request = await CorporateRequest.findOne({ linkedFulfilmentId: fulfilment.id }).lean();
+
+    fulfilment.paymentGateway = 'MONNIFY';
+    fulfilment.paymentReference = paymentReference;
+    fulfilment.paymentGatewayReference = transactionReference;
+    fulfilment.lastPaymentAt = eventData.paidOn ? new Date(eventData.paidOn) : new Date();
+    fulfilment.statusHistory = Array.isArray(fulfilment.statusHistory) ? fulfilment.statusHistory : [];
+
+    let invoice = await ensureInvoiceForFulfilment({ client: client || {}, request, fulfilment, actor, forceRefresh: true });
+
+    if (paymentStatus === 'PAID') {
+      const paidNaira = Number(amountPaid || 0);
+      const alreadyRecorded = Array.isArray(invoice?.paymentHistory) && invoice.paymentHistory.some((p) =>
+        [p.reference, p.gatewayReference].filter(Boolean).map(String).includes(String(transactionReference || paymentReference)) ||
+        String(p.reference || '') === String(paymentReference || '')
+      );
+      if (!alreadyRecorded && paidNaira > 0) {
+        invoice = await recordInvoicePayment({
+          fulfilment,
+          invoice,
+          amount: paidNaira,
+          paymentMethod: paymentMethod || 'MONNIFY',
+          paymentGateway: 'MONNIFY',
+          paymentReference: transactionReference || paymentReference,
+          actor,
+          note: `Corporate payment confirmed by Monnify. Ref: ${transactionReference || paymentReference}`,
+        });
+      }
+      fulfilment.paymentStatus = invoice?.paymentStatus || fulfilment.paymentStatus || 'PAID';
+      fulfilment.statusHistory.unshift({ status: 'PAYMENT_CONFIRMED', note: `Corporate payment confirmed by Monnify. Ref: ${transactionReference || paymentReference}`, timestamp: new Date(), updatedBy: 'system', updatedByName: 'Monnify Webhook' });
+    } else if (paymentStatus === 'FAILED' || paymentStatus === 'CANCELLED') {
+      fulfilment.paymentStatus = 'UNPAID';
+      if (invoice) {
+        invoice.paymentStatus = 'UNPAID';
+        invoice.events = Array.isArray(invoice.events) ? invoice.events : [];
+        invoice.events.unshift({ status: 'PAYMENT_FAILED', note: `Corporate payment ${paymentStatus}. ${responseMessage || ''}`, updatedBy: 'system', updatedByName: 'Monnify Webhook' });
+        await invoice.save();
+      }
+      fulfilment.statusHistory.unshift({ status: 'PAYMENT_FAILED', note: `Corporate payment ${paymentStatus}. ${responseMessage || ''}`, timestamp: new Date(), updatedBy: 'system', updatedByName: 'Monnify Webhook' });
+    }
+
+    await fulfilment.save();
+    const mapped = mapPayment(fulfilment.paymentMethod || paymentMethod || 'ONLINE', fulfilment.paymentGateway || 'MONNIFY');
+    await syncPaymentFromInvoiceOrFulfilment(fulfilment, { actor, paymentMethod: mapped.paymentMethod, paymentGateway: mapped.paymentGateway });
+
+    // Recalculate a minimal client exposure snapshot without invoking GL or posting logic.
+    try {
+      const clientId = fulfilment.clientId;
+      const rows = await CorporateFulfilment.find({ clientId }).lean();
+      const outstandingBalance = rows.reduce((sum, f) => sum + Number(f.outstandingAmount || 0), 0);
+      const lifetimeDeliveredKg = rows.filter((f) => f.status === 'DELIVERED').reduce((sum, f) => sum + Number(f.deliveredKg || 0), 0);
+      await CorporateClient.findOneAndUpdate({ id: clientId }, { $set: { outstandingBalance, lifetimeDeliveredKg, updatedBy: 'system' } });
+    } catch (rollupError) {
+      logger.warn(`[Payment Service] Corporate payment rollup refresh failed: ${rollupError.message}`);
+    }
+
+    logger.info(`[Payment Service] Corporate fulfilment payment processed: ${fulfilmentId} -> ${paymentStatus}`);
+    return;
+  }
 
   // ✅ Extract Order ID safely
   const orderId = extractOrderIdFromPaymentReference(paymentReference);

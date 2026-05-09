@@ -8,6 +8,7 @@ const Message = require('../../../models/message.model');
 const SupportTicket = require('../../../models/supportTicket.model');
 const HttpError = require('../../../utils/HttpError');
 const { logger } = require('../../../config/logger.config');
+const socketManager = require('../../../socket.manager');
 
 const safeInt = (v, d = 10) => {
   const n = parseInt(v, 10);
@@ -322,6 +323,10 @@ const listTickets = async (req, res, next) => {
         { customerPhone: rx },
         { customerEmail: rx },
         { orderId: rx },
+        { corporateClientName: rx },
+        { corporateRequestId: rx },
+        { corporateFulfilmentId: rx },
+        { corporateSiteId: rx },
       ];
     }
 
@@ -363,6 +368,11 @@ const createTicket = async (req, res, next) => {
       customerPhone: safeStr(req.body.customerPhone) || customer?.phone,
       orderId: safeStr(req.body.orderId) || undefined,
       runId: safeStr(req.body.runId) || undefined,
+      corporateClientId: safeStr(req.body.corporateClientId) || undefined,
+      corporateClientName: safeStr(req.body.corporateClientName) || undefined,
+      corporateRequestId: safeStr(req.body.corporateRequestId) || undefined,
+      corporateFulfilmentId: safeStr(req.body.corporateFulfilmentId) || undefined,
+      corporateSiteId: safeStr(req.body.corporateSiteId) || undefined,
       stopId: safeStr(req.body.stopId) || undefined,
       sourceType: safeStr(req.body.sourceType, 'GENERAL').toUpperCase(),
       category: safeStr(req.body.category, 'GENERAL_ENQUIRY').toUpperCase(),
@@ -376,6 +386,9 @@ const createTicket = async (req, res, next) => {
       sla: buildSla(['LOW', 'MEDIUM', 'HIGH', 'URGENT'].includes(priority) ? priority : 'MEDIUM', now),
       createdBy: actorId,
       createdByEmail: actorEmail,
+      lastAdminMessageAt: now,
+      unreadForAdmin: 0,
+      unreadForCustomer: 0,
       notes: req.body.initialNote
         ? [
             {
@@ -399,7 +412,9 @@ const createTicket = async (req, res, next) => {
       ],
     });
 
-    return res.status(201).json({ ok: true, ticket: decorateTicket(ticket) });
+    const decorated = decorateTicket(ticket);
+    socketManager.emitAdmin('support_ticket_created', { ticket: decorated });
+    return res.status(201).json({ ok: true, ticket: decorated });
   } catch (error) {
     logger.error('[SUPPORT CREATE TICKET] Error:', error);
     next(error instanceof HttpError ? error : new HttpError(500, 'Failed to create support ticket.'));
@@ -480,7 +495,11 @@ const updateTicket = async (req, res, next) => {
     }
 
     await ticket.save();
-    return res.json({ ok: true, ticket: decorateTicket(ticket) });
+    const decorated = decorateTicket(ticket);
+    socketManager.emitAdmin('support_ticket_updated', { ticket: decorated });
+    socketManager.emitToRoom(`support-ticket:${ticket.id}`, 'support_ticket_updated', { ticket: decorated });
+    socketManager.emitToRoom(`corp-ticket:${ticket.id}`, 'support_ticket_updated', { ticket: decorated });
+    return res.json({ ok: true, ticket: decorated });
   } catch (error) {
     logger.error('[SUPPORT UPDATE TICKET] Error:', error);
     next(error instanceof HttpError ? error : new HttpError(500, 'Failed to update support ticket.'));
@@ -570,6 +589,83 @@ const createTicketFromFailedDelivery = async (req, res, next) => {
     return createTicket(req, res, next);
   } catch (error) {
     next(error instanceof HttpError ? error : new HttpError(500, 'Failed to create failed-delivery support ticket.'));
+  }
+};
+
+
+const ticketChatId = (ticket) => (ticket?.corporateClientId ? `corp-ticket:${ticket.id}` : `support-ticket:${ticket.id}`);
+
+const legacyRetailChatIds = (ticket = {}) => {
+  const ids = new Set([ticketChatId(ticket)]);
+  if (ticket.orderId) ids.add(ticket.orderId);
+  if (ticket.customerId) {
+    ids.add(ticket.customerId);
+    ids.add(`user:${ticket.customerId}`);
+    ids.add(`customer:${ticket.customerId}`);
+  }
+  return Array.from(ids).filter(Boolean);
+};
+
+const getTicketMessages = async (req, res, next) => {
+  try {
+    const ticket = await SupportTicket.findOne({ id: req.params.ticketId }).lean();
+    if (!ticket) throw new HttpError(404, 'Support ticket not found.');
+    const chatId = ticketChatId(ticket);
+    const chatIds = ticket.corporateClientId ? [chatId] : legacyRetailChatIds(ticket);
+    const messages = await Message.find({
+      $or: [
+        { supportTicketId: ticket.id },
+        { chatId: { $in: chatIds } },
+      ],
+    }).sort({ createdAt: 1 }).limit(300).lean();
+    return res.json({ ok: true, ticket: decorateTicket(ticket), chatId, chatIds, messages, rows: messages });
+  } catch (error) {
+    next(error instanceof HttpError ? error : new HttpError(500, 'Failed to load ticket messages.'));
+  }
+};
+
+const sendTicketMessage = async (req, res, next) => {
+  try {
+    const text = safeStr(req.body.text);
+    if (!text) throw new HttpError(400, 'Message text is required.');
+    const ticket = await SupportTicket.findOne({ id: req.params.ticketId });
+    if (!ticket) throw new HttpError(404, 'Support ticket not found.');
+    const { actorId, actorEmail } = buildActor(req);
+    const chatId = ticketChatId(ticket);
+    const recipientId = ticket.customerId || ticket.createdBy || ticket.primaryPortalUserId || ticket.corporateClientId || 'customer';
+    const message = await Message.create({
+      chatId,
+      senderId: actorId,
+      senderName: req.user?.name || req.user?.email || 'PrimeJet Support',
+      recipientId,
+      recipientName: ticket.customerName || ticket.corporateClientName || 'Customer',
+      text,
+      channel: ticket.corporateClientId ? 'CORPORATE_SUPPORT' : 'SUPPORT_TICKET',
+      sourceType: ticket.sourceType || (ticket.corporateClientId ? 'CORPORATE' : 'SUPPORT'),
+      supportTicketId: ticket.id,
+      corporateClientId: ticket.corporateClientId || undefined,
+      orderId: ticket.orderId || undefined,
+      metadata: { ticketNo: ticket.ticketNo, subject: ticket.subject },
+    });
+    ticket.notes = Array.isArray(ticket.notes) ? ticket.notes : [];
+    ticket.activity = Array.isArray(ticket.activity) ? ticket.activity : [];
+    ticket.notes.push({ text, noteType: 'INTERNAL', authorId: actorId, authorEmail, createdAt: new Date() });
+    ticket.activity.push({ action: 'ADMIN_MESSAGE', actorId, actorEmail, note: text, createdAt: new Date() });
+    ticket.sla = ticket.sla || {};
+    if (!ticket.sla.firstRespondedAt) ticket.sla.firstRespondedAt = new Date();
+    if (ticket.status === 'OPEN') ticket.status = 'IN_PROGRESS';
+    ticket.lastAdminMessageAt = new Date();
+    ticket.unreadForCustomer = safeNum(ticket.unreadForCustomer) + 1;
+    await ticket.save();
+    const decorated = decorateTicket(ticket);
+    socketManager.emitAdmin('support_message_created', { ticket: decorated, message });
+    socketManager.emitToRoom(`support-ticket:${ticket.id}`, 'support_message_created', { ticketId: ticket.id, message });
+    socketManager.emitToRoom(`corp-ticket:${ticket.id}`, 'support_message_created', { ticketId: ticket.id, message });
+    if (ticket.customerId) socketManager.emitToUser(ticket.customerId, 'support_message_created', { ticketId: ticket.id, message });
+    return res.status(201).json({ ok: true, message, ticket: decorated, row: message });
+  } catch (error) {
+    logger.error('[SUPPORT TICKET MESSAGE] Error:', error);
+    next(error instanceof HttpError ? error : new HttpError(500, 'Failed to send ticket message.'));
   }
 };
 
@@ -718,6 +814,8 @@ module.exports = {
   getTicketById,
   updateTicket,
   addTicketNote,
+  getTicketMessages,
+  sendTicketMessage,
   createTicketFromFailedDelivery,
   getCustomer360,
   getCustomerTimeline,

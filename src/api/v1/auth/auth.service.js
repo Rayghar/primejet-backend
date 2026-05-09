@@ -65,7 +65,7 @@ const generateJwtForUser = (user, isNewUser = false) => {
   const plainUser = typeof user.toObject === 'function' ? user.toObject() : { ...user };
   const role = normalizeRole(plainUser.role);
   const effectivePermissions = getEffectivePermissions(plainUser);
-  const payload = { id: plainUser.id, role };
+  const payload = { id: plainUser.id, role, corporateClientId: plainUser.corporateClientId };
   const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1d' });
   return {
     token,
@@ -92,6 +92,13 @@ const generateJwtForUser = (user, isNewUser = false) => {
       permissionOverrides: plainUser.permissionOverrides || { add: [], remove: [] },
       effectivePermissions,
       mustChangePassword: Boolean(plainUser.mustChangePassword),
+      corporateClientId: plainUser.corporateClientId,
+      corporateClientName: plainUser.corporateClientName,
+      corporateRole: plainUser.corporateRole,
+      corporateSiteAccess: plainUser.corporateSiteAccess || [],
+      department: plainUser.department,
+      jobTitle: plainUser.jobTitle,
+      isCorporatePrimaryContact: Boolean(plainUser.isCorporatePrimaryContact),
     },
     isNewUser,
     message: 'Login successful.'

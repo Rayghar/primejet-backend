@@ -57,9 +57,16 @@ const supportTicketSchema = new mongoose.Schema(
     runId: { type: String, ref: 'Run', index: true, sparse: true },
     stopId: { type: String, index: true, sparse: true },
 
+    // Corporate support linkage. These fields are optional and do not affect retail tickets.
+    corporateClientId: { type: String, ref: 'CorporateClient', index: true, sparse: true },
+    corporateClientName: { type: String, trim: true },
+    corporateRequestId: { type: String, ref: 'CorporateRequest', index: true, sparse: true },
+    corporateFulfilmentId: { type: String, ref: 'CorporateFulfilment', index: true, sparse: true },
+    corporateSiteId: { type: String, ref: 'CorporateSite', index: true, sparse: true },
+
     sourceType: {
       type: String,
-      enum: ['GENERAL', 'CHAT', 'ORDER', 'FAILED_DELIVERY', 'PAYMENT', 'WALLET', 'APP_ISSUE', 'DELIVERY', 'POS', 'OTHER'],
+      enum: ['GENERAL', 'CHAT', 'ORDER', 'FAILED_DELIVERY', 'PAYMENT', 'WALLET', 'APP_ISSUE', 'DELIVERY', 'POS', 'CORPORATE', 'OTHER'],
       default: 'GENERAL',
       index: true,
     },
@@ -76,6 +83,10 @@ const supportTicketSchema = new mongoose.Schema(
         'FAILED_DELIVERY',
         'ORDER_UPDATE',
         'GENERAL_ENQUIRY',
+        'BILLING_DISPUTE',
+        'QUANTITY_DISPUTE',
+        'SAFETY_CONCERN',
+        'CORPORATE_ACCOUNT',
         'OTHER',
       ],
       default: 'GENERAL_ENQUIRY',
@@ -128,6 +139,14 @@ const supportTicketSchema = new mongoose.Schema(
     createdByEmail: { type: String, trim: true },
     closedAt: { type: Date },
 
+    // Read/unread tracking for admin/customer chat reliability.
+    lastCustomerMessageAt: { type: Date, index: true },
+    lastAdminMessageAt: { type: Date, index: true },
+    lastReadByCustomerAt: { type: Date },
+    lastReadByAdminAt: { type: Date },
+    unreadForAdmin: { type: Number, default: 0, min: 0 },
+    unreadForCustomer: { type: Number, default: 0, min: 0 },
+
     notes: { type: [ticketNoteSchema], default: [] },
     activity: { type: [ticketActivitySchema], default: [] },
   },
@@ -142,5 +161,7 @@ supportTicketSchema.index({ customerId: 1, createdAt: -1 });
 supportTicketSchema.index({ status: 1, priority: 1, createdAt: -1 });
 supportTicketSchema.index({ assignedTeam: 1, status: 1, createdAt: -1 });
 supportTicketSchema.index({ orderId: 1, status: 1 });
+supportTicketSchema.index({ corporateClientId: 1, createdAt: -1 });
+supportTicketSchema.index({ corporateFulfilmentId: 1, status: 1 });
 
 module.exports = mongoose.model('SupportTicket', supportTicketSchema);

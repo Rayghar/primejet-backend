@@ -51,10 +51,20 @@ const corporateFulfilmentSchema = new mongoose.Schema(
     outstandingAmount: { type: Number, default: 0, min: 0 },
     paymentStatus: {
       type: String,
-      enum: ['UNPAID', 'PART_PAID', 'PAID', 'CREDIT', 'WAIVED'],
+      enum: ['UNPAID', 'PART_PAID', 'PAID', 'CREDIT', 'WAIVED', 'PROCESSING'],
       default: 'UNPAID',
       index: true,
     },
+    paymentMethod: {
+      type: String,
+      enum: ['ACCOUNT_TERMS', 'PAY_ON_DELIVERY', 'ONLINE', 'WALLET', 'TRANSFER', 'CREDIT', 'OTHER'],
+      default: 'ACCOUNT_TERMS',
+      index: true,
+    },
+    paymentGateway: { type: String, enum: ['MONNIFY', 'PAYSTACK', 'WALLET', 'MANUAL', null], default: null, sparse: true },
+    paymentReference: { type: String, trim: true, index: true, sparse: true },
+    paymentGatewayReference: { type: String, trim: true, index: true, sparse: true },
+    lastPaymentAt: { type: Date },
     invoiceNumber: { type: String, trim: true, index: true, sparse: true },
     paymentDueDate: { type: Date, index: true },
     requestedAt: { type: Date, default: Date.now, index: true },
@@ -136,7 +146,7 @@ corporateFulfilmentSchema.pre('save', function (next) {
   this.outstandingAmount = Math.max(0, this.revenue - paid);
 
   if (this.revenue > 0) {
-    if (this.paymentStatus !== 'CREDIT' && this.paymentStatus !== 'WAIVED') {
+    if (!['CREDIT', 'WAIVED', 'PROCESSING'].includes(this.paymentStatus)) {
       if (this.outstandingAmount <= 0) this.paymentStatus = 'PAID';
       else if (paid > 0) this.paymentStatus = 'PART_PAID';
       else this.paymentStatus = 'UNPAID';

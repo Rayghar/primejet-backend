@@ -76,6 +76,33 @@ const corporateClientSchema = new mongoose.Schema(
     anniversaryDate: { type: Date, index: true },
     nextFollowUpDate: { type: Date, index: true },
     lastContactedAt: { type: Date },
+    portalEnabled: { type: Boolean, default: false, index: true },
+    portalStatus: {
+      type: String,
+      enum: ['NOT_ENABLED', 'INVITED', 'ACTIVE', 'SUSPENDED'],
+      default: 'NOT_ENABLED',
+      index: true,
+    },
+    primaryPortalUserId: { type: String, trim: true, index: true, sparse: true },
+    billingEmail: { type: String, trim: true, lowercase: true },
+    billingCycle: {
+      type: String,
+      enum: ['PER_DELIVERY', 'WEEKLY', 'MONTHLY', 'CUSTOM'],
+      default: 'PER_DELIVERY',
+    },
+    requiresInternalApproval: { type: Boolean, default: false },
+    defaultApprovalMode: {
+      type: String,
+      enum: ['NONE', 'APPROVER_REQUIRED', 'ABOVE_LIMIT_ONLY'],
+      default: 'NONE',
+    },
+    defaultCreditHoldPolicy: {
+      type: String,
+      enum: ['WARN_ONLY', 'BLOCK_OVER_LIMIT', 'BLOCK_OVERDUE', 'MANUAL_REVIEW'],
+      default: 'WARN_ONLY',
+    },
+    contractStartDate: { type: Date },
+    contractEndDate: { type: Date },
     onboardingChecklist: {
       businessProfileCaptured: { type: Boolean, default: false },
       deliverySitesConfirmed: { type: Boolean, default: false },

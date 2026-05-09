@@ -182,6 +182,30 @@ const userSchema = new mongoose.Schema(
       index: true,
       sparse: true, // Allows multiple nulls
     },
+
+
+    // Corporate portal linkage. These fields are only populated for business-customer users.
+    corporateClientId: {
+      type: String,
+      ref: 'CorporateClient',
+      trim: true,
+      index: true,
+      sparse: true,
+    },
+    corporateClientName: { type: String, trim: true },
+    corporateRole: {
+      type: String,
+      enum: ['corporate_admin', 'corporate_requester', 'corporate_approver', 'corporate_viewer'],
+      index: true,
+      sparse: true,
+    },
+    corporateSiteAccess: {
+      type: [String],
+      default: [],
+    },
+    department: { type: String, trim: true, maxlength: 100 },
+    jobTitle: { type: String, trim: true, maxlength: 100 },
+    isCorporatePrimaryContact: { type: Boolean, default: false },
   },
   {
     timestamps: true, // Adds createdAt and updatedAt fields
@@ -222,6 +246,7 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
 };
 
 userSchema.index({ currentLocation: '2dsphere' });
+userSchema.index({ corporateClientId: 1, role: 1, status: 1 });
 
 const User = mongoose.models.User || mongoose.model('User', userSchema);
 
